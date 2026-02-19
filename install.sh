@@ -1,24 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT_DIR"
+if ! command -v python3.11 >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y python3.11 python3.11-venv python3-pip
+fi
 
-require_cmd() {
-  command -v "$1" >/dev/null 2>&1 || { echo "Falta comando requerido: $1"; exit 1; }
-}
+sudo apt-get update
+sudo apt-get install -y postgresql postgresql-contrib redis-server
 
-require_cmd python
-require_cmd docker
-
-python - <<'PY'
-import sys
-if sys.version_info < (3, 11):
-    raise SystemExit('Se requiere Python 3.11+')
-print('Python OK')
-PY
-
-python -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
@@ -27,10 +18,8 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
-docker compose up -d postgres redis
-sleep 6
+sudo -u postgres psql -f scripts/init_db.sql || true
+sudo systemctl enable --now postgresql
+sudo systemctl enable --now redis-server
 
-python -m compileall trading_system tests scripts
-pytest -q
-
-echo "Instalación completa. Inicia el sistema con: source .venv/bin/activate && python trading_system/app/main.py"
+echo 'Instalación completada. Ejecuta ./run.sh'
