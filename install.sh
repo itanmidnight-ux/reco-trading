@@ -10,10 +10,10 @@ fi
 ${SUDO} apt-get update
 ${SUDO} apt-get install -y python3.11 python3.11-venv python3-pip postgresql postgresql-contrib redis-server
 
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
