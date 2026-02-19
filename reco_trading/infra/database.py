@@ -1,6 +1,45 @@
 from __future__ import annotations
 
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+from dataclasses import asdict
+
+from sqlalchemy import JSON, BigInteger, Column, DateTime, MetaData, Numeric, String, Table, func, insert
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+metadata = MetaData()
+
+orders = Table(
+    'orders',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('exchange_order_id', String, unique=True, nullable=False),
+    Column('symbol', String, nullable=False),
+    Column('side', String, nullable=False),
+    Column('price', Numeric),
+    Column('amount', Numeric, nullable=False),
+    Column('status', String, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+fills = Table(
+    'fills',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('exchange_order_id', String, nullable=False),
+    Column('symbol', String, nullable=False),
+    Column('side', String, nullable=False),
+    Column('fill_price', Numeric),
+    Column('fill_amount', Numeric),
+    Column('fee', Numeric),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+portfolio_state = Table(
+    'portfolio_state',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('snapshot', JSON, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
 
 
 class Database:
@@ -8,5 +47,41 @@ class Database:
         self.engine = create_async_engine(dsn, pool_pre_ping=True)
         self.session_factory = async_sessionmaker(bind=self.engine, class_=AsyncSession, expire_on_commit=False)
 
-    def session(self) -> AsyncSession:
-        return self.session_factory()
+    async def init(self) -> None:
+        async with self.engine.begin() as conn:
+            await conn.run_sync(metadata.create_all)
+
+    async def record_order(self, order: dict) -> None:
+        payload = {
+            'exchange_order_id': str(order.get('id')),
+            'symbol': order.get('symbol', ''),
+            'side': str(order.get('side', '')).upper(),
+            'price': order.get('price') or order.get('average') or 0,
+            'amount': order.get('amount') or order.get('filled') or 0,
+            'status': order.get('status', 'unknown'),
+        }
+        async with self.session_factory() as session:
+            await session.execute(insert(orders).values(**payload))
+            await session.commit()
+
+    async def record_fill(self, order: dict) -> None:
+        fee = order.get('fee') if isinstance(order.get('fee'), dict) else {}
+        payload = {
+            'exchange_order_id': str(order.get('id')),
+            'symbol': order.get('symbol', ''),
+            'side': str(order.get('side', '')).upper(),
+            'fill_price': order.get('average') or order.get('price') or 0,
+            'fill_amount': order.get('filled') or order.get('amount') or 0,
+            'fee': float(fee.get('cost') or 0.0),
+        }
+        async with self.session_factory() as session:
+            await session.execute(insert(fills).values(**payload))
+            await session.commit()
+
+    async def snapshot_portfolio(self, state) -> None:
+        async with self.session_factory() as session:
+            await session.execute(insert(portfolio_state).values(snapshot=asdict(state)))
+            await session.commit()
+
+    async def close(self) -> None:
+        await self.engine.dispose()
