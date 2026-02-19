@@ -27,7 +27,7 @@ async def _preview_stream(data: MarketDataService, symbol_rest: str) -> None:
 async def main() -> None:
     s = get_settings()
     client = BinanceClient(s.binance_api_key.get_secret_value(), s.binance_api_secret.get_secret_value(), s.binance_testnet)
-    db = Database(s.postgres_dsn)
+    db = Database(s.postgres_dsn, s.postgres_admin_dsn)
     await db.init()
 
     state_manager = StateManager(s.redis_url)
