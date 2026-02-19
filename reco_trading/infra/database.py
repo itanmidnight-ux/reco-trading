@@ -4,11 +4,10 @@ import os
 from dataclasses import asdict
 
 import asyncpg
-from asyncpg import InvalidCatalogNameError, InvalidPasswordError, InsufficientPrivilegeError
-from loguru import logger
 from sqlalchemy import JSON, BigInteger, Column, DateTime, MetaData, Numeric, String, Table, func, insert
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from loguru import logger
 
 metadata = MetaData()
 
@@ -54,13 +53,7 @@ class Database:
         self.session_factory = async_sessionmaker(bind=self.engine, class_=AsyncSession, expire_on_commit=False)
 
     async def init(self) -> None:
-        try:
-            await self._create_tables()
-        except InvalidCatalogNameError:
-            await self._ensure_database_exists()
-            await self._create_tables()
-
-    async def _create_tables(self) -> None:
+        await self._ensure_database_exists()
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
 
@@ -69,21 +62,10 @@ class Database:
         if not url.drivername.startswith('postgresql') or not url.database:
             return
 
+        admin_url = self._to_asyncpg_url(url.set(database='postgres'))
         db_name = url.database
-        admin_dsn = os.getenv('POSTGRES_ADMIN_DSN')
-        if admin_dsn:
-            admin_url = admin_dsn
-        else:
-            admin_url = self._to_asyncpg_url(url.set(database='postgres'))
 
-        try:
-            conn = await asyncpg.connect(admin_url)
-        except InvalidPasswordError as exc:
-            raise RuntimeError(
-                'Error de autenticación a PostgreSQL. Verifica usuario/contraseña de POSTGRES_DSN '
-                'o define POSTGRES_ADMIN_DSN con credenciales administrativas válidas.'
-            ) from exc
-
+        conn = await asyncpg.connect(admin_url)
         try:
             exists = await conn.fetchval('SELECT 1 FROM pg_database WHERE datname = $1', db_name)
             if exists:
@@ -91,11 +73,6 @@ class Database:
             escaped_db_name = db_name.replace('"', '""')
             await conn.execute(f'CREATE DATABASE "{escaped_db_name}"')
             logger.info(f'Base de datos "{db_name}" creada automáticamente.')
-        except InsufficientPrivilegeError as exc:
-            raise RuntimeError(
-                'No hay permisos para crear la base de datos automáticamente. '
-                'Ejecuta scripts/init_db.sql o usa POSTGRES_ADMIN_DSN con un superusuario.'
-            ) from exc
         finally:
             await conn.close()
 
