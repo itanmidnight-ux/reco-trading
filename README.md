@@ -27,3 +27,13 @@ cp .env.example .env
 - `.env` ignorado por git.
 - Usar API key sin permisos de retiro y con whitelist de IP.
 - El sistema separa `BINANCE_TESTNET=false/true` por entorno.
+
+## Solución de autenticación Postgres (usuario `trading`)
+
+Si ves errores tipo `password authentication failed for user "trading"`, ejecuta de nuevo la inicialización:
+
+```bash
+sudo -u postgres psql -f scripts/init_db.sql
+```
+
+El script ahora **siempre** deja el usuario `trading` con contraseña `trading` (aunque el rol ya exista), para mantener sincronizado el valor usado por defecto en `POSTGRES_DSN`.
