@@ -56,10 +56,15 @@ async def main() -> None:
 
     try:
         while True:
+            logger.info('ESTADO | analizando mercado y calculando señal...')
             frame = FeatureEngine().build(await data.latest_ohlcv())
             momentum_up = momentum.predict_proba_up(frame)
             reversion_prob = reversion.predict_reversion(frame)
             signal = fusion.decide(momentum_up, reversion_prob)
+
+            logger.info(
+                f'ESTADO | señal generada={signal} momentum_up={momentum_up:.4f} mean_reversion={reversion_prob:.4f}'
+            )
 
             last = frame.iloc[-1]
             decision = risk.evaluate(
@@ -72,7 +77,29 @@ async def main() -> None:
                 side=signal,
             )
 
+            balance = await client.fetch_balance()
+            usdt_free = float(balance.get('USDT', {}).get('free', 0.0))
+            usdt_used = float(balance.get('USDT', {}).get('used', 0.0))
+            usdt_total = float(balance.get('USDT', {}).get('total', usdt_free + usdt_used))
+            btc_free = float(balance.get('BTC', {}).get('free', 0.0))
+            btc_used = float(balance.get('BTC', {}).get('used', 0.0))
+            btc_total = float(balance.get('BTC', {}).get('total', btc_free + btc_used))
+
+            stats = await db.fill_stats()
+            logger.info(
+                'BALANCE | '
+                f'USDT total={usdt_total:.8f} free={usdt_free:.8f} used={usdt_used:.8f} | '
+                f'BTC total={btc_total:.8f} free={btc_free:.8f} used={btc_used:.8f}'
+            )
+            logger.info(
+                'OPERACIONES | '
+                f'gastado={stats["spent_usdt"]:.8f} ganado={stats["earned_usdt"]:.8f} '
+                f'fees={stats["fees_usdt"]:.8f} pnl_realizado={stats["realized_pnl_usdt"]:.8f} '
+                f'trades={stats["total_fills"]}'
+            )
+
             if signal in {'BUY', 'SELL'} and decision.allowed:
+                logger.info(f'ESTADO | ejecutando orden {signal} por {decision.size_btc:.8f} BTC')
                 fill = await execution.execute_market_order(signal, decision.size_btc)
                 if fill:
                     logger.info(f"FILL confirmado | id={fill.get('id')} side={fill.get('side')} px={fill.get('average')}")

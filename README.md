@@ -22,6 +22,7 @@ cp .env.example .env
 
 ## Seguridad
 
+- Si `POSTGRES_DSN` apunta a una base inexistente, el sistema intentará crearla automáticamente. Si tu usuario no tiene permisos, define `POSTGRES_ADMIN_DSN` en `.env` con credenciales admin o ejecuta `scripts/init_db.sql`.
 - Claves API en `.env` únicamente.
 - `.env` ignorado por git.
 - Usar API key sin permisos de retiro y con whitelist de IP.
