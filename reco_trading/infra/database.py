@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import asdict
 
 import asyncpg
@@ -47,25 +46,27 @@ portfolio_state = Table(
 
 
 class Database:
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, admin_dsn: str | None = None) -> None:
         self.dsn = dsn
+        self.admin_dsn = admin_dsn
         self.engine = create_async_engine(dsn, pool_pre_ping=True)
         self.session_factory = async_sessionmaker(bind=self.engine, class_=AsyncSession, expire_on_commit=False)
 
     async def init(self) -> None:
         await self._ensure_database_exists()
+        await self._ensure_trading_role_password()
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
 
     async def _ensure_database_exists(self) -> None:
-        url = make_url(self.dsn)
-        if not url.drivername.startswith('postgresql') or not url.database:
+        app_url = make_url(self.dsn)
+        if not app_url.drivername.startswith('postgresql') or not app_url.database:
             return
 
-        admin_url = self._to_asyncpg_url(url.set(database='postgres'))
-        db_name = url.database
+        admin_url = self._resolve_admin_url(app_url)
+        db_name = app_url.database
 
-        conn = await asyncpg.connect(admin_url)
+        conn = await asyncpg.connect(self._to_asyncpg_url(admin_url))
         try:
             exists = await conn.fetchval('SELECT 1 FROM pg_database WHERE datname = $1', db_name)
             if exists:
@@ -76,9 +77,52 @@ class Database:
         finally:
             await conn.close()
 
+    async def _ensure_trading_role_password(self) -> None:
+        app_url = make_url(self.dsn)
+        if not app_url.drivername.startswith('postgresql'):
+            return
+
+        username = app_url.username
+        password = app_url.password
+        if not username or password is None:
+            return
+
+        admin_url = self._resolve_admin_url(app_url)
+        role_name = self._escape_literal(username)
+        role_password = self._escape_literal(password)
+
+        conn = await asyncpg.connect(self._to_asyncpg_url(admin_url))
+        try:
+            await conn.execute(
+                f"""
+                DO
+                $$
+                BEGIN
+                   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{role_name}') THEN
+                      EXECUTE format('CREATE ROLE %I LOGIN', '{role_name}');
+                   END IF;
+
+                   EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '{role_name}', '{role_password}');
+                END
+                $$;
+                """
+            )
+        finally:
+            await conn.close()
+
+    def _resolve_admin_url(self, app_url: URL) -> URL:
+        if self.admin_dsn:
+            return make_url(self.admin_dsn)
+
+        return app_url.set(database='postgres')
+
     @staticmethod
     def _to_asyncpg_url(url: URL) -> str:
         return str(url.set(drivername='postgresql'))
+
+    @staticmethod
+    def _escape_literal(value: str) -> str:
+        return value.replace("'", "''")
 
     async def record_order(self, order: dict) -> None:
         payload = {
