@@ -4,8 +4,10 @@ import pandas as pd
 
 
 class WalkForward:
-    def generate_splits(self, frame: pd.DataFrame, train: int = 800, test: int = 150):
-        i = 0
-        while i + train + test <= len(frame):
-            yield frame.iloc[i:i+train], frame.iloc[i+train:i+train+test]
-            i += test
+    def generate_splits(self, frame: pd.DataFrame, train: int = 1000, test: int = 200, step: int = 200):
+        start = 0
+        while start + train + test <= len(frame):
+            train_slice = frame.iloc[start : start + train]
+            test_slice = frame.iloc[start + train : start + train + test]
+            yield train_slice, test_slice
+            start += step

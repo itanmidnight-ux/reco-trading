@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass
 class PortfolioState:
-    equity: float = 0.0
+    equity: float = 1000.0
     daily_pnl: float = 0.0
     consecutive_losses: int = 0
     last_signal: str = 'HOLD'
@@ -17,4 +17,5 @@ class PortfolioEngine:
 
     def register_trade_result(self, pnl: float) -> None:
         self.state.daily_pnl += pnl
+        self.state.equity += pnl
         self.state.consecutive_losses = self.state.consecutive_losses + 1 if pnl < 0 else 0

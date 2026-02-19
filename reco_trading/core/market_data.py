@@ -16,3 +16,15 @@ class MarketDataService:
         frame = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         frame['timestamp'] = pd.to_datetime(frame['timestamp'], unit='ms', utc=True)
         return frame
+
+    async def live_preview(self, symbol_rest: str):
+        async for event in self.client.stream_klines(symbol_rest, self.timeframe):
+            kline = event.get('k', {})
+            yield {
+                'close_time': kline.get('T'),
+                'open': float(kline.get('o', 0.0)),
+                'high': float(kline.get('h', 0.0)),
+                'low': float(kline.get('l', 0.0)),
+                'close': float(kline.get('c', 0.0)),
+                'volume': float(kline.get('v', 0.0)),
+            }
