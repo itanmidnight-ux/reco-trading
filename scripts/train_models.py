@@ -2,29 +2,22 @@ import asyncio
 
 from reco_trading.config.settings import get_settings
 from reco_trading.core.feature_engine import FeatureEngine
-from reco_trading.core.fusion_engine import FusionEngine
 from reco_trading.core.market_data import MarketDataService
 from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.momentum_model import MomentumModel
 from reco_trading.infra.binance_client import BinanceClient
-from reco_trading.research.backtest_engine import BacktestEngine
 
 
 async def main() -> None:
     s = get_settings()
     client = BinanceClient(s.binance_api_key.get_secret_value(), s.binance_api_secret.get_secret_value(), s.binance_testnet)
-    frame = FeatureEngine().build(await MarketDataService(client, s.symbol, s.timeframe).latest_ohlcv(limit=1000))
+    data = MarketDataService(client, s.symbol, s.timeframe)
+    frame = FeatureEngine().build(await data.latest_ohlcv())
 
-    mm = MomentumModel()
-    mr = MeanReversionModel()
-    mm.fit(frame)
-    mr.fit(frame)
-    fusion = FusionEngine()
-    signals = frame.apply(lambda r: fusion.decide(mm.predict_proba_up(frame.loc[:r.name]), mr.predict_reversion(frame.loc[:r.name])), axis=1)
-
-    stats = BacktestEngine(s.taker_fee, s.slippage_bps).run(frame, signals)
-    print(stats)
+    MomentumModel().fit(frame)
+    MeanReversionModel().fit(frame)
     await client.close()
+    print('Modelos entrenados en memoria para validación operativa.')
 
 
 if __name__ == '__main__':
