@@ -68,12 +68,27 @@ class Database:
 
         conn = await asyncpg.connect(self._to_asyncpg_url(admin_url))
         try:
+            if role_name and role_password is not None:
+                await conn.execute(
+                    f"""
+                    DO
+                    $$
+                    BEGIN
+                       IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{role_name}') THEN
+                          EXECUTE format('CREATE ROLE %I LOGIN', '{role_name}');
+                       END IF;
+
+                       EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '{role_name}', '{role_password}');
+                    END
+                    $$;
+                    """
+                )
+
             exists = await conn.fetchval('SELECT 1 FROM pg_database WHERE datname = $1', db_name)
-            if exists:
-                return
-            escaped_db_name = db_name.replace('"', '""')
-            await conn.execute(f'CREATE DATABASE "{escaped_db_name}"')
-            logger.info(f'Base de datos "{db_name}" creada automáticamente.')
+            if not exists:
+                escaped_db_name = db_name.replace('"', '""')
+                await conn.execute(f'CREATE DATABASE "{escaped_db_name}"')
+                logger.info(f'Base de datos "{db_name}" creada automáticamente.')
         finally:
             await conn.close()
 
