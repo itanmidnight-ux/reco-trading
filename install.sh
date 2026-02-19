@@ -8,7 +8,7 @@ else
 fi
 
 ${SUDO} apt-get update
-${SUDO} apt-get install -y python3 python3-venv python3-pip postgresql postgresql-contrib redis-server
+${SUDO} apt-get install -y python3.11 python3.11-venv python3-pip postgresql postgresql-contrib redis-server
 
 python3 -m venv .venv
 source .venv/bin/activate
