@@ -2,8 +2,10 @@ DO
 $$
 BEGIN
    IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'trading') THEN
-      CREATE ROLE trading LOGIN PASSWORD 'trading';
+      CREATE ROLE trading LOGIN;
    END IF;
+
+   ALTER ROLE trading WITH LOGIN PASSWORD 'trading';
 END
 $$;
 
