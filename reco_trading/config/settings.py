@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from pydantic import Field, SecretStr, computed_field
+
+from pydantic import Field, SecretStr, computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -24,13 +25,27 @@ class Settings(BaseSettings):
     max_consecutive_losses: int = Field(default=3, ge=1, le=10)
     atr_stop_multiplier: float = Field(default=2.0, ge=1.0, le=6.0)
     volatility_target: float = Field(default=0.20, ge=0.01, le=2.0)
-    circuit_breaker_volatility: float = Field(default=0.08, ge=0.01, le=0.3)
+    circuit_breaker_volatility: float = Field(default=0.08, ge=0.01, le=1.0)
 
     maker_fee: float = Field(default=0.001)
     taker_fee: float = Field(default=0.001)
     slippage_bps: float = Field(default=5.0)
 
     loop_interval_seconds: int = Field(default=5, ge=1, le=60)
+
+    @field_validator('symbol')
+    @classmethod
+    def only_btcusdt(cls, value: str) -> str:
+        if value != 'BTC/USDT':
+            raise ValueError('Solo se permite BTC/USDT para este deployment.')
+        return value
+
+    @field_validator('timeframe')
+    @classmethod
+    def only_5m(cls, value: str) -> str:
+        if value != '5m':
+            raise ValueError('Solo se permite timeframe 5m.')
+        return value
 
     @computed_field
     @property

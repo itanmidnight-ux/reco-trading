@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if ! command -v python3.11 >/dev/null 2>&1; then
-  sudo apt-get update
-  sudo apt-get install -y python3.11 python3.11-venv python3-pip
+if [[ "${EUID}" -ne 0 ]]; then
+  SUDO="sudo"
+else
+  SUDO=""
 fi
 
-sudo apt-get update
-sudo apt-get install -y postgresql postgresql-contrib redis-server
+${SUDO} apt-get update
+${SUDO} apt-get install -y python3 python3-venv python3-pip postgresql postgresql-contrib redis-server
 
-python3.11 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+python3 -m pip install --upgrade pip
+python3 -m pip install -r requirements.txt
 
 if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
-sudo -u postgres psql -f scripts/init_db.sql || true
-sudo systemctl enable --now postgresql
-sudo systemctl enable --now redis-server
+${SUDO} systemctl enable --now postgresql
+${SUDO} systemctl enable --now redis-server
+${SUDO} -u postgres psql -f scripts/init_db.sql
 
-echo 'Instalación completada. Ejecuta ./run.sh'
+echo 'Instalación completada. Edita .env con tus API keys y ejecuta ./run.sh'
