@@ -7,14 +7,9 @@ BEGIN
 END
 $$;
 
-DO
-$$
-BEGIN
-   IF NOT EXISTS (SELECT FROM pg_database WHERE datname = 'trading') THEN
-      CREATE DATABASE trading OWNER trading;
-   END IF;
-END
-$$;
+SELECT 'CREATE DATABASE trading OWNER trading'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'trading')
+\gexec
 
 \c trading
 
