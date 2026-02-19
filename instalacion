@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT_DIR"
+
+spin() {
+  local msg="$1"
+  local cmd="$2"
+  local frames=('◜' '◠' '◝' '◞' '◡' '◟')
+  local i=0
+
+  bash -lc "$cmd" >/tmp/instalacion_task.log 2>&1 &
+  local pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r%s %s" "$msg" "${frames[i]}"
+    i=$(( (i + 1) % ${#frames[@]} ))
+    sleep 0.12
+  done
+
+  wait "$pid"
+  local status=$?
+  if [[ $status -ne 0 ]]; then
+    printf "\r%s ✗\n" "$msg"
+    cat /tmp/instalacion_task.log
+    exit $status
+  fi
+  printf "\r%s ✓\n" "$msg"
+}
+
+echo "=== Instalación automática del sistema de trading ==="
+
+if ! command -v python >/dev/null 2>&1; then
+  echo "Python no está instalado en este sistema."
+  exit 1
+fi
+
+if [[ ! -f .env ]]; then
+  cp .env.example .env
+  echo "Archivo .env creado desde .env.example"
+fi
+
+spin "Preparando entorno virtual" "python -m venv .venv"
+spin "Activando pip en entorno" "source .venv/bin/activate && python -m pip install --upgrade pip"
+spin "Instalando dependencias" "source .venv/bin/activate && pip install -r requirements.txt"
+spin "Validando compilación" "source .venv/bin/activate && python -m compileall trading_system tests scripts"
+spin "Ejecutando pruebas" "source .venv/bin/activate && pytest -q"
+
+echo
+echo "=== Despliegue listo ==="
+echo "Para iniciar el bot en modo local:"
+echo "  source .venv/bin/activate && python trading_system/app/main.py"
+echo
+echo "Para usar Docker:"
+echo "  docker compose up --build"
+echo
+echo "Panel de salud: http://localhost:8000/health"
