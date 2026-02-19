@@ -36,4 +36,4 @@ Si ves errores tipo `password authentication failed for user "trading"`, ejecuta
 sudo -u postgres psql -f scripts/init_db.sql
 ```
 
-El bootstrap de la app ahora intenta alinear el usuario/contraseña del `POSTGRES_DSN` con PostgreSQL al iniciar. Si usas credenciales distintas, define también `POSTGRES_ADMIN_DSN` (usuario admin) para que pueda ejecutar `ALTER ROLE` automáticamente.
+El script ahora **siempre** deja el usuario `trading` con contraseña `trading` (aunque el rol ya exista), para mantener sincronizado el valor usado por defecto en `POSTGRES_DSN`.
