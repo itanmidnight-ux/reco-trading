@@ -6,6 +6,14 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
+from reco_trading.core.security import (
+    CircuitBreaker,
+    ClusterOperation,
+    ClusterChannelPolicy,
+    NodeRateLimiter,
+    RBACAuthorizer,
+    SecurityError,
+)
 from reco_trading.distributed.models import Heartbeat, TaskEnvelope, TaskResult, WorkerRegistration
 
 
@@ -17,6 +25,10 @@ class ClusterCoordinator:
         heartbeat_ttl_s: int = 15,
         key_prefix: str = 'reco:cluster',
         monitor_interval_s: float = 2.0,
+        authorizer: RBACAuthorizer | None = None,
+        rate_limiter: NodeRateLimiter | None = None,
+        channel_policy: ClusterChannelPolicy | None = None,
+        circuit_breakers: dict[str, CircuitBreaker] | None = None,
     ) -> None:
         self.redis = redis_client
         self.heartbeat_ttl_s = heartbeat_ttl_s
@@ -24,6 +36,10 @@ class ClusterCoordinator:
         self.monitor_interval_s = monitor_interval_s
         self._stop_event = asyncio.Event()
         self._monitor_task: asyncio.Task[None] | None = None
+        self.authorizer = authorizer or RBACAuthorizer()
+        self.rate_limiter = rate_limiter or NodeRateLimiter()
+        self.channel_policy = channel_policy or ClusterChannelPolicy()
+        self.circuit_breakers = circuit_breakers or {}
 
     async def startup(self) -> None:
         self._stop_event.clear()
@@ -36,7 +52,21 @@ class ClusterCoordinator:
             await asyncio.gather(self._monitor_task, return_exceptions=True)
             self._monitor_task = None
 
-    async def register_worker(self, registration: WorkerRegistration) -> None:
+    async def register_worker(
+        self,
+        registration: WorkerRegistration,
+        *,
+        role: str = 'admin',
+        tls_active: bool = True,
+        client_cert_present: bool = True,
+    ) -> None:
+        self._authorize_node_operation(
+            role=role,
+            node_id=registration.worker_id,
+            operation=ClusterOperation.REGISTER,
+            tls_active=tls_active,
+            client_cert_present=client_cert_present,
+        )
         worker_key = self._worker_key(registration.worker_id)
         await self.redis.hset(
             worker_key,
@@ -53,7 +83,18 @@ class ClusterCoordinator:
         await self.redis.sadd(self._workers_key(), registration.worker_id)
         await self._update_heartbeat(Heartbeat(worker_id=registration.worker_id, load=0))
 
-    async def dispatch_task(self, envelope: TaskEnvelope) -> str:
+    async def dispatch_task(self, envelope: TaskEnvelope, *, role: str = 'operator', node_id: str = 'dispatcher') -> str:
+        self._authorize_node_operation(
+            role=role,
+            node_id=node_id,
+            operation=ClusterOperation.DISPATCH,
+            tls_active=True,
+            client_cert_present=True,
+        )
+        exchange = envelope.payload.get('exchange', 'default')
+        breaker = self.circuit_breakers.setdefault(exchange, CircuitBreaker())
+        if not breaker.allow_request():
+            raise SecurityError(f'Circuit open for venue/cluster={exchange}')
         worker_id = await self._select_worker(envelope.task_type, envelope.affinity_key)
 
         task_data = asdict(envelope)
@@ -68,6 +109,39 @@ class ClusterCoordinator:
 
         await self._assign_task_to_worker(envelope.task_id, worker_id)
         return envelope.task_id
+
+    async def cancel_task(self, task_id: str, *, role: str = 'admin', node_id: str = 'coordinator') -> None:
+        self._authorize_node_operation(
+            role=role,
+            node_id=node_id,
+            operation=ClusterOperation.CANCEL,
+            tls_active=True,
+            client_cert_present=True,
+        )
+        task = await self.redis.hgetall(self._task_key(task_id))
+        assigned_worker = self._decode(task.get('assigned_worker'))
+        await self.redis.hset(self._task_key(task_id), mapping={'status': 'cancelled'})
+        await self.redis.zrem(self._queued_tasks_key(), task_id)
+        if assigned_worker:
+            await self.redis.srem(self._worker_tasks_key(assigned_worker), task_id)
+
+    async def drain_worker(self, worker_id: str, *, role: str = 'admin', node_id: str = 'coordinator') -> None:
+        self._authorize_node_operation(
+            role=role,
+            node_id=node_id,
+            operation=ClusterOperation.DRAIN,
+            tls_active=True,
+            client_cert_present=True,
+        )
+        await self.redis.hset(self._worker_key(worker_id), mapping={'status': 'draining'})
+        assigned = await self.redis.smembers(self._worker_tasks_key(worker_id))
+        for raw_task_id in assigned:
+            task_id = self._decode(raw_task_id)
+            if not task_id:
+                continue
+            await self.redis.srem(self._worker_tasks_key(worker_id), task_id)
+            await self.redis.hset(self._task_key(task_id), mapping={'status': 'requeued', 'assigned_worker': ''})
+            await self.redis.zadd(self._queued_tasks_key(), {task_id: 0.0})
 
     async def submit_task_result(self, result: TaskResult) -> None:
         task_key = self._task_key(result.task_id)
@@ -215,3 +289,17 @@ class ClusterCoordinator:
 
     def _affinity_key(self) -> str:
         return f'{self.key_prefix}:affinity'
+
+    def _authorize_node_operation(
+        self,
+        *,
+        role: str,
+        node_id: str,
+        operation: ClusterOperation,
+        tls_active: bool,
+        client_cert_present: bool,
+    ) -> None:
+        self.authorizer.require(role, operation)
+        self.channel_policy.validate(tls_active=tls_active, client_cert_present=client_cert_present)
+        if not self.rate_limiter.allow(node_id):
+            raise SecurityError(f'Node {node_id} exceeded request rate limit')
