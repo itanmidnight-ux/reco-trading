@@ -19,7 +19,7 @@ from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.meta_learning import AdaptiveMetaLearner
 from reco_trading.core.microstructure import MicrostructureSnapshot, OrderBookMicrostructureAnalyzer
 from reco_trading.core.momentum_model import MomentumModel
-from reco_trading.core.pipeline import TradingPipeline
+from reco_trading.core.pipeline import QuantKernel
 from reco_trading.core.signal_fusion_engine import SignalFusionEngine, SignalObservation
 from reco_trading.core.event_pipeline import AsyncEventBus, PipelineEvent
 from reco_trading.evolution import EvolutionEngine, ProbabilisticModelContract, ReversionModelContract
@@ -90,6 +90,10 @@ class FeatureEngineAdapter:
             'atr': float(last['atr14']),
             'win_rate': win_rate,
             'reward_risk': 1.8,
+            'spread': float(last.get('spread_micro', last.get('spread', 0.0))),
+            'obi': float(last.get('obi', 0.0)),
+            'transformer_prob_up': float(momentum_up),
+            'sharpe': float(last.get('sharpe', 0.0)),
         }
 
 
@@ -97,7 +101,14 @@ class FusionEngineAdapter:
     def __init__(self) -> None:
         self.engine = SignalFusionEngine(model_names=['momentum', 'mean_reversion'])
 
-    def fuse(self, signals: dict, regime: str, volatility: float) -> float:
+    def fuse(
+        self,
+        signals: dict,
+        regime: str,
+        volatility: float,
+        meta_weights: dict[str, float] | None = None,
+        meta_confidence: float = 1.0,
+    ) -> float:
         observations = [
             SignalObservation(
                 name='momentum',
@@ -116,7 +127,7 @@ class FusionEngineAdapter:
                 historical_precision=0.54,
             ),
         ]
-        return self.engine.fuse(observations).calibrated_probability
+        return self.engine.fuse(observations, meta_weights=meta_weights, meta_confidence=meta_confidence).calibrated_probability
 
 
 class ExecutionEngineAdapter:
@@ -229,6 +240,8 @@ class InstitutionalTradingPipeline:
         self.feature_engine = FeatureEngineAdapter(FeatureEngine(), MomentumModel(), MeanReversionModel(), self.state)
         self.regime = MarketRegimeDetector(n_states=3)
         self.fusion = FusionEngineAdapter()
+        self.meta_learner = AdaptiveMetaLearner(model_names=['momentum', 'mean_reversion'])
+        self.rl_agent = TradingRLAgent(self.s.redis_url)
         self.risk = InstitutionalRiskManager(
             RiskConfig(
                 risk_per_trade=self.s.risk_per_trade,
@@ -261,7 +274,7 @@ class InstitutionalTradingPipeline:
             self.alert_manager,
         )
 
-        self.pipeline = TradingPipeline(
+        self.pipeline = QuantKernel(
             data_feed=MarketDataFeedAdapter(self.data, self.s.loop_interval_seconds),
             feature_engine=self.feature_engine,
             regime_detector=self.regime,
@@ -269,6 +282,10 @@ class InstitutionalTradingPipeline:
             risk_manager=self.risk,
             execution_engine=self.execution,
             queue_maxsize=512,
+            rl_agent=self.rl_agent,
+            meta_learner=self.meta_learner,
+            spread_factor=1.0,
+            rl_persist_every=10,
         )
         self.event_bus = AsyncEventBus(maxsize=1024)
         self.evolution_service = EvolutionBackgroundService(
