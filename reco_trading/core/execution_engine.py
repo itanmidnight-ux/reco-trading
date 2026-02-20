@@ -2,21 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 from datetime import datetime, timezone
 from typing import Any
 
 import redis
 from loguru import logger
 
-from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
-from reco_trading.core.quant_kernel import QuantKernel
 from reco_trading.core.microstructure import MicrostructureSnapshot
 from reco_trading.execution.execution_firewall import ExecutionFirewall
 from reco_trading.execution.smart_order_router import SmartOrderRouter, VenueSnapshot
-from reco_trading.kernel.capital_governor import CapitalGovernor
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
+from reco_trading.kernel.capital_governor import CapitalGovernor
+
+
+class _NullKernel:
+    def should_block_trading(self) -> bool:
+        return False
+
+    def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
+        logger.warning('Firewall rejection', reason=reason, risk_snapshot=risk_snapshot)
 
 
 class ExecutionEngine:
@@ -30,6 +35,8 @@ class ExecutionEngine:
         max_order_size: float = 100_000.0,
         institutional_order_threshold: float = 25.0,
         order_timeout_seconds: float = 30.0,
+        firewall: ExecutionFirewall | None = None,
+        quant_kernel: Any | None = None,
         sor: SmartOrderRouter | None = None,
         capital_governor: CapitalGovernor | None = None,
     ) -> None:
@@ -39,9 +46,10 @@ class ExecutionEngine:
         self.max_order_size = max_order_size
         self.institutional_order_threshold = institutional_order_threshold
         self.order_timeout_seconds = max(float(order_timeout_seconds), 0.1)
+        self._firewall = firewall or ExecutionFirewall()
+        self._quant_kernel = quant_kernel or _NullKernel()
         self._capital_governor = capital_governor
         self._sor = sor or SmartOrderRouter(capital_governor=capital_governor)
-        self._rate_limiter = AdaptiveRateLimitController(max_calls=5, period_seconds=1.0)
         self._redis_key = redis_key
         try:
             self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
@@ -51,128 +59,77 @@ class ExecutionEngine:
 
     def _validate_order(self, side: str, amount: float) -> bool:
         if side not in {'BUY', 'SELL'}:
-            logger.warning('Orden rechazada: side inválido', side=side)
             return False
-        if amount <= 0 or amount > self.max_order_size:
-            logger.warning('Orden rechazada: amount inválido', amount=amount)
-            return False
-        return True
+        return 0.0 < amount <= self.max_order_size
 
     @staticmethod
     def _validate_microstructure(microstructure: MicrostructureSnapshot | None) -> bool:
         if microstructure is None:
             return True
         if not isinstance(microstructure, MicrostructureSnapshot):
-            logger.warning('Microstructure inválido: se esperaba MicrostructureSnapshot', type_received=type(microstructure).__name__)
             return False
-        if not 0.0 <= microstructure.vpin <= 1.0:
-            logger.warning('Microstructure inválido: vpin fuera de rango', vpin=microstructure.vpin)
-            return False
-        return True
+        return 0.0 <= microstructure.vpin <= 1.0
 
     async def _evaluate_firewall(self, side: str, amount: float) -> bool:
         decision = await self._firewall.evaluate(client=self.client, symbol=self.symbol, side=side, amount=amount)
         if decision.allowed:
             return True
-        logger.warning(
-            'Orden rechazada por execution firewall',
-            reason=decision.reason,
-            recommended_size=decision.recommended_size,
-            risk_snapshot=decision.risk_snapshot,
-        )
         self._quant_kernel.on_firewall_rejection(decision.reason, decision.risk_snapshot)
         return False
 
-    def _persist_execution(self, payload: dict) -> None:
+    def _persist_execution(self, payload: dict[str, Any]) -> None:
         if not self._redis:
             return
         try:
             self._redis.set(self._redis_key, json.dumps(payload, ensure_ascii=False))
         except Exception:
-            logger.warning('No se pudo persistir el estado de ejecución en Redis')
+            logger.warning('redis write failed')
 
-    async def _execute_child_order(
-        self,
-        side: str,
-        amount: float,
-        timeout_seconds: float = 30.0,
-        max_retries: int = 5,
-    ) -> dict | None:
-        timeout_seconds = max(float(timeout_seconds), 0.1)
-        for attempt in range(1, max_retries + 1):
+    async def _execute_child_order(self, side: str, amount: float, timeout_seconds: float, max_retries: int) -> dict[str, Any] | None:
+        for _ in range(max_retries):
+            if self._quant_kernel.should_block_trading():
+                return None
             try:
-                await self._rate_limiter.acquire()
+                allowed = await asyncio.wait_for(self._evaluate_firewall(side, amount), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                continue
+            if not allowed:
+                return None
 
-                if self._quant_kernel.should_block_trading():
-                    logger.error('Orden bloqueada por QuantKernel kill switch')
-                    return None
+            try:
+                order = await asyncio.wait_for(
+                    self.client.create_market_order(self.symbol, side, amount, firewall_checked=True),
+                    timeout=timeout_seconds,
+                )
+            except asyncio.TimeoutError:
+                continue
+            await self.db.record_order(order)
+            order_id = str(order.get('id', ''))
+            if not order_id:
+                return None
 
-                try:
-                    is_allowed = await asyncio.wait_for(
-                        self._evaluate_firewall(side, amount), timeout=timeout_seconds
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        'Timeout evaluando execution firewall previo a la orden',
-                        timeout_seconds=timeout_seconds,
-                        attempt=attempt,
-                    )
-                    continue
+            try:
+                fill = await asyncio.wait_for(self.client.wait_for_fill(self.symbol, order_id), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                continue
+            if not fill:
+                continue
 
-                if not is_allowed:
-                    return None
-
-                try:
-                    order = await asyncio.wait_for(
-                        self.client.create_market_order(self.symbol, side, amount, firewall_checked=True), timeout=timeout_seconds
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        'Timeout creando market order',
-                        symbol=self.symbol,
-                        side=side,
-                        timeout_seconds=timeout_seconds,
-                        attempt=attempt,
-                    )
-                    continue
-
-                await self.db.record_order(order)
-                order_id = order.get('id')
-                if not order_id:
-                    raise RuntimeError('Binance no devolvió order id')
-
-                try:
-                    fill = await asyncio.wait_for(
-                        self.client.wait_for_fill(self.symbol, str(order_id)), timeout=timeout_seconds
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        'Timeout esperando fill de la orden',
-                        symbol=self.symbol,
-                        order_id=str(order_id),
-                        timeout_seconds=timeout_seconds,
-                        attempt=attempt,
-                    )
-                    continue
-
-                if fill:
-                    await self.db.record_fill(fill)
-                    self._firewall.register_fill(symbol=self.symbol, notional=amount * float(fill.get('average') or fill.get('price') or 0.0))
-                    self._persist_execution(
-                        {
-                            'symbol': self.symbol,
-                            'side': side,
-                            'amount': amount,
-                            'order_id': str(order_id),
-                            'timestamp': datetime.now(timezone.utc).isoformat(),
-                        }
-                    )
-                    return fill
-                logger.warning(f'Orden {order_id} no confirmó fill dentro del timeout.')
-            except Exception as exc:
-                sleep_seconds = min(2 ** (attempt - 1) + random.uniform(0, 0.25), 30)
-                logger.exception(f'Intento {attempt}/{max_retries} de orden falló: {exc}')
-                await asyncio.sleep(sleep_seconds)
+            await self.db.record_fill(fill)
+            fill_price = float(fill.get('average') or fill.get('price') or 0.0)
+            self._firewall.register_fill(symbol=self.symbol, notional=max(fill_price, 0.0) * amount)
+            if self._capital_governor:
+                self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * amount)
+            self._persist_execution(
+                {
+                    'symbol': self.symbol,
+                    'side': side,
+                    'amount': amount,
+                    'order_id': order_id,
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            return fill
         return None
 
     async def execute_market_order(
@@ -182,90 +139,54 @@ class ExecutionEngine:
         microstructure: MicrostructureSnapshot | None = None,
         timeout_seconds: float | None = None,
         max_retries: int = 5,
-    ) -> dict | None:
-        if not self._validate_order(side, amount):
+    ) -> dict[str, Any] | None:
+        if not self._validate_order(side, amount) or not self._validate_microstructure(microstructure):
             return None
-        if not self._validate_microstructure(microstructure):
-            return None
-        effective_timeout_seconds = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
-        return await self._execute_child_order(
-            side=side,
-            amount=amount,
-            timeout_seconds=effective_timeout_seconds,
-            max_retries=max_retries,
-        )
+        timeout = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
+        return await self._execute_child_order(side=side, amount=amount, timeout_seconds=timeout, max_retries=max_retries)
 
-    async def _execute_institutional_order(self, side: str, amount: float) -> dict | None:
-        order_book = await self.client.fetch_order_book(self.symbol, limit=10)
-        bids = order_book.get('bids') or []
-        asks = order_book.get('asks') or []
-        top_bid = float(bids[0][0]) if bids else 0.0
-        top_ask = float(asks[0][0]) if asks else top_bid
-        spread_bps = ((top_ask - top_bid) / max(top_bid, 1e-9)) * 10_000 if top_bid > 0 else 0.0
-        depth = float(sum(level[1] for level in (bids[:5] if side == 'SELL' else asks[:5])))
+    async def _execute_institutional_order(self, side: str, amount: float) -> dict[str, Any] | None:
+        book = await self.client.fetch_order_book(self.symbol, limit=10)
+        bids = book.get('bids') or []
+        asks = book.get('asks') or []
+        bid = float(bids[0][0]) if bids else 0.0
+        ask = float(asks[0][0]) if asks else bid
+        spread_bps = ((ask - bid) / max(bid, 1e-9)) * 10_000 if bid > 0 else 0.0
+        depth = float(sum(float(x[1]) for x in (asks[:5] if side == 'BUY' else bids[:5])))
 
-        venues = [
-            VenueSnapshot(
-                venue='binance_spot',
-                spread_bps=spread_bps,
-                depth=max(depth, 1e-6),
-                latency_ms=40.0,
-                fee_bps=10.0,
-                fill_ratio=0.98,
-                liquidity=max(depth * 4.0, amount),
-            ),
-            VenueSnapshot(
-                venue='binance_alt',
-                spread_bps=spread_bps * 1.03,
-                depth=max(depth * 0.8, 1e-6),
-                latency_ms=22.0,
-                fee_bps=12.0,
-                fill_ratio=0.95,
-                liquidity=max(depth * 2.0, amount * 0.5),
-            ),
-        ]
-
-        capital_ticket = None
-        if self._capital_governor is not None:
-            capital_ticket = self._capital_governor.issue_ticket(
-                strategy='execution',
-                exchange='binance_spot',
+        ticket = None
+        if self._capital_governor:
+            ticket = self._capital_governor.issue_ticket(
+                strategy='directional',
+                exchange='binance',
                 symbol=self.symbol,
-                requested_notional=amount,
+                requested_notional=amount * max((bid + ask) / 2, 1.0),
                 pnl_or_returns=[],
-                spread_bps=max(spread_bps, 0.0),
-                available_liquidity=max(depth, 1e-9),
+                spread_bps=spread_bps,
+                available_liquidity=depth,
                 price_gap_pct=0.01,
             )
 
         route = self._sor.route_order(
             amount=amount,
-            venues=venues,
+            venues=[
+                VenueSnapshot('binance_spot', spread_bps=spread_bps, depth=max(depth, 1e-9), latency_ms=30.0, fee_bps=10.0, fill_ratio=0.98, liquidity=max(depth, amount)),
+            ],
             strategy='VWAP',
-            slices=5,
-            expected_volume_profile=[0.15, 0.20, 0.25, 0.20, 0.20],
-            capital_ticket=capital_ticket,
+            slices=3,
+            capital_ticket=ticket,
         )
-
-        fills: list[dict] = []
+        fills: list[dict[str, Any]] = []
         for child in route:
-            child_amount = float(child['amount'])
-            fill = await self._execute_child_order(side=side, amount=child_amount, max_retries=3)
+            fill = await self._execute_child_order(side=side, amount=float(child['amount']), timeout_seconds=self.order_timeout_seconds, max_retries=3)
             if fill:
                 fills.append(fill)
-
         if not fills:
             return None
-        return {
-            'status': 'institutional_completed',
-            'fills': fills,
-            'routed_children': len(route),
-            'filled_children': len(fills),
-        }
+        return {'status': 'institutional_completed', 'fills': fills, 'routed_children': len(route), 'filled_children': len(fills)}
 
-    async def execute(self, side: str, amount: float) -> dict | None:
+    async def execute(self, side: str, amount: float) -> dict[str, Any] | None:
         if self._quant_kernel.should_block_trading():
-            logger.error('Ejecución detenida por QuantKernel kill switch', symbol=self.symbol)
             return None
         if amount >= self.institutional_order_threshold:
             return await self._execute_institutional_order(side=side, amount=amount)

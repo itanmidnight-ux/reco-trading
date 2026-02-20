@@ -1,0 +1,28 @@
+[Unit]
+Description=Reco Trading Quant Kernel (Binance Testnet)
+After=network-online.target redis.service postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading
+Group=trading
+WorkingDirectory=/opt/reco-trading
+Environment=PYTHONUNBUFFERED=1
+Environment=RECO_SIMULATE_ORDERS=false
+Environment=RECO_MAX_TRADES=0
+EnvironmentFile=/opt/reco-trading/.env
+ExecStart=/opt/reco-trading/.venv/bin/python /opt/reco-trading/main.py
+Restart=always
+RestartSec=3
+LimitNOFILE=262144
+TasksMax=infinity
+UMask=007
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/reco-trading /var/log/reco-trading
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

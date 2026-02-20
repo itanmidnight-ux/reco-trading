@@ -27,6 +27,7 @@ dependencies = [
   "sqlalchemy",
   "torch>=2.1,<3",
   "xgboost",
+  "uvloop",
 ]
 
 [project.optional-dependencies]
