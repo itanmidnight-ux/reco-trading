@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reco Trading Dashboard</title>
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.8/css/jquery.dataTables.min.css">
+  <link rel="stylesheet" href="/static/css/style.css" />
+</head>
+<body>
+  <div class="dashboard">
+    <header class="topbar panel">
+      <div class="metric"><span>Capital</span><strong id="capital">-</strong></div>
+      <div class="metric"><span>PnL Total</span><strong id="pnl-total">-</strong></div>
+      <div class="metric"><span>PnL Diario</span><strong id="pnl-daily">-</strong></div>
+      <div class="metric"><span>Drawdown</span><strong id="drawdown">-</strong></div>
+      <div class="metric"><span>Win Rate</span><strong id="win-rate">-</strong></div>
+      <div class="metric"><span>Sharpe</span><strong id="sharpe">-</strong></div>
+    </header>
+
+    <aside class="left panel">
+      <h3>Señal & Régimen</h3>
+      <p>Última señal: <strong id="signal">-</strong></p>
+      <p>Régimen: <strong id="regime">-</strong></p>
+      <p>Risk activo: <strong id="risk-active">-</strong></p>
+      <p>Exposición: <strong id="exposure">-</strong></p>
+    </aside>
+
+    <main class="center panel">
+      <h3>Equity Curve</h3>
+      <canvas id="equity-chart"></canvas>
+    </main>
+
+    <aside class="right panel">
+      <h3>Mercado</h3>
+      <p>Último BTCUSDT: <strong id="latest-price">-</strong></p>
+      <p>Estado Binance: <strong id="binance-status">-</strong></p>
+      <p>Latencia: <strong id="latency">-</strong></p>
+    </aside>
+
+    <section class="bottom panel">
+      <h3>Últimos Trades</h3>
+      <table id="trades-table" class="display">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Símbolo</th>
+            <th>Lado</th>
+            <th>Qty</th>
+            <th>Precio</th>
+            <th>Status</th>
+            <th>PnL</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </div>
+
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

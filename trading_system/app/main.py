@@ -5,10 +5,14 @@ import logging
 import time
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 
 from trading_system.app.config.settings import Settings
 from trading_system.app.core.event_bus import Event, EventBus
+from trading_system.app.dashboard.router import configure_dashboard, router as dashboard_router
+from trading_system.app.dashboard.service import DashboardService, DashboardState
+from trading_system.app.dashboard.websocket import DashboardWebSocketStreamer
 from trading_system.app.core.rate_limiter import BinanceRateLimitController
 from trading_system.app.database.repository import Repository
 from trading_system.app.database.writer import AsyncDBWriter, WriteTask
@@ -55,6 +59,7 @@ class TradingSystem:
         self.last_status: dict[str, float | str] = {'status': 'booting'}
         self.last_market_event_ts = time.time()
         self.last_entry_price = 0.0
+        self._last_snapshot_ts = 0.0
 
     def _enforce_startup_security(self) -> None:
         if self.settings.is_live_mode and not self.settings.enable_live_trading:
@@ -116,6 +121,39 @@ class TradingSystem:
     async def on_depth(self, event: Event) -> None:
         self.last_market_event_ts = time.time()
         self.state.ingest_depth(event.payload)
+
+    def dashboard_state(self) -> DashboardState:
+        drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+        return DashboardState(
+            latest_price=self.state.close[-1] if self.state.close else 0.0,
+            regime=str(self.last_status.get('regime', 'UNKNOWN')),
+            signal=str(self.last_status.get('signal', 'HOLD')),
+            binance_status='connected' if (time.time() - self.last_market_event_ts) < 8 else 'stale',
+            latency_ms=max(0.0, (time.time() - self.last_market_event_ts) * 1000),
+            risk_active=drawdown < self.settings.max_drawdown,
+            active_exposure=self.risk.equity,
+        )
+
+    async def _snapshot_equity_if_due(self) -> None:
+        now = time.time()
+        if (now - self._last_snapshot_ts) < 60:
+            return
+        self._last_snapshot_ts = now
+        drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+        await self.db_writer.submit(
+            WriteTask(
+                fn=self.db.save,
+                kwargs={
+                    'table': 'equity_snapshots',
+                    'payload': {
+                        'ts': int(now * 1000),
+                        'equity': self.risk.equity,
+                        'drawdown': drawdown,
+                        'pnl_total': self.monitoring.metrics.pnl,
+                    },
+                },
+            )
+        )
 
     async def on_kline(self, event: Event) -> None:
         self.last_market_event_ts = time.time()
@@ -198,19 +236,48 @@ class TradingSystem:
             'ws_stale_seconds': round(ws_stale_seconds, 3),
             **self.monitoring.snapshot(),
         }
+        await self._snapshot_equity_if_due()
         logger.info('Decision %s | score=%.3f | regime=%s | EV=%.5f | %s', decision.signal, decision.score, regime.name, decision.expected_value, decision.reason)
+
+    async def _run_with_restart(self, name: str, runner) -> None:  # type: ignore[no-untyped-def]
+        while True:
+            try:
+                await runner()
+                logger.error('%s terminó inesperadamente; reiniciando en 2s', name)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.exception('%s falló: %s', name, exc)
+            await asyncio.sleep(2)
 
     async def run(self) -> None:
         self.register_handlers()
         await self.db.initialize()
         asyncio.create_task(self.db_writer.run())
-        await self.bootstrap_history()
+        while True:
+            try:
+                await self.bootstrap_history()
+                break
+            except Exception as exc:  # noqa: BLE001
+                self.last_status = {'status': 'degraded', 'reason': 'bootstrap_history_failed'}
+                logger.exception('bootstrap_history falló: %s; reintentando en 5s', exc)
+                await asyncio.sleep(5)
         self.last_status = {'status': 'running'}
-        await asyncio.gather(self.stream.run(), self.execution.run())
+        await asyncio.gather(
+            self._run_with_restart('market-stream', self.stream.run),
+            self._run_with_restart('execution-engine', self.execution.run),
+        )
 
 
 system = TradingSystem()
 api = FastAPI(title='Trading System Gateway')
+
+dashboard_service = DashboardService(system.db, system.dashboard_state)
+dashboard_streamer = DashboardWebSocketStreamer(dashboard_service)
+configure_dashboard(dashboard_service, dashboard_streamer)
+
+api.include_router(dashboard_router)
+api.mount('/static', StaticFiles(directory='trading_system/app/dashboard/static'), name='static')
 
 
 @api.get('/health')

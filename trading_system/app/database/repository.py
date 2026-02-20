@@ -5,7 +5,7 @@ from typing import Any, AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
-from trading_system.app.database.models import Base, Candle, OrderExecution, TradeSignal
+from trading_system.app.database.models import Base, Candle, EquitySnapshot, OrderExecution, TradeSignal
 
 
 class Repository:
@@ -37,6 +37,11 @@ class Repository:
             s.add(OrderExecution(**payload))
             await s.commit()
 
+    async def save_equity_snapshot(self, payload: dict[str, Any]) -> None:
+        async with self.session() as s:
+            s.add(EquitySnapshot(**payload))
+            await s.commit()
+
     async def save(self, table: str, payload: dict[str, Any]) -> None:
         if table == 'candles':
             await self.save_candle(payload)
@@ -44,5 +49,7 @@ class Repository:
             await self.save_signal(payload)
         elif table == 'order_executions':
             await self.save_execution(payload)
+        elif table == 'equity_snapshots':
+            await self.save_equity_snapshot(payload)
         else:
             raise ValueError(f'tabla no soportada: {table}')

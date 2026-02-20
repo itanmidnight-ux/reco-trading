@@ -1,0 +1,39 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #0b0e11;
+  color: #d8dee9;
+}
+
+.dashboard {
+  display: grid;
+  grid-template-areas:
+    'topbar topbar topbar'
+    'left center right'
+    'bottom bottom bottom';
+  grid-template-columns: 1fr 2fr 1fr;
+  gap: 12px;
+  padding: 12px;
+}
+
+.panel {
+  background: #161a1e;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.topbar { grid-area: topbar; display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.left { grid-area: left; }
+.center { grid-area: center; min-height: 320px; }
+.right { grid-area: right; }
+.bottom { grid-area: bottom; }
+
+.metric span { color: #aab2bd; display: block; font-size: 12px; }
+.metric strong { font-size: 18px; }
+
+.positive { color: #0ecb81; }
+.negative { color: #f6465d; }
+
+table.dataTable { color: #d8dee9 !important; }
+.dataTables_wrapper .dataTables_filter input,
+.dataTables_wrapper .dataTables_length select { background: #0b0e11; color: #d8dee9; border: 1px solid #2e3742; }
