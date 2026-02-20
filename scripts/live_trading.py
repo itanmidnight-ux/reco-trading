@@ -249,7 +249,13 @@ class InstitutionalTradingPipeline:
         self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
 
         self.execution = ExecutionEngineAdapter(
-            ExecutionEngine(self.client, self.s.symbol, self.db, redis_url=self.s.redis_url),
+            ExecutionEngine(
+                self.client,
+                self.s.symbol,
+                self.db,
+                redis_url=self.s.redis_url,
+                order_timeout_seconds=self.s.execution_order_timeout_seconds,
+            ),
             self.state,
             self.metrics,
             self.alert_manager,

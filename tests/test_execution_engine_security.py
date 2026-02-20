@@ -22,10 +22,16 @@ class _FakeClient:
         return {'id': order_id, 'status': 'closed'}
 
 
-class _SlowBalanceClient(_FakeClient):
-    async def fetch_balance(self):
-        await asyncio.sleep(0.05)
-        return await super().fetch_balance()
+class _CreateTimeoutClient(_FakeClient):
+    async def create_market_order(self, symbol, side, amount):
+        await asyncio.sleep(0.2)
+        return await super().create_market_order(symbol, side, amount)
+
+
+class _FillTimeoutClient(_FakeClient):
+    async def wait_for_fill(self, symbol, order_id):
+        await asyncio.sleep(0.2)
+        return await super().wait_for_fill(symbol, order_id)
 
 
 class _FakeDB:
@@ -50,7 +56,7 @@ def test_execution_engine_validates_order_side_and_amount():
     asyncio.run(_run())
 
 
-def test_execution_engine_executes_market_order():
+def test_execution_engine_executes_market_order_without_microstructure():
     db = _FakeDB()
     engine = ExecutionEngine(_FakeClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0')
 
@@ -61,6 +67,46 @@ def test_execution_engine_executes_market_order():
     asyncio.run(_run())
     assert len(db.orders) == 1
     assert len(db.fills) == 1
+
+
+def test_execution_engine_executes_market_order_with_microstructure():
+    db = _FakeDB()
+    engine = ExecutionEngine(_FakeClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0')
+    microstructure = MicrostructureSnapshot(obi=0.1, cvd=1.0, spread=0.0005, vpin=0.4, liquidity_shock=False)
+
+    async def _run():
+        out = await engine.execute_market_order('BUY', 0.1, microstructure=microstructure)
+        assert out is not None
+
+    asyncio.run(_run())
+    assert len(db.orders) == 1
+    assert len(db.fills) == 1
+
+
+def test_execution_engine_times_out_during_create_market_order():
+    db = _FakeDB()
+    engine = ExecutionEngine(_CreateTimeoutClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0')
+
+    async def _run():
+        out = await engine.execute_market_order('BUY', 0.1, timeout_seconds=0.1, max_retries=1)
+        assert out is None
+
+    asyncio.run(_run())
+    assert len(db.orders) == 0
+    assert len(db.fills) == 0
+
+
+def test_execution_engine_times_out_waiting_for_fill():
+    db = _FakeDB()
+    engine = ExecutionEngine(_FillTimeoutClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0')
+
+    async def _run():
+        out = await engine.execute_market_order('BUY', 0.1, timeout_seconds=0.1, max_retries=1)
+        assert out is None
+
+    asyncio.run(_run())
+    assert len(db.orders) == 1
+    assert len(db.fills) == 0
 
 
 def test_execution_engine_delegates_institutional_orders_to_sor():
