@@ -115,3 +115,13 @@ Ejemplo:
 ```bash
 DB_PASS='trading_password' ADMIN_OS_USER=root ./scripts/reset_database.sh
 ```
+
+## Despliegue operacional (systemd / docker compose)
+
+Se añadió la carpeta `deploy/` con:
+- unidades systemd para `orchestrator`, `trading-worker`, `evolution-worker`, `architecture-search-worker` y `self-healing-worker`.
+- scripts de tuning Linux (`ulimit`, red kernel 6.x, afinidad CPU y cgroups).
+- validación de compatibilidad de runtime para Python 3.11+, CUDA, Redis y PostgreSQL.
+- perfiles para bare-metal y docker compose opcional.
+
+Ver guía completa en `deploy/README.md`.

@@ -1,0 +1,89 @@
+version: "3.9"
+services:
+  app:
+    profiles: ["core"]
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../../.env
+    command: ["python", "trading_system/app/main.py"]
+    depends_on:
+      - postgres
+      - redis
+
+  orchestrator:
+    profiles: ["workers"]
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../../.env
+    command: ["bash", "-lc", "deploy/linux/run_service.sh orchestrator"]
+    depends_on:
+      - redis
+      - postgres
+
+  trading-worker:
+    profiles: ["workers"]
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../../.env
+    command: ["bash", "-lc", "deploy/linux/run_service.sh trading-worker"]
+    depends_on:
+      - redis
+      - postgres
+
+  evolution-worker:
+    profiles: ["workers"]
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../../.env
+    command: ["bash", "-lc", "deploy/linux/run_service.sh evolution-worker"]
+    depends_on:
+      - redis
+      - postgres
+
+  architecture-search-worker:
+    profiles: ["workers"]
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../../.env
+    command: ["bash", "-lc", "deploy/linux/run_service.sh architecture-search-worker"]
+    depends_on:
+      - redis
+      - postgres
+
+  self-healing-worker:
+    profiles: ["workers"]
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../../.env
+    command: ["bash", "-lc", "deploy/linux/run_service.sh self-healing-worker"]
+    depends_on:
+      - redis
+      - postgres
+
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    profiles: ["infra", "core", "workers"]
+    environment:
+      POSTGRES_USER: trading
+      POSTGRES_PASSWORD: trading
+      POSTGRES_DB: trading
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    profiles: ["infra", "core", "workers"]
+    ports:
+      - "6379:6379"
