@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from reco_trading.core.event_pipeline import AsyncEventBus, PipelineEvent
+from reco_trading.distributed.coordinator import ClusterCoordinator
+from reco_trading.distributed.models import TaskEnvelope
 
 
 @dataclass(slots=True)
@@ -73,6 +75,7 @@ class InstitutionalTradingPipeline:
         legacy_fallback: Any | None = None,
         feature_flags: InstitutionalFeatureFlags | None = None,
         routing: StrategyRoutingConfig | None = None,
+        cluster_coordinator: ClusterCoordinator | None = None,
     ) -> None:
         self.event_bus = event_bus
         self.data_module = data_module
@@ -90,6 +93,7 @@ class InstitutionalTradingPipeline:
         self.legacy_fallback = legacy_fallback
         self.feature_flags = feature_flags or InstitutionalFeatureFlags()
         self.routing = routing or StrategyRoutingConfig()
+        self.cluster_coordinator = cluster_coordinator
 
     def register_handlers(self) -> None:
         self.event_bus.subscribe(self.TOPIC_DATA, self._handle_data)
@@ -108,15 +112,24 @@ class InstitutionalTradingPipeline:
                 self.event_bus.subscribe(topic, self._wrap_strategy_handler(handler))
 
     async def start(self, workers: int = 2) -> None:
+        if self.cluster_coordinator is not None:
+            await self.cluster_coordinator.startup()
         self.register_handlers()
         await self.event_bus.start(workers=workers)
 
     async def shutdown(self) -> None:
         await self.event_bus.shutdown()
+        if self.cluster_coordinator is not None:
+            await self.cluster_coordinator.shutdown()
 
-    async def submit(self, data: dict[str, Any]) -> None:
+    async def submit(self, data: dict[str, Any]) -> str | None:
         payload = await self._run_component(self.data_module, data)
+        if self.cluster_coordinator is not None:
+            return await self.cluster_coordinator.dispatch_task(
+                TaskEnvelope(task_type=self.TOPIC_DATA, payload={'data': payload})
+            )
         await self.event_bus.publish(PipelineEvent(self.TOPIC_DATA, {'data': payload}))
+        return None
 
     async def _handle_data(self, event: PipelineEvent) -> None:
         await self.event_bus.publish(PipelineEvent(self.TOPIC_MICROSTRUCTURE, dict(event.payload)))

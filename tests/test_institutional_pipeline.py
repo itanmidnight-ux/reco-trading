@@ -93,27 +93,34 @@ def test_institutional_pipeline_feature_flag_and_fallback():
     assert strategy_calls == []
 
 
-def test_institutional_pipeline_uses_transformer_inference_engine():
-    calls = []
+def test_institutional_pipeline_submit_dispatches_to_cluster_when_configured():
+    class _Coordinator:
+        def __init__(self):
+            self.started = False
+            self.stopped = False
+            self.envelopes = []
 
-    class _InferenceEngine:
-        async def infer(self, model_name, payload):
-            calls.append((model_name, payload))
-            return {'engine': model_name}
+        async def startup(self):
+            self.started = True
+
+        async def shutdown(self):
+            self.stopped = True
+
+        async def dispatch_task(self, envelope):
+            self.envelopes.append(envelope)
+            return envelope.task_id
 
     async def _run():
         bus = AsyncEventBus()
-        pipeline = InstitutionalTradingPipeline(
-            bus,
-            transformer_module=lambda payload: (_ for _ in ()).throw(RuntimeError('should not run direct transformer')),
-            transformer_inference_engine=_InferenceEngine(),
-            transformer_model_name='orderflow-v2',
-        )
+        coordinator = _Coordinator()
+        pipeline = InstitutionalTradingPipeline(bus, cluster_coordinator=coordinator)
         await pipeline.start(workers=1)
-        await pipeline.submit({'sequence_features': [1, 2, 3]})
-        await asyncio.wait_for(bus._queue.join(), timeout=1)
+        task_id = await pipeline.submit({'x': 1})
         await pipeline.shutdown()
+        assert coordinator.started is True
+        assert coordinator.stopped is True
+        assert len(coordinator.envelopes) == 1
+        assert coordinator.envelopes[0].task_type == pipeline.TOPIC_DATA
+        assert task_id == coordinator.envelopes[0].task_id
 
     asyncio.run(_run())
-
-    assert calls == [('orderflow-v2', [1, 2, 3])]
