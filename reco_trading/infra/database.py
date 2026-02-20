@@ -99,6 +99,19 @@ system_rollbacks = Table(
     Column('completed_at', DateTime(timezone=True)),
 )
 
+security_audit_log = Table(
+    'security_audit_log',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('event_type', String, nullable=False),
+    Column('actor', String, nullable=False),
+    Column('target', String),
+    Column('payload', JSON, nullable=False, server_default='{}'),
+    Column('prev_event_hash', String),
+    Column('event_hash', String, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
 ConfigStatus = Literal['pending', 'active', 'failed', 'rolled_back']
 
 
@@ -123,6 +136,50 @@ class Database:
         expected = hmac.new(b'reco_trading', payload_hash.encode('utf-8'), hashlib.sha256).hexdigest()
         return hmac.compare_digest(expected, signature)
 
+    @staticmethod
+    def _audit_hash(event_type: str, actor: str, target: str | None, payload: dict[str, Any], prev_event_hash: str | None) -> str:
+        body = json.dumps(
+            {
+                'event_type': event_type,
+                'actor': actor,
+                'target': target,
+                'payload': payload,
+                'prev_event_hash': prev_event_hash,
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        return hashlib.sha256(body.encode('utf-8')).hexdigest()
+
+    async def append_audit_event(
+        self,
+        *,
+        event_type: str,
+        actor: str,
+        target: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> int:
+        payload_data = payload or {}
+        async with self.session_factory() as session:
+            async with session.begin():
+                prev_hash = await session.scalar(
+                    select(security_audit_log.c.event_hash).order_by(security_audit_log.c.id.desc()).limit(1)
+                )
+                event_hash = self._audit_hash(event_type, actor, target, payload_data, prev_hash)
+                result = await session.execute(
+                    insert(security_audit_log)
+                    .values(
+                        event_type=event_type,
+                        actor=actor,
+                        target=target,
+                        payload=payload_data,
+                        prev_event_hash=prev_hash,
+                        event_hash=event_hash,
+                    )
+                    .returning(security_audit_log.c.id)
+                )
+                return int(result.scalar_one())
+
     async def create_config_version(
         self,
         version: str,
@@ -131,6 +188,7 @@ class Database:
         *,
         reason: str | None = None,
         metadata_payload: dict[str, Any] | None = None,
+        actor: str = 'system',
     ) -> int:
         config_hash = self._payload_hash(payload)
         if not self._valid_signature(config_hash, signature):
@@ -160,9 +218,15 @@ class Database:
                         reason=reason,
                     )
                 )
+                await self.append_audit_event(
+                    event_type='config_change',
+                    actor=actor,
+                    target=version,
+                    payload={'action': 'create_version', 'config_hash': config_hash, 'reason': reason},
+                )
         return version_id
 
-    async def activate_config_version(self, version: str, *, reason: str | None = None) -> None:
+    async def activate_config_version(self, version: str, *, reason: str | None = None, actor: str = 'system') -> None:
         async with self.session_factory() as session:
             async with session.begin():
                 await session.execute(
@@ -178,8 +242,14 @@ class Database:
                 )
                 if result.scalar_one_or_none() is None:
                     raise ValueError(f'No existe la versión {version}.')
+        await self.append_audit_event(
+            event_type='config_change',
+            actor=actor,
+            target=version,
+            payload={'action': 'activate', 'reason': reason},
+        )
 
-    async def register_config_failure(self, version: str, reason: str) -> None:
+    async def register_config_failure(self, version: str, reason: str, *, actor: str = 'system') -> None:
         async with self.session_factory() as session:
             async with session.begin():
                 result = await session.execute(
@@ -190,8 +260,23 @@ class Database:
                 )
                 if result.scalar_one_or_none() is None:
                     raise ValueError(f'No existe la versión {version}.')
+        await self.append_audit_event(
+            event_type='security_event',
+            actor=actor,
+            target=version,
+            payload={'action': 'config_failure', 'reason': reason},
+        )
 
-    async def register_deployment(self, version_id: int, status: ConfigStatus = 'pending', reason: str | None = None) -> int:
+    async def register_deployment(
+        self,
+        version_id: int,
+        status: ConfigStatus = 'pending',
+        reason: str | None = None,
+        *,
+        actor: str = 'system',
+        signature: str | None = None,
+        deployment_hash: str | None = None,
+    ) -> int:
         async with self.session_factory() as session:
             async with session.begin():
                 result = await session.execute(
@@ -199,9 +284,30 @@ class Database:
                     .values(version_id=version_id, status=status, reason=reason)
                     .returning(system_deployments.c.id)
                 )
-                return int(result.scalar_one())
+                deployment_id = int(result.scalar_one())
+        await self.append_audit_event(
+            event_type='security_event',
+            actor=actor,
+            target=str(version_id),
+            payload={
+                'action': 'register_deployment',
+                'deployment_id': deployment_id,
+                'status': status,
+                'reason': reason,
+                'signature': signature,
+                'deployment_hash': deployment_hash,
+            },
+        )
+        return deployment_id
 
-    async def complete_deployment(self, deployment_id: int, status: ConfigStatus, reason: str | None = None) -> None:
+    async def complete_deployment(
+        self,
+        deployment_id: int,
+        status: ConfigStatus,
+        reason: str | None = None,
+        *,
+        actor: str = 'system',
+    ) -> None:
         async with self.session_factory() as session:
             async with session.begin():
                 await session.execute(
@@ -209,8 +315,21 @@ class Database:
                     .where(system_deployments.c.id == deployment_id)
                     .values(status=status, reason=reason, completed_at=func.now())
                 )
+        await self.append_audit_event(
+            event_type='security_event',
+            actor=actor,
+            target=str(deployment_id),
+            payload={'action': 'complete_deployment', 'status': status, 'reason': reason},
+        )
 
-    async def execute_rollback(self, from_version: str, reason: str, *, deployment_id: int | None = None) -> str:
+    async def execute_rollback(
+        self,
+        from_version: str,
+        reason: str,
+        *,
+        deployment_id: int | None = None,
+        actor: str = 'system',
+    ) -> str:
         async with self.session_factory() as session:
             async with session.begin():
                 from_row = (
@@ -261,6 +380,12 @@ class Database:
                         completed_at=func.now(),
                     )
                 )
+        await self.append_audit_event(
+            event_type='recovery_action',
+            actor=actor,
+            target=from_version,
+            payload={'action': 'rollback', 'reason': reason, 'deployment_id': deployment_id, 'rolled_back_to': to_version},
+        )
         return to_version
 
     async def record_order(self, order: dict) -> None:

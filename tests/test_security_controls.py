@@ -16,6 +16,9 @@ from reco_trading.core.security import (
 )
 from reco_trading.distributed.coordinator import ClusterCoordinator
 from reco_trading.distributed.models import TaskEnvelope, WorkerRegistration
+from reco_trading.security.rbac import CriticalOperation, CriticalRBAC
+from reco_trading.security.secrets_vault import InMemorySecretStore, SecretsVault
+from reco_trading.security.signing import ConfigurationSigner
 from tests.test_distributed_cluster import FakeRedis
 
 
@@ -93,3 +96,33 @@ def test_cluster_coordinator_security_ops():
             await coordinator.dispatch_task(TaskEnvelope(task_type='features', payload={'exchange': 'binance'}))
 
     asyncio.run(_run())
+
+
+def test_secrets_vault_persists_key_version_and_decrypts():
+    async def _run():
+        manager = KeyRotationManager(passphrase='vault-pass', active_key_id='v1')
+        crypto = AuthenticatedEncryption(manager)
+        store = InMemorySecretStore()
+        vault = SecretsVault(store, crypto)
+
+        record_v1 = await vault.put_secret('binance_api_key', 'k-123')
+        assert record_v1.key_version == 'v1'
+        assert await vault.get_secret('binance_api_key') == 'k-123'
+
+        manager.rotate('v2')
+        record_v2 = await vault.put_secret('binance_api_key', 'k-456')
+        assert record_v2.key_version == 'v2'
+        assert await vault.get_secret('binance_api_key') == 'k-456'
+
+    asyncio.run(_run())
+
+
+def test_critical_rbac_and_signing():
+    rbac = CriticalRBAC()
+    assert rbac.authorize('platform_admin', CriticalOperation.KILL_SWITCH)
+    assert not rbac.authorize('operator', CriticalOperation.ROLLBACK)
+
+    signer = ConfigurationSigner('reco_trading')
+    payload = {'mode': 'safe', 'max_risk': 0.01}
+    envelope = signer.sign(payload)
+    assert signer.verify(payload, envelope.signature)
