@@ -14,6 +14,7 @@ from reco_trading.core.quant_kernel import QuantKernel
 from reco_trading.core.microstructure import MicrostructureSnapshot
 from reco_trading.execution.execution_firewall import ExecutionFirewall
 from reco_trading.execution.smart_order_router import SmartOrderRouter, VenueSnapshot
+from reco_trading.kernel.capital_governor import CapitalGovernor
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 
@@ -30,8 +31,7 @@ class ExecutionEngine:
         institutional_order_threshold: float = 25.0,
         order_timeout_seconds: float = 30.0,
         sor: SmartOrderRouter | None = None,
-        firewall: ExecutionFirewall | None = None,
-        quant_kernel: QuantKernel | None = None,
+        capital_governor: CapitalGovernor | None = None,
     ) -> None:
         self.client = client
         self.symbol = symbol
@@ -39,9 +39,8 @@ class ExecutionEngine:
         self.max_order_size = max_order_size
         self.institutional_order_threshold = institutional_order_threshold
         self.order_timeout_seconds = max(float(order_timeout_seconds), 0.1)
-        self._sor = sor or SmartOrderRouter()
-        self._firewall = firewall or ExecutionFirewall()
-        self._quant_kernel = quant_kernel or QuantKernel()
+        self._capital_governor = capital_governor
+        self._sor = sor or SmartOrderRouter(capital_governor=capital_governor)
         self._rate_limiter = AdaptiveRateLimitController(max_calls=5, period_seconds=1.0)
         self._redis_key = redis_key
         try:
@@ -226,12 +225,26 @@ class ExecutionEngine:
             ),
         ]
 
+        capital_ticket = None
+        if self._capital_governor is not None:
+            capital_ticket = self._capital_governor.issue_ticket(
+                strategy='execution',
+                exchange='binance_spot',
+                symbol=self.symbol,
+                requested_notional=amount,
+                pnl_or_returns=[],
+                spread_bps=max(spread_bps, 0.0),
+                available_liquidity=max(depth, 1e-9),
+                price_gap_pct=0.01,
+            )
+
         route = self._sor.route_order(
             amount=amount,
             venues=venues,
             strategy='VWAP',
             slices=5,
             expected_volume_profile=[0.15, 0.20, 0.25, 0.20, 0.20],
+            capital_ticket=capital_ticket,
         )
 
         fills: list[dict] = []

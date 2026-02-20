@@ -9,9 +9,10 @@ import redis
 
 @dataclass(slots=True)
 class RLAction:
-    size_multiplier: float
-    threshold_shift: float
-    risk_shift: float
+    risk_per_trade_delta: float
+    buy_threshold_delta: float
+    sell_threshold_delta: float
+    spread_factor_delta: float
     pause_trading: bool
 
 
@@ -19,10 +20,10 @@ class TradingRLAgent:
     """Agente RL online con Q-learning tabular discretizado."""
 
     ACTIONS: tuple[RLAction, ...] = (
-        RLAction(size_multiplier=1.10, threshold_shift=-0.01, risk_shift=0.001, pause_trading=False),
-        RLAction(size_multiplier=0.80, threshold_shift=0.01, risk_shift=-0.001, pause_trading=False),
-        RLAction(size_multiplier=1.00, threshold_shift=-0.02, risk_shift=0.000, pause_trading=False),
-        RLAction(size_multiplier=0.00, threshold_shift=0.00, risk_shift=-0.003, pause_trading=True),
+        RLAction(risk_per_trade_delta=0.0010, buy_threshold_delta=-0.015, sell_threshold_delta=0.015, spread_factor_delta=0.10, pause_trading=False),
+        RLAction(risk_per_trade_delta=-0.0010, buy_threshold_delta=0.010, sell_threshold_delta=-0.010, spread_factor_delta=-0.10, pause_trading=False),
+        RLAction(risk_per_trade_delta=0.0000, buy_threshold_delta=-0.020, sell_threshold_delta=-0.005, spread_factor_delta=0.05, pause_trading=False),
+        RLAction(risk_per_trade_delta=0.0000, buy_threshold_delta=0.000, sell_threshold_delta=0.000, spread_factor_delta=0.00, pause_trading=True),
     )
 
     def __init__(self, redis_url: str, redis_key: str = "reco_trading:rl_agent_state") -> None:
