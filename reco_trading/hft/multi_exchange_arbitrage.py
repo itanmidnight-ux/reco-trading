@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
 
@@ -11,7 +11,9 @@ import ccxt.async_support as ccxt
 from ccxt.base.errors import DDoSProtection, ExchangeError, NetworkError, RateLimitExceeded
 from loguru import logger
 
+from reco_trading.core.institutional_risk_manager import InstitutionalRiskManager
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
+from reco_trading.hft.capital_allocator import AllocationRequest, CapitalAllocator
 
 
 @dataclass(slots=True)
@@ -189,6 +191,24 @@ class ExchangeAdapterFactory:
         return adapters
 
 
+
+
+@dataclass(slots=True)
+class OpportunityContext:
+    equity: float
+    daily_pnl: float
+    atr: float
+    annualized_volatility: float
+    volatility_multiplier: float
+    expected_win_rate: float
+    avg_win: float
+    avg_loss: float
+    returns_matrix: Any
+    notionals_by_exchange: dict[str, float] = field(default_factory=dict)
+    notionals_by_asset: dict[str, float] = field(default_factory=dict)
+    inventory_by_exchange: dict[str, float] = field(default_factory=dict)
+    total_exposure: float = 0.0
+
 class MultiExchangeArbitrageEngine:
     def __init__(self, adapters: dict[str, ExchangeAdapter], min_edge_bps: float = 5.0) -> None:
         self.adapters = adapters
@@ -290,6 +310,87 @@ class MultiExchangeArbitrageEngine:
             expected_edge_bps=opportunity.expected_edge_bps,
             details={'buy_order': buy_order, 'sell_order': sell_order},
         )
+
+    async def execute_with_risk_controls(
+        self,
+        opportunity: ArbitrageOpportunity,
+        *,
+        risk_manager: InstitutionalRiskManager,
+        allocator: CapitalAllocator,
+        context: OpportunityContext,
+    ) -> ExecutionReport:
+        risk_assessment = risk_manager.assess(
+            symbol=opportunity.symbol,
+            side='BUY',
+            equity=context.equity,
+            daily_pnl=context.daily_pnl,
+            current_price=opportunity.mid_price,
+            atr=context.atr,
+            annualized_volatility=context.annualized_volatility,
+            volatility_multiplier=context.volatility_multiplier,
+            expected_win_rate=context.expected_win_rate,
+            avg_win=context.avg_win,
+            avg_loss=context.avg_loss,
+            returns_matrix=context.returns_matrix,
+            exchange=opportunity.buy_exchange,
+            notional_by_exchange=context.notionals_by_exchange,
+            total_exposure=context.total_exposure,
+        )
+        if not risk_assessment.allowed:
+            return ExecutionReport(
+                symbol=opportunity.symbol,
+                buy_exchange=opportunity.buy_exchange,
+                sell_exchange=opportunity.sell_exchange,
+                buy_order_id=None,
+                sell_order_id=None,
+                status='rejected_risk',
+                spread=opportunity.spread,
+                expected_edge_bps=opportunity.expected_edge_bps,
+                details={'reason': risk_assessment.reason},
+            )
+
+        allocation = allocator.allocate(
+            AllocationRequest(
+                symbol=opportunity.symbol,
+                buy_exchange=opportunity.buy_exchange,
+                sell_exchange=opportunity.sell_exchange,
+                mid_price=opportunity.mid_price,
+                expected_edge_bps=opportunity.expected_edge_bps,
+            ),
+            equity=context.equity,
+            inventory_by_exchange=context.inventory_by_exchange,
+            notionals_by_exchange=context.notionals_by_exchange,
+            notionals_by_asset=context.notionals_by_asset,
+        )
+
+        if not allocation.allowed:
+            return ExecutionReport(
+                symbol=opportunity.symbol,
+                buy_exchange=opportunity.buy_exchange,
+                sell_exchange=opportunity.sell_exchange,
+                buy_order_id=None,
+                sell_order_id=None,
+                status='rejected_allocator',
+                spread=opportunity.spread,
+                expected_edge_bps=opportunity.expected_edge_bps,
+                details={'reason': allocation.reason, 'allocator_debug': allocation.debug},
+            )
+
+        amount = min(risk_assessment.position_size, allocation.units)
+        if amount <= 0:
+            return ExecutionReport(
+                symbol=opportunity.symbol,
+                buy_exchange=opportunity.buy_exchange,
+                sell_exchange=opportunity.sell_exchange,
+                buy_order_id=None,
+                sell_order_id=None,
+                status='rejected_execution',
+                spread=opportunity.spread,
+                expected_edge_bps=opportunity.expected_edge_bps,
+                details={'reason': 'amount_capped_to_zero'},
+            )
+
+        return await self.execute_opportunity(opportunity, amount=amount)
 
     async def close(self) -> None:
         await asyncio.gather(*(adapter.close() for adapter in self.adapters.values()))
