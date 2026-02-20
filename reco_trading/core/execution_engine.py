@@ -4,11 +4,13 @@ import asyncio
 import json
 import random
 from datetime import datetime, timezone
+from typing import Any
 
 import redis
 from loguru import logger
 
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
+from reco_trading.core.microstructure import MicrostructureSnapshot
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 
@@ -44,6 +46,18 @@ class ExecutionEngine:
             return False
         return True
 
+    @staticmethod
+    def _validate_microstructure(microstructure: MicrostructureSnapshot | None) -> bool:
+        if microstructure is None:
+            return True
+        if not isinstance(microstructure, MicrostructureSnapshot):
+            logger.warning('Microstructure inválido: se esperaba MicrostructureSnapshot', type_received=type(microstructure).__name__)
+            return False
+        if not 0.0 <= microstructure.vpin <= 1.0:
+            logger.warning('Microstructure inválido: vpin fuera de rango', vpin=microstructure.vpin)
+            return False
+        return True
+
     async def _has_sufficient_balance(self, side: str, amount: float) -> bool:
         balance = await self.client.fetch_balance()
         usdt = float(balance.get('USDT', {}).get('free', 0.0))
@@ -65,8 +79,26 @@ class ExecutionEngine:
         except Exception:
             logger.warning('No se pudo persistir el estado de ejecución en Redis')
 
-    async def execute_market_order(self, side: str, amount: float, max_retries: int = 5) -> dict | None:
+    async def execute_market_order(
+        self,
+        side: str,
+        amount: float,
+        max_retries: int = 5,
+        microstructure: MicrostructureSnapshot | None = None,
+        timeout_seconds: float = 8.0,
+    ) -> dict[str, Any] | None:
         if not self._validate_order(side, amount):
+            return None
+
+        if max_retries < 1:
+            logger.warning('max_retries inválido, debe ser >= 1', max_retries=max_retries)
+            return None
+
+        if timeout_seconds <= 0:
+            logger.warning('timeout_seconds inválido, debe ser > 0', timeout_seconds=timeout_seconds)
+            return None
+
+        if not self._validate_microstructure(microstructure):
             return None
 
         if microstructure:
@@ -78,20 +110,54 @@ class ExecutionEngine:
             try:
                 await self._rate_limiter.acquire()
 
-                if not await self._has_sufficient_balance(side, amount):
+                try:
+                    has_balance = await asyncio.wait_for(
+                        self._has_sufficient_balance(side, amount), timeout=timeout_seconds
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        'Timeout verificando balance previo a la orden',
+                        timeout_seconds=timeout_seconds,
+                        attempt=attempt,
+                    )
+                    continue
+
+                if not has_balance:
                     return None
 
-                order = await asyncio.wait_for(
-                    self.client.create_market_order(self.symbol, side, amount), timeout=timeout_seconds
-                )
+                try:
+                    order = await asyncio.wait_for(
+                        self.client.create_market_order(self.symbol, side, amount), timeout=timeout_seconds
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        'Timeout creando market order',
+                        symbol=self.symbol,
+                        side=side,
+                        timeout_seconds=timeout_seconds,
+                        attempt=attempt,
+                    )
+                    continue
+
                 await self.db.record_order(order)
                 order_id = order.get('id')
                 if not order_id:
                     raise RuntimeError('Binance no devolvió order id')
 
-                fill = await asyncio.wait_for(
-                    self.client.wait_for_fill(self.symbol, str(order_id)), timeout=timeout_seconds + 20
-                )
+                try:
+                    fill = await asyncio.wait_for(
+                        self.client.wait_for_fill(self.symbol, str(order_id)), timeout=timeout_seconds + 20
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        'Timeout esperando fill de la orden',
+                        symbol=self.symbol,
+                        order_id=str(order_id),
+                        timeout_seconds=timeout_seconds + 20,
+                        attempt=attempt,
+                    )
+                    continue
+
                 if fill:
                     await self.db.record_fill(fill)
                     self._persist_execution(
