@@ -138,6 +138,7 @@ class SignalFusionEngine:
         volatility: float,
         confidences: Dict[str, float] | None = None,
         calibrate: bool = True,
+        transformer_prob_up: float | None = None,
     ) -> float:
         if not signals:
             return 0.5
@@ -148,6 +149,11 @@ class SignalFusionEngine:
 
         adjusted_scores: list[float] = []
         weight_sum = 0.0
+
+        if transformer_prob_up is not None:
+            tp = float(np.clip(transformer_prob_up, 0.0, 1.0))
+            signals = {**signals, "order_flow_transformer": 2.0 * tp - 1.0}
+            confidences = {**confidences, "order_flow_transformer": max(abs(tp - 0.5) * 2.0, 0.25)}
 
         for model, score in signals.items():
             base_w = weights.get(model, 1.0 / max(len(signals), 1))

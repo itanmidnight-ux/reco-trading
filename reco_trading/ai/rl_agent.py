@@ -49,8 +49,9 @@ class TradingRLAgent:
             "sharpe": int(np.clip((float(state.get("sharpe", 0.0)) + 2.0) * 5, 0, 20)),
             "obi": int(np.clip((float(state.get("obi", 0.0)) + 1.0) * 10, 0, 20)),
             "spread": int(np.clip(float(state.get("spread", 0.0)) * 10_000, 0, 50)),
+            "transformer_prob_up": int(np.clip(float(state.get("transformer_prob_up", 0.5)) * 20, 0, 20)),
         }
-        return f"{regime}|{bins['volatility']}|{bins['win_rate']}|{bins['drawdown']}|{bins['sharpe']}|{bins['obi']}|{bins['spread']}"
+        return f"{regime}|{bins['volatility']}|{bins['win_rate']}|{bins['drawdown']}|{bins['sharpe']}|{bins['obi']}|{bins['spread']}|{bins['transformer_prob_up']}"
 
     def select_action(self, state: dict[str, float | str]) -> RLAction:
         state_key = self._state_key(state)

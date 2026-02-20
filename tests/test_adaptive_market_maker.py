@@ -100,3 +100,31 @@ def test_inventory_neutralization_biases_quotes_and_reduces_size() -> None:
     assert decision.bid_size < state.base_order_size
     assert decision.ask_size >= state.base_order_size
     assert decision.unwind_size > 0.0
+
+
+def test_transformer_probability_biases_reservation_price() -> None:
+    state = MarketMakingState(risk_aversion_gamma=0.0)
+    mm = AdaptiveMarketMaker(state=state, spread_factor=0.0)
+
+    up = mm.compute_quotes(
+        mid_price=100.0,
+        atr=0.0,
+        volatility=0.01,
+        sigma=0.0,
+        time_horizon=1.0,
+        vpin=0.0,
+        liquidity_shock=False,
+        transformer_prob_up=0.9,
+    )
+    down = mm.compute_quotes(
+        mid_price=100.0,
+        atr=0.0,
+        volatility=0.01,
+        sigma=0.0,
+        time_horizon=1.0,
+        vpin=0.0,
+        liquidity_shock=False,
+        transformer_prob_up=0.1,
+    )
+
+    assert up.reservation_price > down.reservation_price
