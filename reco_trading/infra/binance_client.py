@@ -13,7 +13,7 @@ from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
 
 
 class BinanceClient:
-    def __init__(self, api_key: str, api_secret: str, testnet: bool = False) -> None:
+    def __init__(self, api_key: str, api_secret: str, testnet: bool = True) -> None:
         self.exchange = ccxt.binance(
             {
                 'apiKey': api_key,
