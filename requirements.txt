@@ -1,4 +1,5 @@
 aiohttp
+scikit-learn
 asyncpg
 ccxt
 cryptography
@@ -12,7 +13,6 @@ pydantic
 pydantic-settings
 redis
 rich
-scikit-learn
 scipy
 sqlalchemy
 torch>=2.1,<3
