@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from reco_trading.core.microstructure import MicrostructureSnapshot
+from reco_trading.kernel.capital_governor import CapitalGovernor, CapitalTicket
 
 
 @dataclass(slots=True)
@@ -43,10 +44,17 @@ class RiskState:
 
 
 class InstitutionalRiskManager:
-    def __init__(self, limits: RiskLimits, atr_multiplier: float = 2.0, max_streak: int = 6) -> None:
+    def __init__(
+        self,
+        limits: RiskLimits,
+        atr_multiplier: float = 2.0,
+        max_streak: int = 6,
+        capital_governor: CapitalGovernor | None = None,
+    ) -> None:
         self.limits = limits
         self.atr_multiplier = atr_multiplier
         self.max_streak = max_streak
+        self.capital_governor = capital_governor
         self.state = RiskState(peak_equity=1.0)
 
     @staticmethod
@@ -107,7 +115,13 @@ class InstitutionalRiskManager:
         exchange: str | None = None,
         notional_by_exchange: dict[str, float] | None = None,
         total_exposure: float | None = None,
+        capital_ticket: CapitalTicket | None = None,
     ) -> RiskAssessment:
+        if self.capital_governor is not None:
+            valid_ticket, ticket_reason = self.capital_governor.validate_ticket(capital_ticket)
+            if not valid_ticket:
+                return RiskAssessment(False, f'capital_ticket_invalid:{ticket_reason}', 0.0, current_price, 0.0, 0.0)
+
         if self.state.kill_switch:
             return RiskAssessment(False, "kill_switch_enabled", 0.0, current_price, 0.0, 0.0)
 

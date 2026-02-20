@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from reco_trading.kernel.capital_governor import CapitalGovernor, CapitalTicket
+
 
 @dataclass(slots=True)
 class PortfolioOptimizationResult:
@@ -15,8 +17,20 @@ class PortfolioOptimizationResult:
 
 
 class ConvexPortfolioOptimizer:
-    def __init__(self, risk_free_rate: float = 0.0) -> None:
+    def __init__(
+        self,
+        risk_free_rate: float = 0.0,
+        capital_governor: CapitalGovernor | None = None,
+    ) -> None:
         self.risk_free_rate = risk_free_rate
+        self.capital_governor = capital_governor
+
+    def _require_ticket(self, capital_ticket: CapitalTicket | None) -> None:
+        if self.capital_governor is None:
+            return
+        valid, reason = self.capital_governor.validate_ticket(capital_ticket)
+        if not valid:
+            raise ValueError(f'capital_ticket_invalid:{reason}')
 
     @staticmethod
     def _sanitize_returns(returns: pd.DataFrame) -> pd.DataFrame:
@@ -30,7 +44,9 @@ class ConvexPortfolioOptimizer:
         returns: pd.DataFrame,
         target_return: float,
         exposure_limit: float = 1.0,
+        capital_ticket: CapitalTicket | None = None,
     ) -> PortfolioOptimizationResult:
+        self._require_ticket(capital_ticket)
         ret = self._sanitize_returns(returns)
         mu = ret.mean().to_numpy(dtype=float)
         sigma = ret.cov().to_numpy(dtype=float)
@@ -61,7 +77,13 @@ class ConvexPortfolioOptimizer:
         weights = weights / max(weights.sum(), 1e-9)
         return self._build_result(ret.columns.tolist(), weights, mu, sigma)
 
-    def risk_parity(self, returns: pd.DataFrame, iterations: int = 200) -> PortfolioOptimizationResult:
+    def risk_parity(
+        self,
+        returns: pd.DataFrame,
+        iterations: int = 200,
+        capital_ticket: CapitalTicket | None = None,
+    ) -> PortfolioOptimizationResult:
+        self._require_ticket(capital_ticket)
         ret = self._sanitize_returns(returns)
         sigma = ret.cov().to_numpy(dtype=float) + np.eye(len(ret.columns)) * 1e-9
         n = len(ret.columns)
@@ -79,7 +101,13 @@ class ConvexPortfolioOptimizer:
         mu = ret.mean().to_numpy(dtype=float)
         return self._build_result(ret.columns.tolist(), w, mu, sigma)
 
-    def kelly_constrained(self, returns: pd.DataFrame, max_drawdown: float = 0.20) -> PortfolioOptimizationResult:
+    def kelly_constrained(
+        self,
+        returns: pd.DataFrame,
+        max_drawdown: float = 0.20,
+        capital_ticket: CapitalTicket | None = None,
+    ) -> PortfolioOptimizationResult:
+        self._require_ticket(capital_ticket)
         ret = self._sanitize_returns(returns)
         mu = ret.mean().to_numpy(dtype=float)
         sigma = ret.cov().to_numpy(dtype=float) + np.eye(len(ret.columns)) * 1e-8
@@ -94,7 +122,13 @@ class ConvexPortfolioOptimizer:
         weights /= max(weights.sum(), 1e-9)
         return self._build_result(ret.columns.tolist(), weights, mu, sigma)
 
-    def correlation_aware_allocation(self, returns: pd.DataFrame, corr_threshold: float = 0.80) -> PortfolioOptimizationResult:
+    def correlation_aware_allocation(
+        self,
+        returns: pd.DataFrame,
+        corr_threshold: float = 0.80,
+        capital_ticket: CapitalTicket | None = None,
+    ) -> PortfolioOptimizationResult:
+        self._require_ticket(capital_ticket)
         ret = self._sanitize_returns(returns)
         corr = ret.corr().abs().to_numpy(dtype=float)
         mu = ret.mean().to_numpy(dtype=float)

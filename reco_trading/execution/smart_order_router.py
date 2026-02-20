@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from reco_trading.kernel.capital_governor import CapitalGovernor, CapitalTicket
+
 
 @dataclass(slots=True)
 class VenueSnapshot:
@@ -124,11 +126,13 @@ class SmartOrderRouter:
         splitter: OrderSplitter | None = None,
         impact_model: ImpactModel | None = None,
         epsilon: float = 0.02,
+        capital_governor: CapitalGovernor | None = None,
     ) -> None:
         self.score_model = score_model or VenueScoreModel()
         self.splitter = splitter or OrderSplitter()
         self.impact_model = impact_model or ImpactModel()
         self.epsilon = epsilon
+        self.capital_governor = capital_governor
 
     def _solve_allocation(
         self,
@@ -173,9 +177,14 @@ class SmartOrderRouter:
         expected_volume_profile: list[float] | None = None,
         fee_weight: float = 1.0,
         risk_limit: float = 0.25,
+        capital_ticket: CapitalTicket | None = None,
     ) -> list[dict[str, float | str | int]]:
         if amount <= 0:
             return []
+        if self.capital_governor is not None:
+            valid_ticket, reason = self.capital_governor.validate_ticket(capital_ticket, min_notional=amount)
+            if not valid_ticket:
+                raise ValueError(f'capital_ticket_invalid:{reason}')
         if not venues:
             raise ValueError('Se requieren venues para rutear la orden')
 
