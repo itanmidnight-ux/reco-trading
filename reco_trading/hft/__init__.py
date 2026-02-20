@@ -1,3 +1,4 @@
+from reco_trading.hft.adaptive_market_maker import AdaptiveMarketMaker, MarketMakingState, QuoteDecision
 from reco_trading.hft.multi_exchange_arbitrage import (
     ArbitrageOpportunity,
     BinanceAdapter,
@@ -20,4 +21,7 @@ __all__ = [
     'KrakenAdapter',
     'CoinbaseAdapter',
     'BybitAdapter',
+    'MarketMakingState',
+    'QuoteDecision',
+    'AdaptiveMarketMaker',
 ]
