@@ -2,11 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-import asyncpg
 from sqlalchemy import JSON, BigInteger, Column, DateTime, MetaData, Numeric, String, Table, func, insert
-from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from loguru import logger
 
 metadata = MetaData()
 
@@ -53,91 +50,8 @@ class Database:
         self.session_factory = async_sessionmaker(bind=self.engine, class_=AsyncSession, expire_on_commit=False)
 
     async def init(self) -> None:
-        await self._ensure_database_exists()
-        await self._ensure_trading_role_password()
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
-
-    async def _ensure_database_exists(self) -> None:
-        app_url = make_url(self.dsn)
-        if not app_url.drivername.startswith('postgresql') or not app_url.database:
-            return
-
-        admin_url = self._resolve_admin_url(app_url)
-        db_name = app_url.database
-
-        conn = await asyncpg.connect(self._to_asyncpg_url(admin_url))
-        try:
-            if role_name and role_password is not None:
-                await conn.execute(
-                    f"""
-                    DO
-                    $$
-                    BEGIN
-                       IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{role_name}') THEN
-                          EXECUTE format('CREATE ROLE %I LOGIN', '{role_name}');
-                       END IF;
-
-                       EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '{role_name}', '{role_password}');
-                    END
-                    $$;
-                    """
-                )
-
-            exists = await conn.fetchval('SELECT 1 FROM pg_database WHERE datname = $1', db_name)
-            if not exists:
-                escaped_db_name = db_name.replace('"', '""')
-                await conn.execute(f'CREATE DATABASE "{escaped_db_name}"')
-                logger.info(f'Base de datos "{db_name}" creada automáticamente.')
-        finally:
-            await conn.close()
-
-    async def _ensure_trading_role_password(self) -> None:
-        app_url = make_url(self.dsn)
-        if not app_url.drivername.startswith('postgresql'):
-            return
-
-        username = app_url.username
-        password = app_url.password
-        if not username or password is None:
-            return
-
-        admin_url = self._resolve_admin_url(app_url)
-        role_name = self._escape_literal(username)
-        role_password = self._escape_literal(password)
-
-        conn = await asyncpg.connect(self._to_asyncpg_url(admin_url))
-        try:
-            await conn.execute(
-                f"""
-                DO
-                $$
-                BEGIN
-                   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '{role_name}') THEN
-                      EXECUTE format('CREATE ROLE %I LOGIN', '{role_name}');
-                   END IF;
-
-                   EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', '{role_name}', '{role_password}');
-                END
-                $$;
-                """
-            )
-        finally:
-            await conn.close()
-
-    def _resolve_admin_url(self, app_url: URL) -> URL:
-        if self.admin_dsn:
-            return make_url(self.admin_dsn)
-
-        return app_url.set(database='postgres')
-
-    @staticmethod
-    def _to_asyncpg_url(url: URL) -> str:
-        return str(url.set(drivername='postgresql'))
-
-    @staticmethod
-    def _escape_literal(value: str) -> str:
-        return value.replace("'", "''")
 
     async def record_order(self, order: dict) -> None:
         payload = {
