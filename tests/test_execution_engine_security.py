@@ -7,6 +7,9 @@ class _FakeClient:
     async def fetch_balance(self):
         return {'USDT': {'free': 1000}, 'BTC': {'free': 2}}
 
+    async def fetch_order_book(self, symbol, limit=10):
+        return {'bids': [[100.0, 5.0], [99.9, 4.0]], 'asks': [[100.2, 5.0], [100.3, 4.0]]}
+
     async def create_market_order(self, symbol, side, amount):
         return {'id': '1', 'symbol': symbol, 'side': side, 'amount': amount}
 
@@ -47,3 +50,23 @@ def test_execution_engine_executes_market_order():
     asyncio.run(_run())
     assert len(db.orders) == 1
     assert len(db.fills) == 1
+
+
+def test_execution_engine_delegates_institutional_orders_to_sor():
+    db = _FakeDB()
+    engine = ExecutionEngine(
+        _FakeClient(),
+        'BTC/USDT',
+        db,
+        redis_url='redis://localhost:6399/0',
+        institutional_order_threshold=1.0,
+    )
+
+    async def _run():
+        out = await engine.execute('BUY', 2.0)
+        assert out is not None
+        assert out['status'] == 'institutional_completed'
+
+    asyncio.run(_run())
+    assert len(db.orders) > 1
+    assert len(db.fills) > 1
