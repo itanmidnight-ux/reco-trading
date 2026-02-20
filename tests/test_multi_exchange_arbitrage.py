@@ -1,99 +1,107 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
 import asyncio
 
-from reco_trading.hft.multi_exchange_arbitrage import ExecutionConfig, LegPlan, MultiExchangeArbitrageExecutor
+import pytest
+
+from reco_trading.hft.multi_exchange_arbitrage import (
+    ExchangeAdapter,
+    ExchangeAdapterFactory,
+    MultiExchangeArbitrageEngine,
+)
 
 
-class FakeExchange:
-    def __init__(self, balances, filled_amount=1.0, submit_delay=0.0, fill_delay=0.0):
-        self.balances = balances
-        self.filled_amount = filled_amount
-        self.submit_delay = submit_delay
-        self.fill_delay = fill_delay
-        self.cancelled = []
-        self.hedges = []
+@dataclass
+class StubAdapter(ExchangeAdapter):
+    name: str
+    order_book: dict[str, Any]
 
-    async def fetch_balance(self):
-        return self.balances
+    async def get_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any]:
+        return self.order_book
 
-    async def create_limit_order(self, symbol, side, amount, price):
-        await asyncio.sleep(self.submit_delay)
-        return {'id': f'{side}-{symbol}', 'status': 'open'}
+    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+        return {'symbol': symbol}
 
-    async def wait_for_fill(self, symbol, order_id, timeout_seconds):
-        await asyncio.sleep(self.fill_delay)
-        return {'status': 'filled', 'filled': self.filled_amount, 'average': 100.0}
+    async def create_order(self, symbol: str, side: str, amount: float, order_type: str = 'market') -> dict[str, Any]:
+        return {'id': f'{self.name}-{side}', 'symbol': symbol, 'amount': amount, 'type': order_type}
 
-    async def cancel_order(self, symbol, order_id):
-        self.cancelled.append((symbol, order_id))
-        return {'status': 'canceled'}
+    async def get_balance(self) -> dict[str, Any]:
+        return {'USDT': {'free': 1000}}
 
-    async def create_market_order(self, symbol, side, amount):
-        self.hedges.append((symbol, side, amount))
-        return {'symbol': symbol, 'side': side, 'amount': amount}
+    async def close(self) -> None:
+        return None
 
 
-def _run(coro):
-    return asyncio.run(coro)
+class DummyRegisteredAdapter(ExchangeAdapter):
+    def __init__(self, config: dict[str, Any]) -> None:
+        self.name = config.get('name', 'dummy')
+
+    async def get_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any]:
+        return {'bids': [[100, 1]], 'asks': [[101, 1]]}
+
+    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+        return {'symbol': symbol}
+
+    async def create_order(self, symbol: str, side: str, amount: float, order_type: str = 'market') -> dict[str, Any]:
+        return {'id': '1'}
+
+    async def get_balance(self) -> dict[str, Any]:
+        return {}
+
+    async def close(self) -> None:
+        return None
 
 
-def test_execute_two_legs_ok_and_telemetry():
-    buy_exchange = FakeExchange({'USDT': {'free': 1_000}, 'BTC': {'free': 0}}, filled_amount=1.0)
-    sell_exchange = FakeExchange({'USDT': {'free': 0}, 'BTC': {'free': 2}}, filled_amount=1.0)
-    executor = MultiExchangeArbitrageExecutor(
-        {'A': buy_exchange, 'B': sell_exchange},
-        config=ExecutionConfig(sync_window_ms=50, order_timeout_seconds=1.0),
+def test_scan_symbol_uses_expected_spread_formula() -> None:
+    engine = MultiExchangeArbitrageEngine(
+        adapters={
+            'a': StubAdapter(name='a', order_book={'bids': [[102.0, 1.0]], 'asks': [[103.0, 1.0]]}),
+            'b': StubAdapter(name='b', order_book={'bids': [[99.0, 1.0]], 'asks': [[100.0, 1.0]]}),
+        },
+        min_edge_bps=1,
     )
 
-    report = _run(
-        executor.execute_two_leg_arbitrage(
-            LegPlan('A', 'BTC/USDT', 'BUY', 1.0, 100.0, 100.0, 'BTC', 'USDT'),
-            LegPlan('B', 'BTC/USDT', 'SELL', 1.0, 100.0, 100.0, 'BTC', 'USDT'),
-        )
+    opportunities = asyncio.run(engine.scan_symbol('BTC/USDT'))
+
+    assert len(opportunities) == 1
+    best = opportunities[0]
+    expected_mid = (102.0 + 100.0) / 2
+    expected_spread = (102.0 - 100.0) / expected_mid
+    assert best.spread == pytest.approx(expected_spread)
+    assert best.expected_edge_bps == pytest.approx(expected_spread * 10_000)
+    assert best.sell_exchange == 'a'
+    assert best.buy_exchange == 'b'
+
+
+def test_execute_opportunity_returns_report() -> None:
+    engine = MultiExchangeArbitrageEngine(
+        adapters={
+            'a': StubAdapter(name='a', order_book={'bids': [[101.0, 1.0]], 'asks': [[102.0, 1.0]]}),
+            'b': StubAdapter(name='b', order_book={'bids': [[99.0, 1.0]], 'asks': [[100.0, 1.0]]}),
+        },
+        min_edge_bps=1,
     )
 
-    assert report.success is True
-    assert report.buy_leg.telemetry.submit_ts is not None
-    assert report.buy_leg.telemetry.ack_ts is not None
-    assert report.buy_leg.telemetry.fill_ts is not None
-    assert len(executor.latency_telemetry) == 2
+    opportunity = asyncio.run(engine.scan_symbol('ETH/USDT'))[0]
+    report = asyncio.run(engine.execute_opportunity(opportunity, amount=0.5))
+
+    assert report.status == 'submitted'
+    assert report.buy_order_id == 'b-buy'
+    assert report.sell_order_id == 'a-sell'
 
 
-def test_pretrade_validation_fails_on_balance():
-    buy_exchange = FakeExchange({'USDT': {'free': 10}, 'BTC': {'free': 0}}, filled_amount=1.0)
-    sell_exchange = FakeExchange({'USDT': {'free': 0}, 'BTC': {'free': 2}}, filled_amount=1.0)
-    executor = MultiExchangeArbitrageExecutor({'A': buy_exchange, 'B': sell_exchange})
+def test_exchange_factory_registry_is_extensible() -> None:
+    ExchangeAdapterFactory.register('dummy', DummyRegisteredAdapter)
 
-    report = _run(
-        executor.execute_two_leg_arbitrage(
-            LegPlan('A', 'BTC/USDT', 'BUY', 1.0, 100.0, 100.0, 'BTC', 'USDT'),
-            LegPlan('B', 'BTC/USDT', 'SELL', 1.0, 100.0, 100.0, 'BTC', 'USDT'),
-        )
+    adapters = ExchangeAdapterFactory.create_from_config(
+        {
+            'dummy': {'enabled': True, 'name': 'dummy-exchange'},
+            'binance': {'enabled': False},
+        }
     )
 
-    assert report.success is False
-    assert report.reason == 'pretrade_validation_failed'
-
-
-def test_contingency_reduces_size_and_locks_pair():
-    buy_exchange = FakeExchange({'USDT': {'free': 1_000}, 'BTC': {'free': 0}}, filled_amount=1.0)
-    sell_exchange = FakeExchange({'USDT': {'free': 0}, 'BTC': {'free': 2}}, filled_amount=0.4)
-    executor = MultiExchangeArbitrageExecutor(
-        {'A': buy_exchange, 'B': sell_exchange},
-        config=ExecutionConfig(lock_seconds=30, reduction_factor=0.5, min_size_multiplier=0.2),
-    )
-
-    report = _run(
-        executor.execute_two_leg_arbitrage(
-            LegPlan('A', 'BTC/USDT', 'BUY', 1.0, 100.0, 100.0, 'BTC', 'USDT'),
-            LegPlan('B', 'BTC/USDT', 'SELL', 1.0, 100.0, 100.0, 'BTC', 'USDT'),
-        )
-    )
-
-    assert report.success is False
-    assert report.reason == 'fill_imbalance_contingency'
-    assert report.hedge_order is not None
-    assert buy_exchange.hedges or sell_exchange.hedges
-
-    pair_key = tuple(sorted(('A', 'B')))
-    assert executor._pair_size_multiplier[pair_key] == 0.5
-    assert pair_key in executor._pair_lock_until
+    assert 'dummy' in adapters
+    assert adapters['dummy'].name == 'dummy-exchange'

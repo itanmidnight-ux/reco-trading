@@ -1,375 +1,295 @@
 from __future__ import annotations
 
 import asyncio
-import time
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol
+from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from itertools import combinations
+from typing import Any
 
+import ccxt.async_support as ccxt
+from ccxt.base.errors import DDoSProtection, ExchangeError, NetworkError, RateLimitExceeded
 from loguru import logger
 
-
-class ExchangeGateway(Protocol):
-    async def fetch_balance(self) -> dict[str, dict[str, float]]:
-        ...
-
-    async def create_limit_order(self, symbol: str, side: str, amount: float, price: float) -> dict[str, Any]:
-        ...
-
-    async def wait_for_fill(self, symbol: str, order_id: str, timeout_seconds: float) -> dict[str, Any] | None:
-        ...
-
-    async def cancel_order(self, symbol: str, order_id: str) -> dict[str, Any]:
-        ...
-
-    async def create_market_order(self, symbol: str, side: str, amount: float) -> dict[str, Any]:
-        ...
+from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
 
 
 @dataclass(slots=True)
-class LegPlan:
-    exchange: str
+class ArbitrageOpportunity:
     symbol: str
-    side: str
-    amount: float
-    limit_price: float
-    reference_price: float
-    base_asset: str
-    quote_asset: str
+    buy_exchange: str
+    sell_exchange: str
+    best_ask_buy: float
+    best_bid_sell: float
+    mid_price: float
+    spread: float
+    expected_edge_bps: float
 
 
 @dataclass(slots=True)
-class ExecutionConfig:
-    sync_window_ms: float = 40.0
-    order_timeout_seconds: float = 2.0
-    max_slippage_bps: float = 10.0
-    imbalance_tolerance: float = 0.000_001
-    reduction_factor: float = 0.8
-    min_size_multiplier: float = 0.2
-    lock_seconds: int = 45
-
-
-@dataclass(slots=True)
-class LegTelemetry:
-    submit_ts: float | None = None
-    ack_ts: float | None = None
-    fill_ts: float | None = None
-
-
-@dataclass(slots=True)
-class LegExecutionResult:
-    exchange: str
+class ExecutionReport:
     symbol: str
-    side: str
-    requested_amount: float
-    filled_amount: float = 0.0
-    avg_price: float | None = None
-    order_id: str | None = None
-    status: str = 'pending'
-    error: str | None = None
-    cancelled: bool = False
-    telemetry: LegTelemetry = field(default_factory=LegTelemetry)
+    buy_exchange: str
+    sell_exchange: str
+    buy_order_id: str | None
+    sell_order_id: str | None
+    status: str
+    spread: float
+    expected_edge_bps: float
+    details: dict[str, Any]
 
 
-@dataclass(slots=True)
-class ArbitrageExecutionReport:
-    success: bool
-    reason: str
-    buy_leg: LegExecutionResult
-    sell_leg: LegExecutionResult
-    hedge_order: dict[str, Any] | None = None
-    pair_locked_until: datetime | None = None
+class ExchangeAdapter(ABC):
+    name: str
+
+    @abstractmethod
+    async def get_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def create_order(self, symbol: str, side: str, amount: float, order_type: str = 'market') -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_balance(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def close(self) -> None:
+        raise NotImplementedError
 
 
-class MultiExchangeArbitrageExecutor:
-    def __init__(self, exchanges: dict[str, ExchangeGateway], config: ExecutionConfig | None = None) -> None:
-        self.exchanges = exchanges
-        self.config = config or ExecutionConfig()
-        self._pair_size_multiplier: dict[tuple[str, str], float] = {}
-        self._pair_lock_until: dict[tuple[str, str], datetime] = {}
-        self.latency_telemetry: list[dict[str, Any]] = []
+class CcxtAsyncExchangeAdapter(ExchangeAdapter):
+    def __init__(self, name: str, exchange: Any, *, max_calls: int = 8, period_seconds: float = 1.0) -> None:
+        self.name = name
+        self.exchange = exchange
+        self._rate_limiter = AdaptiveRateLimitController(max_calls=max_calls, period_seconds=period_seconds)
 
-    async def execute_two_leg_arbitrage(
-        self,
-        buy_leg: LegPlan,
-        sell_leg: LegPlan,
-    ) -> ArbitrageExecutionReport:
-        pair_key = self._pair_key(buy_leg.exchange, sell_leg.exchange)
-        lock_deadline = self._pair_lock_until.get(pair_key)
-        if lock_deadline and datetime.now(timezone.utc) < lock_deadline:
-            return ArbitrageExecutionReport(
-                success=False,
-                reason='pair_temporarily_locked',
-                buy_leg=self._empty_leg_result(buy_leg, status='blocked'),
-                sell_leg=self._empty_leg_result(sell_leg, status='blocked'),
-                pair_locked_until=lock_deadline,
-            )
+    async def _retry(self, fn: Callable[..., Awaitable[Any]], *args: Any, retries: int = 7, **kwargs: Any) -> Any:
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                await self._rate_limiter.acquire()
+                return await fn(*args, **kwargs)
+            except (RateLimitExceeded, NetworkError, DDoSProtection) as exc:
+                last_exc = exc
+                await asyncio.sleep(min(2**attempt, 30))
+            except ExchangeError as exc:
+                last_exc = exc
+                if attempt == retries:
+                    raise
+                await asyncio.sleep(min(attempt, 5))
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError('Retry loop finalizó sin resultado')
 
-        scaled_buy, scaled_sell = self._apply_size_multiplier(pair_key, buy_leg, sell_leg)
-        pretrade_ok = await self._validate_pre_trade(scaled_buy, scaled_sell)
-        if not pretrade_ok:
-            return ArbitrageExecutionReport(
-                success=False,
-                reason='pretrade_validation_failed',
-                buy_leg=self._empty_leg_result(scaled_buy, status='rejected'),
-                sell_leg=self._empty_leg_result(scaled_sell, status='rejected'),
-            )
+    async def get_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any]:
+        return await self._retry(self.exchange.fetch_order_book, symbol=symbol, limit=limit)
 
-        release_event = asyncio.Event()
-        buy_task = asyncio.create_task(self._execute_leg(scaled_buy, release_event))
-        sell_task = asyncio.create_task(self._execute_leg(scaled_sell, release_event))
-        release_event.set()
-        buy_result, sell_result = await asyncio.gather(buy_task, sell_task)
+    async def get_ticker(self, symbol: str) -> dict[str, Any]:
+        return await self._retry(self.exchange.fetch_ticker, symbol=symbol)
 
-        sync_delta_ms = self._sync_delta_ms(buy_result, sell_result)
-        if sync_delta_ms > self.config.sync_window_ms:
-            logger.warning('Ejecución fuera de ventana de sincronización', delta_ms=sync_delta_ms)
-            await self._cancel_if_open(buy_result)
-            await self._cancel_if_open(sell_result)
-            return ArbitrageExecutionReport(
-                success=False,
-                reason='sync_window_exceeded',
-                buy_leg=buy_result,
-                sell_leg=sell_result,
-            )
+    async def create_order(self, symbol: str, side: str, amount: float, order_type: str = 'market') -> dict[str, Any]:
+        return await self._retry(self.exchange.create_order, symbol, order_type, side.lower(), amount)
 
-        report = await self._resolve_post_trade(pair_key, buy_result, sell_result)
-        self._record_latency_telemetry(report.buy_leg)
-        self._record_latency_telemetry(report.sell_leg)
-        return report
+    async def get_balance(self) -> dict[str, Any]:
+        return await self._retry(self.exchange.fetch_balance)
 
-    async def _validate_pre_trade(self, buy_leg: LegPlan, sell_leg: LegPlan) -> bool:
-        if not self._validate_slippage(buy_leg) or not self._validate_slippage(sell_leg):
-            return False
+    async def close(self) -> None:
+        await self.exchange.close()
 
-        unique_exchanges = {buy_leg.exchange, sell_leg.exchange}
-        balances = await asyncio.gather(
-            *[self.exchanges[name].fetch_balance() for name in unique_exchanges],
-        )
-        by_exchange = dict(zip(unique_exchanges, balances))
 
-        buy_balance = by_exchange[buy_leg.exchange]
-        sell_balance = by_exchange[sell_leg.exchange]
-
-        quote_free = float(buy_balance.get(buy_leg.quote_asset, {}).get('free', 0.0))
-        required_quote = buy_leg.amount * buy_leg.limit_price
-        if quote_free < required_quote:
-            logger.warning(
-                'Balance insuficiente para pata BUY',
-                exchange=buy_leg.exchange,
-                asset=buy_leg.quote_asset,
-                free=quote_free,
-                required=required_quote,
-            )
-            return False
-
-        base_free = float(sell_balance.get(sell_leg.base_asset, {}).get('free', 0.0))
-        if base_free < sell_leg.amount:
-            logger.warning(
-                'Balance insuficiente para pata SELL',
-                exchange=sell_leg.exchange,
-                asset=sell_leg.base_asset,
-                free=base_free,
-                required=sell_leg.amount,
-            )
-            return False
-        return True
-
-    def _validate_slippage(self, leg: LegPlan) -> bool:
-        if leg.reference_price <= 0:
-            return False
-        slippage_bps = abs((leg.limit_price - leg.reference_price) / leg.reference_price) * 10_000
-        if slippage_bps > self.config.max_slippage_bps:
-            logger.warning(
-                'Slippage de pata excede máximo permitido',
-                exchange=leg.exchange,
-                symbol=leg.symbol,
-                slippage_bps=slippage_bps,
-                max_slippage_bps=self.config.max_slippage_bps,
-            )
-            return False
-        return True
-
-    async def _execute_leg(self, leg: LegPlan, release_event: asyncio.Event) -> LegExecutionResult:
-        result = self._empty_leg_result(leg)
-        exchange = self.exchanges[leg.exchange]
-        await release_event.wait()
-
-        result.telemetry.submit_ts = time.perf_counter()
-        try:
-            order = await asyncio.wait_for(
-                exchange.create_limit_order(leg.symbol, leg.side, leg.amount, leg.limit_price),
-                timeout=self.config.order_timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            result.status = 'timeout_on_submit'
-            result.error = 'submit_timeout'
-            return result
-        except Exception as exc:
-            result.status = 'submit_error'
-            result.error = str(exc)
-            return result
-
-        result.telemetry.ack_ts = time.perf_counter()
-        result.order_id = str(order.get('id', '')) or None
-        result.status = str(order.get('status', 'submitted'))
-
-        if not result.order_id:
-            result.status = 'invalid_order'
-            result.error = 'missing_order_id'
-            return result
-
-        try:
-            fill = await asyncio.wait_for(
-                exchange.wait_for_fill(leg.symbol, result.order_id, self.config.order_timeout_seconds),
-                timeout=self.config.order_timeout_seconds,
-            )
-        except asyncio.TimeoutError:
-            result.status = 'timeout_on_fill'
-            result.error = 'fill_timeout'
-            return result
-        except Exception as exc:
-            result.status = 'fill_error'
-            result.error = str(exc)
-            return result
-
-        if not fill:
-            result.status = 'not_filled'
-            return result
-
-        result.telemetry.fill_ts = time.perf_counter()
-        result.filled_amount = float(fill.get('filled', 0.0) or 0.0)
-        result.avg_price = float(fill.get('average', leg.limit_price) or leg.limit_price)
-        result.status = str(fill.get('status', 'filled'))
-        return result
-
-    async def _resolve_post_trade(
-        self,
-        pair_key: tuple[str, str],
-        buy_result: LegExecutionResult,
-        sell_result: LegExecutionResult,
-    ) -> ArbitrageExecutionReport:
-        buy_filled = buy_result.filled_amount
-        sell_filled = sell_result.filled_amount
-        imbalance = abs(buy_filled - sell_filled)
-
-        both_filled = buy_filled > 0 and sell_filled > 0
-        if both_filled and imbalance <= self.config.imbalance_tolerance:
-            return ArbitrageExecutionReport(
-                success=True,
-                reason='filled',
-                buy_leg=buy_result,
-                sell_leg=sell_result,
-            )
-
-        await self._cancel_if_open(buy_result)
-        await self._cancel_if_open(sell_result)
-
-        hedge_order = await self._run_emergency_hedge(buy_result, sell_result)
-        lock_until = self._activate_contingency(pair_key)
-        return ArbitrageExecutionReport(
-            success=False,
-            reason='fill_imbalance_contingency',
-            buy_leg=buy_result,
-            sell_leg=sell_result,
-            hedge_order=hedge_order,
-            pair_locked_until=lock_until,
-        )
-
-    async def _cancel_if_open(self, result: LegExecutionResult) -> None:
-        if not result.order_id or result.status in {'filled', 'closed', 'canceled'}:
-            return
-        exchange = self.exchanges[result.exchange]
-        try:
-            await exchange.cancel_order(result.symbol, result.order_id)
-            result.cancelled = True
-            result.status = 'canceled'
-        except Exception as exc:
-            logger.warning('No se pudo cancelar orden abierta', order_id=result.order_id, error=str(exc))
-
-    async def _run_emergency_hedge(
-        self,
-        buy_result: LegExecutionResult,
-        sell_result: LegExecutionResult,
-    ) -> dict[str, Any] | None:
-        imbalance = buy_result.filled_amount - sell_result.filled_amount
-        if abs(imbalance) <= self.config.imbalance_tolerance:
-            return None
-
-        if imbalance > 0:
-            hedge_exchange_name = buy_result.exchange
-            hedge_side = 'SELL'
-            hedge_amount = imbalance
-            hedge_symbol = buy_result.symbol
-        else:
-            hedge_exchange_name = sell_result.exchange
-            hedge_side = 'BUY'
-            hedge_amount = abs(imbalance)
-            hedge_symbol = sell_result.symbol
-
-        try:
-            hedge_order = await self.exchanges[hedge_exchange_name].create_market_order(
-                hedge_symbol,
-                hedge_side,
-                hedge_amount,
-            )
-            logger.warning(
-                'Hedge de emergencia ejecutado',
-                exchange=hedge_exchange_name,
-                side=hedge_side,
-                amount=hedge_amount,
-            )
-            return hedge_order
-        except Exception as exc:
-            logger.exception('Fallo en hedge de emergencia', error=str(exc))
-            return None
-
-    def _activate_contingency(self, pair_key: tuple[str, str]) -> datetime:
-        current_multiplier = self._pair_size_multiplier.get(pair_key, 1.0)
-        reduced_multiplier = max(self.config.min_size_multiplier, current_multiplier * self.config.reduction_factor)
-        self._pair_size_multiplier[pair_key] = reduced_multiplier
-
-        lock_until = datetime.now(timezone.utc) + timedelta(seconds=self.config.lock_seconds)
-        self._pair_lock_until[pair_key] = lock_until
-        return lock_until
-
-    def _apply_size_multiplier(self, pair_key: tuple[str, str], buy_leg: LegPlan, sell_leg: LegPlan) -> tuple[LegPlan, LegPlan]:
-        multiplier = self._pair_size_multiplier.get(pair_key, 1.0)
-        if multiplier >= 0.999:
-            return buy_leg, sell_leg
-
-        return (
-            replace(buy_leg, amount=buy_leg.amount * multiplier),
-            replace(sell_leg, amount=sell_leg.amount * multiplier),
-        )
-
-    def _pair_key(self, first: str, second: str) -> tuple[str, str]:
-        return tuple(sorted((first, second)))
-
-    def _sync_delta_ms(self, left: LegExecutionResult, right: LegExecutionResult) -> float:
-        left_ts = left.telemetry.submit_ts
-        right_ts = right.telemetry.submit_ts
-        if left_ts is None or right_ts is None:
-            return float('inf')
-        return abs(left_ts - right_ts) * 1000.0
-
-    def _record_latency_telemetry(self, leg: LegExecutionResult) -> None:
-        self.latency_telemetry.append(
+class BinanceAdapter(CcxtAsyncExchangeAdapter):
+    def __init__(self, config: dict[str, Any]) -> None:
+        exchange = ccxt.binance(
             {
-                'exchange': leg.exchange,
-                'symbol': leg.symbol,
-                'side': leg.side,
-                'submit_ts': leg.telemetry.submit_ts,
-                'ack_ts': leg.telemetry.ack_ts,
-                'fill_ts': leg.telemetry.fill_ts,
+                'apiKey': config.get('api_key', ''),
+                'secret': config.get('api_secret', ''),
+                'enableRateLimit': True,
+                'options': {'defaultType': config.get('default_type', 'spot')},
             }
         )
+        if config.get('testnet', False):
+            exchange.set_sandbox_mode(True)
+        super().__init__('binance', exchange)
 
-    def _empty_leg_result(self, leg: LegPlan, status: str = 'pending') -> LegExecutionResult:
-        return LegExecutionResult(
-            exchange=leg.exchange,
-            symbol=leg.symbol,
-            side=leg.side,
-            requested_amount=leg.amount,
-            status=status,
+
+class KrakenAdapter(CcxtAsyncExchangeAdapter):
+    def __init__(self, config: dict[str, Any]) -> None:
+        exchange = ccxt.kraken(
+            {
+                'apiKey': config.get('api_key', ''),
+                'secret': config.get('api_secret', ''),
+                'enableRateLimit': True,
+            }
         )
+        super().__init__('kraken', exchange)
+
+
+class CoinbaseAdapter(CcxtAsyncExchangeAdapter):
+    def __init__(self, config: dict[str, Any]) -> None:
+        exchange = ccxt.coinbase(
+            {
+                'apiKey': config.get('api_key', ''),
+                'secret': config.get('api_secret', ''),
+                'password': config.get('password', ''),
+                'enableRateLimit': True,
+            }
+        )
+        super().__init__('coinbase', exchange)
+
+
+class BybitAdapter(CcxtAsyncExchangeAdapter):
+    def __init__(self, config: dict[str, Any]) -> None:
+        exchange = ccxt.bybit(
+            {
+                'apiKey': config.get('api_key', ''),
+                'secret': config.get('api_secret', ''),
+                'enableRateLimit': True,
+                'options': {'defaultType': config.get('default_type', 'spot')},
+            }
+        )
+        if config.get('testnet', False):
+            exchange.set_sandbox_mode(True)
+        super().__init__('bybit', exchange)
+
+
+class ExchangeAdapterFactory:
+    _registry: dict[str, type[ExchangeAdapter]] = {
+        'binance': BinanceAdapter,
+        'kraken': KrakenAdapter,
+        'coinbase': CoinbaseAdapter,
+        'bybit': BybitAdapter,
+    }
+
+    @classmethod
+    def register(cls, exchange_name: str, adapter_cls: type[ExchangeAdapter]) -> None:
+        cls._registry[exchange_name.lower()] = adapter_cls
+
+    @classmethod
+    def create(cls, exchange_name: str, config: dict[str, Any]) -> ExchangeAdapter:
+        normalized_name = exchange_name.lower()
+        adapter_cls = cls._registry.get(normalized_name)
+        if adapter_cls is None:
+            raise ValueError(f'Exchange no soportado: {exchange_name}')
+        return adapter_cls(config)
+
+    @classmethod
+    def create_from_config(cls, config: dict[str, dict[str, Any]]) -> dict[str, ExchangeAdapter]:
+        adapters: dict[str, ExchangeAdapter] = {}
+        for exchange_name, exchange_config in config.items():
+            enabled = exchange_config.get('enabled', True)
+            if not enabled:
+                continue
+            adapters[exchange_name.lower()] = cls.create(exchange_name, exchange_config)
+        return adapters
+
+
+class MultiExchangeArbitrageEngine:
+    def __init__(self, adapters: dict[str, ExchangeAdapter], min_edge_bps: float = 5.0) -> None:
+        self.adapters = adapters
+        self.min_edge_bps = min_edge_bps
+
+    async def _fetch_books(self, symbol: str, exchange_names: list[str]) -> dict[str, dict[str, Any]]:
+        tasks = [self.adapters[name].get_order_book(symbol) for name in exchange_names]
+        results = await asyncio.gather(*tasks)
+        return {name: result for name, result in zip(exchange_names, results, strict=True)}
+
+    @staticmethod
+    def _best_prices(order_book: dict[str, Any]) -> tuple[float | None, float | None]:
+        bids = order_book.get('bids') or []
+        asks = order_book.get('asks') or []
+        best_bid = float(bids[0][0]) if bids else None
+        best_ask = float(asks[0][0]) if asks else None
+        return best_bid, best_ask
+
+    def _build_opportunity(
+        self,
+        symbol: str,
+        sell_exchange: str,
+        buy_exchange: str,
+        sell_bid: float,
+        buy_ask: float,
+    ) -> ArbitrageOpportunity | None:
+        mid_price = (sell_bid + buy_ask) / 2
+        if mid_price <= 0:
+            return None
+        spread = (sell_bid - buy_ask) / mid_price
+        edge_bps = spread * 10_000
+        if edge_bps < self.min_edge_bps:
+            return None
+        return ArbitrageOpportunity(
+            symbol=symbol,
+            buy_exchange=buy_exchange,
+            sell_exchange=sell_exchange,
+            best_ask_buy=buy_ask,
+            best_bid_sell=sell_bid,
+            mid_price=mid_price,
+            spread=spread,
+            expected_edge_bps=edge_bps,
+        )
+
+    async def scan_symbol(self, symbol: str) -> list[ArbitrageOpportunity]:
+        exchange_names = list(self.adapters.keys())
+        books = await self._fetch_books(symbol, exchange_names)
+        opportunities: list[ArbitrageOpportunity] = []
+
+        for exchange_a, exchange_b in combinations(exchange_names, 2):
+            bid_a, ask_a = self._best_prices(books[exchange_a])
+            bid_b, ask_b = self._best_prices(books[exchange_b])
+            if None in {bid_a, ask_a, bid_b, ask_b}:
+                continue
+            assert bid_a is not None and ask_a is not None and bid_b is not None and ask_b is not None
+
+            for sell_exchange, buy_exchange, sell_bid, buy_ask in (
+                (exchange_a, exchange_b, bid_a, ask_b),
+                (exchange_b, exchange_a, bid_b, ask_a),
+            ):
+                opportunity = self._build_opportunity(symbol, sell_exchange, buy_exchange, sell_bid, buy_ask)
+                if opportunity is None:
+                    continue
+                logger.info(
+                    'arbitrage_opportunity_detected',
+                    symbol=opportunity.symbol,
+                    exchange_pair=f'{opportunity.sell_exchange}->{opportunity.buy_exchange}',
+                    spread=opportunity.spread,
+                    expected_edge_bps=opportunity.expected_edge_bps,
+                )
+                opportunities.append(opportunity)
+
+        opportunities.sort(key=lambda item: item.expected_edge_bps, reverse=True)
+        return opportunities
+
+    async def scan(self, symbols: list[str]) -> list[ArbitrageOpportunity]:
+        all_opportunities: list[ArbitrageOpportunity] = []
+        for symbol in symbols:
+            all_opportunities.extend(await self.scan_symbol(symbol))
+        return sorted(all_opportunities, key=lambda item: item.expected_edge_bps, reverse=True)
+
+    async def execute_opportunity(self, opportunity: ArbitrageOpportunity, amount: float) -> ExecutionReport:
+        buy_adapter = self.adapters[opportunity.buy_exchange]
+        sell_adapter = self.adapters[opportunity.sell_exchange]
+
+        buy_order, sell_order = await asyncio.gather(
+            buy_adapter.create_order(opportunity.symbol, side='buy', amount=amount),
+            sell_adapter.create_order(opportunity.symbol, side='sell', amount=amount),
+        )
+
+        return ExecutionReport(
+            symbol=opportunity.symbol,
+            buy_exchange=opportunity.buy_exchange,
+            sell_exchange=opportunity.sell_exchange,
+            buy_order_id=str(buy_order.get('id')) if buy_order else None,
+            sell_order_id=str(sell_order.get('id')) if sell_order else None,
+            status='submitted',
+            spread=opportunity.spread,
+            expected_edge_bps=opportunity.expected_edge_bps,
+            details={'buy_order': buy_order, 'sell_order': sell_order},
+        )
+
+    async def close(self) -> None:
+        await asyncio.gather(*(adapter.close() for adapter in self.adapters.values()))
