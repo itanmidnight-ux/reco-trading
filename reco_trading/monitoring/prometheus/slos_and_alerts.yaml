@@ -1,0 +1,64 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: reco-trading-slos
+  labels:
+    app: reco-trading
+spec:
+  groups:
+    - name: reco-trading-sli-slo
+      rules:
+        - record: reco:sli:error_rate_5m
+          expr: |
+            sum(rate(reco_errors_total[5m])) / clamp_min(sum(rate(reco_requests_total[5m])), 1)
+        - record: reco:sli:latency_p95_5m
+          expr: |
+            histogram_quantile(0.95, sum(rate(reco_stage_latency_seconds_bucket[5m])) by (le, stage))
+        - record: reco:sli:fill_ratio_5m
+          expr: |
+            avg_over_time(reco_fill_ratio[5m])
+        - record: reco:sli:drawdown_5m
+          expr: |
+            max_over_time(reco_drawdown_ratio[5m])
+
+    - name: reco-trading-alerts
+      rules:
+        - alert: RecoErrorBudgetBurn
+          expr: reco:sli:error_rate_5m > 0.005
+          for: 10m
+          labels:
+            severity: critical
+            slo: error_budget
+          annotations:
+            summary: "Error budget burn detectado"
+            description: "La tasa de error supera 0.50% por más de 10m."
+
+        - alert: RecoLatencyBreach
+          expr: reco:sli:latency_p95_5m > 0.05
+          for: 15m
+          labels:
+            severity: warning
+            slo: latency_p95
+          annotations:
+            summary: "Latency breach en pipeline"
+            description: "La latencia p95 de etapas críticas supera 50ms."
+
+        - alert: RecoExecutionAnomaly
+          expr: reco:sli:fill_ratio_5m < 0.92
+          for: 10m
+          labels:
+            severity: warning
+            slo: execution_fill_ratio
+          annotations:
+            summary: "Execution anomaly"
+            description: "El fill ratio agregado cayó por debajo de 92%."
+
+        - alert: RecoCapitalProtectionActive
+          expr: reco:sli:drawdown_5m >= 0.12
+          for: 2m
+          labels:
+            severity: critical
+            slo: capital_protection
+          annotations:
+            summary: "Capital protection active"
+            description: "El drawdown alcanzó o superó 12%, activar contención de riesgo."

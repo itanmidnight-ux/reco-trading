@@ -57,6 +57,10 @@ class Settings(BaseSettings):
 
     loop_interval_seconds: int = Field(default=5, ge=1, le=60)
 
+    monitoring_metrics_enabled: bool = Field(default=True)
+    monitoring_metrics_host: str = Field(default='0.0.0.0')
+    monitoring_metrics_port: int = Field(default=8001, ge=1, le=65535)
+
 
     @field_validator('broker_backend')
     @classmethod

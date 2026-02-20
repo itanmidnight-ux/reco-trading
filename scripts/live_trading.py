@@ -30,6 +30,8 @@ from reco_trading.monitoring.health_check import HealthCheck
 from reco_trading.core.portfolio_engine import PortfolioState
 from reco_trading.research.metrics import aggregate_execution_quality
 from reco_trading.self_healing import EvolutionBackgroundService
+from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
+from reco_trading.monitoring.alert_manager import AlertManager
 
 
 @dataclass
@@ -118,17 +120,30 @@ class FusionEngineAdapter:
 
 
 class ExecutionEngineAdapter:
-    def __init__(self, execution: ExecutionEngine, state: RuntimeState) -> None:
+    def __init__(self, execution: ExecutionEngine, state: RuntimeState, metrics: TradingMetrics, alert_manager: AlertManager) -> None:
         self.execution = execution
         self.state = state
+        self.metrics = metrics
+        self.alert_manager = alert_manager
         self._fills: list[dict] = []
         self._quotes: list[dict] = []
         self._midprice_path: list[dict] = []
         self._cancel_events: list[dict] = []
 
     async def execute(self, side: str, size: float) -> None:
+        self.metrics.observe_request('execution', exchange='binance', strategy='live')
         fill = await self.execution.execute(side, size)
         if not fill:
+            self.metrics.observe_error('execution', 'empty_fill', exchange='binance', strategy='live')
+            self.metrics.set_fill_ratio('binance', 0.0, exchange='binance', strategy='live')
+            self.alert_manager.evaluate_slo_alerts(
+                error_rate=0.01,
+                p95_latency_seconds=0.010,
+                fill_ratio=0.0,
+                drawdown_ratio=0.0,
+                capital_protection_active=False,
+                exchange='binance',
+            )
             return
 
         self.state.last_signal = side
@@ -174,6 +189,20 @@ class ExecutionEngineAdapter:
             cancel_events=self._cancel_events,
         )
 
+        fill_ratio = float(report.get('fill_ratio', 1.0))
+        drawdown_ratio = 0.0
+        self.metrics.set_fill_ratio('binance', fill_ratio, exchange='binance', strategy='live')
+        self.metrics.observe_fill_quality(float(report.get('fill_quality_ratio', 1.0)), float(report.get('slippage_bps', 0.0)), exchange='binance', strategy='live')
+        self.alert_manager.evaluate_slo_alerts(
+            error_rate=0.0,
+            p95_latency_seconds=0.010,
+            fill_ratio=fill_ratio,
+            drawdown_ratio=drawdown_ratio,
+            capital_protection_active=False,
+            exchange='binance',
+            extra_payload=report,
+        )
+
         logger.info(f"FILL confirmado id={fill.get('id')} side={fill.get('side')} px={fill.get('average')}")
         logger.info('Execution quality live report', report=report)
 
@@ -215,9 +244,15 @@ class InstitutionalTradingPipeline:
         self.risk.consecutive_losses = self.state.consecutive_losses
         self.risk.update_equity(self.state.equity)
 
+        self.alert_manager = AlertManager()
+        self.metrics = TradingMetrics()
+        self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
+
         self.execution = ExecutionEngineAdapter(
             ExecutionEngine(self.client, self.s.symbol, self.db, redis_url=self.s.redis_url),
             self.state,
+            self.metrics,
+            self.alert_manager,
         )
 
         self.pipeline = TradingPipeline(
@@ -238,6 +273,9 @@ class InstitutionalTradingPipeline:
         )
 
     def _health_snapshot(self) -> dict:
+        drawdown_ratio = min(max(abs(float(self.risk.daily_pnl)) / max(float(self.state.equity), 1.0), 0.0), 1.0)
+        self.metrics.set_drawdown('daily', drawdown_ratio, exchange='binance', strategy='live')
+        self.metrics.set_worker_health('healthy', True, exchange='binance', strategy='live', worker_id='pipeline')
         return {
             'daily_pnl': float(self.risk.daily_pnl),
             'consecutive_losses': int(self.risk.consecutive_losses),
@@ -250,6 +288,9 @@ class InstitutionalTradingPipeline:
 
     async def run(self) -> None:
         await self.db.init()
+        if self.s.monitoring_metrics_enabled:
+            self.metrics_exporter.start()
+            logger.info(f"Prometheus metrics endpoint activo en http://{self.s.monitoring_metrics_host}:{self.s.monitoring_metrics_port}/metrics")
         self.event_bus.subscribe('evolution.health_evaluated', self._on_evolution_event)
         self.event_bus.subscribe('evolution.mutation_planned', self._on_evolution_event)
         self.event_bus.subscribe('evolution.configuration_deployed', self._on_evolution_event)
