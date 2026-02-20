@@ -1,15 +1,3 @@
-from reco_trading.kernel.capital_governor import (
-    CapitalGovernor,
-    CapitalGovernorState,
-    CapitalTicket,
-    IntradayStressResult,
-    TailRiskSnapshot,
-)
+from reco_trading.kernel.quant_kernel import QuantKernel
 
-__all__ = [
-    'CapitalGovernor',
-    'CapitalGovernorState',
-    'CapitalTicket',
-    'IntradayStressResult',
-    'TailRiskSnapshot',
-]
+__all__ = ['QuantKernel']
