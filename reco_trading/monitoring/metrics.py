@@ -103,6 +103,67 @@ class TradingMetrics:
             registry=self.registry,
         )
 
+        self.system_latency_avg_ms = Gauge(
+            'reco_system_latency_avg_ms',
+            'Latencia promedio del sistema en milisegundos.',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_latency_p95_ms = Gauge(
+            'reco_system_latency_p95_ms',
+            'Latencia p95 del sistema en milisegundos.',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_api_error_rate = Gauge(
+            'reco_system_api_error_rate',
+            'Tasa de error de APIs en rango [0, 1].',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_slippage_mean_bps = Gauge(
+            'reco_system_slippage_mean_bps',
+            'Slippage medio en bps.',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_spread_drift_bps = Gauge(
+            'reco_system_spread_drift_bps',
+            'Deriva media del spread en bps.',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_intraday_drawdown_ratio = Gauge(
+            'reco_system_intraday_drawdown_ratio',
+            'Drawdown intradía en rango [0, 1].',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_redis_up = Gauge(
+            'reco_system_redis_up',
+            'Estado de Redis (1=up, 0=down).',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_postgresql_up = Gauge(
+            'reco_system_postgresql_up',
+            'Estado de PostgreSQL (1=up, 0=down).',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_gpu_memory_ratio = Gauge(
+            'reco_system_gpu_memory_ratio',
+            'Uso de memoria de GPU en rango [0, 1].',
+            labelnames=_DEFAULT_LABELS,
+            registry=self.registry,
+        )
+        self.system_health_anomaly_total = Counter(
+            'reco_system_health_anomalies_total',
+            'Total de anomalías de salud del sistema por métrica y severidad.',
+            labelnames=('metric', 'severity', *_DEFAULT_LABELS),
+            registry=self.registry,
+        )
+
     def observe_stage_latency(self, stage: str, latency_seconds: float, **labels: str) -> None:
         sample = self._labels(stage=stage, **labels)
         self.stage_latency_seconds.labels(**sample).observe(max(latency_seconds, 0.0))
@@ -136,6 +197,23 @@ class TradingMetrics:
         sample = self._labels(**labels)
         self.fill_quality_ratio.labels(**sample).observe(min(max(fill_quality_ratio, 0.0), 1.0))
         self.slippage_bps.labels(**sample).observe(slippage_bps)
+
+    def set_system_health_snapshot(self, snapshot: object, **labels: str) -> None:
+        sample = self._labels(**labels)
+        self.system_latency_avg_ms.labels(**sample).set(float(getattr(snapshot, 'latency_avg_ms', 0.0)))
+        self.system_latency_p95_ms.labels(**sample).set(float(getattr(snapshot, 'latency_p95_ms', 0.0)))
+        self.system_api_error_rate.labels(**sample).set(min(max(float(getattr(snapshot, 'api_error_rate', 0.0)), 0.0), 1.0))
+        self.system_slippage_mean_bps.labels(**sample).set(float(getattr(snapshot, 'slippage_mean_bps', 0.0)))
+        self.system_spread_drift_bps.labels(**sample).set(float(getattr(snapshot, 'spread_drift_bps', 0.0)))
+        self.system_intraday_drawdown_ratio.labels(**sample).set(
+            min(max(float(getattr(snapshot, 'intraday_drawdown_ratio', 0.0)), 0.0), 1.0)
+        )
+        self.system_gpu_memory_ratio.labels(**sample).set(min(max(float(getattr(snapshot, 'gpu_memory_ratio', 0.0)), 0.0), 1.0))
+        self.system_redis_up.labels(**sample).set(1.0 if bool(getattr(snapshot, 'redis_ok', False)) else 0.0)
+        self.system_postgresql_up.labels(**sample).set(1.0 if bool(getattr(snapshot, 'postgresql_ok', False)) else 0.0)
+
+    def observe_health_anomaly(self, metric: str, severity: str, **labels: str) -> None:
+        self.system_health_anomaly_total.labels(**self._labels(metric=metric, severity=severity, **labels)).inc()
 
     def _labels(self, **custom_labels: str) -> dict[str, str]:
         defaults = {label: 'unknown' for label in _DEFAULT_LABELS}
