@@ -34,7 +34,7 @@ class Settings(BaseSettings):
 
     @property
     def is_live_mode(self) -> bool:
-        return self.mode == 'live'
+        return self.mode in {'live', 'testnet_live'}
 
     @property
     def runtime_ip_hash(self) -> str:
@@ -47,13 +47,13 @@ class Settings(BaseSettings):
         self.mode = self.mode.strip().lower()
         self.app_env = self.app_env.strip().lower()
 
-        if self.mode not in {'paper', 'live'}:
-            raise ValueError(f"Invalid mode '{self.mode}'. Allowed values: paper, live")
+        if self.mode not in {'paper', 'live', 'testnet_live'}:
+            raise ValueError(f"Invalid mode '{self.mode}'. Allowed values: paper, live, testnet_live")
 
         if self.app_env not in {'dev', 'staging', 'prod'}:
             raise ValueError(f"Invalid app_env '{self.app_env}'. Allowed values: dev, staging, prod")
 
-        if self.is_live_mode:
+        if self.mode == 'live':
             if self.testnet:
                 raise ValueError('Invalid configuration: mode=live requires testnet=False')
             if self.app_env != 'prod':
@@ -70,6 +70,12 @@ class Settings(BaseSettings):
                 raise ValueError('Security gate blocked: runtime_ip is required for live mode')
             if self.runtime_ip_hash != self.allowed_ip_hash:
                 raise ValueError('Security gate blocked: runtime_ip does not match allowed_ip_hash')
+
+        if self.mode == 'testnet_live':
+            if not self.testnet:
+                raise ValueError('Invalid configuration: mode=testnet_live requires testnet=True')
+            if not self.api_key or not self.api_secret:
+                raise ValueError('Invalid configuration: testnet_live requires api_key and api_secret')
 
         if self.mode == 'paper' and not self.testnet:
             raise ValueError('Invalid configuration: mode=paper requires testnet=True')
