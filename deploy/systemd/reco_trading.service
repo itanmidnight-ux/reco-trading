@@ -9,7 +9,6 @@ User=trading
 Group=trading
 WorkingDirectory=/opt/reco-trading
 Environment=PYTHONUNBUFFERED=1
-Environment=RECO_SIMULATE_ORDERS=false
 Environment=RECO_MAX_TRADES=0
 EnvironmentFile=/opt/reco-trading/.env
 ExecStart=/opt/reco-trading/.venv/bin/python /opt/reco-trading/main.py
