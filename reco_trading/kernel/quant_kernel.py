@@ -138,21 +138,6 @@ class QuantKernel:
             capital_governor=self.capital_governor,
         )
 
-    async def _simulate_or_execute(self, side: str, amount: float) -> dict[str, Any] | None:
-        simulate = os.getenv('RECO_SIMULATE_ORDERS', 'true').lower() == 'true'
-        if simulate:
-            px = float((await self.client.fetch_order_book(self.s.symbol, limit=5)).get('asks', [[0, 0]])[0][0] or 0.0)
-            return {
-                'id': f'sim-{datetime.now(timezone.utc).timestamp()}',
-                'symbol': self.s.symbol,
-                'side': side,
-                'average': px,
-                'filled': amount,
-                'status': 'closed',
-                'simulated': True,
-            }
-        return await self.execution_engine.execute(side, amount)
-
     async def run(self) -> None:
         await self.initialize()
         await self.db.init()
@@ -253,7 +238,16 @@ class QuantKernel:
                 alloc = self.portfolio_optimizer.risk_parity(sig['returns_df'], capital_ticket=ticket)
                 alloc_weight = alloc.weights.get('BTCUSDT', 1.0)
                 qty = position_size * alloc_weight
-                fill = await self._simulate_or_execute(sig['side'], qty)
+                logger.info(
+                    'execution_submit_real_order',
+                    symbol=self.s.symbol,
+                    side=sig['side'],
+                    quantity=qty,
+                    route='REAL_TESTNET' if self.s.binance_testnet else 'REAL_MAINNET',
+                    testnet=self.s.binance_testnet,
+                    dispatch_mode='LIVE_ORDER',
+                )
+                fill = await self.execution_engine.execute(sig['side'], qty)
                 if fill is None:
                     status = 'RISK'
                     logger.warning('execution_failed', side=sig['side'], qty=qty)
