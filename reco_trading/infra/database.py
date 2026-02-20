@@ -45,6 +45,14 @@ portfolio_state = Table(
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
+validation_history = Table(
+    'validation_history',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('snapshot', JSON, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
 system_config_versions = Table(
     'system_config_versions',
     metadata,
@@ -418,6 +426,11 @@ class Database:
     async def snapshot_portfolio(self, state) -> None:
         async with self.session_factory() as session:
             await session.execute(insert(portfolio_state).values(snapshot=asdict(state)))
+            await session.commit()
+
+    async def persist_validation_event(self, payload: dict[str, Any]) -> None:
+        async with self.session_factory() as session:
+            await session.execute(insert(validation_history).values(snapshot=payload))
             await session.commit()
 
     async def fill_stats(self) -> dict:
