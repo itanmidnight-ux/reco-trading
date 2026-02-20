@@ -1,0 +1,72 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Trading - Fill Ratio",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [{"expr": "avg(reco_fill_ratio)", "legendFormat": "fill ratio"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Trading - Slippage (bps)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(reco_slippage_bps_bucket[5m])) by (le))", "legendFormat": "p95"}],
+      "fieldConfig": {"defaults": {"unit": "none"}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Riesgo - Drawdown",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "targets": [{"expr": "max(reco_drawdown_ratio)", "legendFormat": "drawdown"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Riesgo - Capital Protection Trigger",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "targets": [{"expr": "max(reco_drawdown_ratio >= bool 0.12)", "legendFormat": "protection active"}],
+      "fieldConfig": {"defaults": {"unit": "bool"}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Salud Sistema - Worker Health",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "targets": [{"expr": "avg(reco_worker_health)", "legendFormat": "worker health"}],
+      "fieldConfig": {"defaults": {"unit": "bool"}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Evolución - Error Rate",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [{"expr": "sum(rate(reco_errors_total[5m])) / clamp_min(sum(rate(reco_requests_total[5m])), 1)", "legendFormat": "error rate"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0}, "overrides": []}
+    },
+    {
+      "type": "timeseries",
+      "title": "Evolución - Latencia p95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(reco_stage_latency_seconds_bucket[5m])) by (le, stage))", "legendFormat": "{{stage}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "min": 0}, "overrides": []}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["reco-trading", "prometheus", "slo"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "",
+  "title": "Reco Trading - Observability",
+  "uid": "reco-trading-observability",
+  "version": 1,
+  "weekStart": ""
+}

@@ -55,12 +55,39 @@ class TradingMetrics:
             labelnames=('gpu_id', *_DEFAULT_LABELS),
             registry=self.registry,
         )
+
+        # Métricas solicitadas para operación de trading
         self.worker_health = Gauge(
             'reco_worker_health',
-            'Health de worker (1=healthy, 0=degraded/down).',
+            'Salud de worker (1=healthy, 0=degraded/down).',
             labelnames=('state', *_DEFAULT_LABELS),
             registry=self.registry,
         )
+        self.fill_ratio = Gauge(
+            'reco_fill_ratio',
+            'Fill ratio de órdenes ejecutadas en rango [0, 1].',
+            labelnames=('venue', *_DEFAULT_LABELS),
+            registry=self.registry,
+        )
+        self.drawdown_ratio = Gauge(
+            'reco_drawdown_ratio',
+            'Drawdown actual en rango [0, 1].',
+            labelnames=('scope', *_DEFAULT_LABELS),
+            registry=self.registry,
+        )
+        self.error_total = Counter(
+            'reco_errors_total',
+            'Total de errores por componente y tipo.',
+            labelnames=('component', 'error_type', *_DEFAULT_LABELS),
+            registry=self.registry,
+        )
+        self.request_total = Counter(
+            'reco_requests_total',
+            'Total de requests/eventos por componente.',
+            labelnames=('component', *_DEFAULT_LABELS),
+            registry=self.registry,
+        )
+
         self.fill_quality_ratio = Histogram(
             'reco_fill_quality_ratio',
             'Fill quality en ratio [0, 1] (1 es mejor).',
@@ -91,6 +118,19 @@ class TradingMetrics:
 
     def set_worker_health(self, state: str, healthy: bool, **labels: str) -> None:
         self.worker_health.labels(**self._labels(state=state, **labels)).set(1.0 if healthy else 0.0)
+
+    def set_fill_ratio(self, venue: str, value: float, **labels: str) -> None:
+        self.fill_ratio.labels(**self._labels(venue=venue, **labels)).set(min(max(value, 0.0), 1.0))
+
+    def set_drawdown(self, scope: str, value: float, **labels: str) -> None:
+        self.drawdown_ratio.labels(**self._labels(scope=scope, **labels)).set(min(max(value, 0.0), 1.0))
+
+    def observe_request(self, component: str, **labels: str) -> None:
+        self.request_total.labels(**self._labels(component=component, **labels)).inc()
+
+    def observe_error(self, component: str, error_type: str, **labels: str) -> None:
+        self.error_total.labels(**self._labels(component=component, error_type=error_type, **labels)).inc()
+        self.observe_request(component, **labels)
 
     def observe_fill_quality(self, fill_quality_ratio: float, slippage_bps: float, **labels: str) -> None:
         sample = self._labels(**labels)
