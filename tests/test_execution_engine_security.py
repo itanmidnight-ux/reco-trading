@@ -1,9 +1,13 @@
 import asyncio
 
 from reco_trading.core.execution_engine import ExecutionEngine
+from reco_trading.core.microstructure import MicrostructureSnapshot
 
 
 class _FakeClient:
+    def __init__(self):
+        self.last_amount = None
+
     async def fetch_balance(self):
         return {'USDT': {'free': 1000}, 'BTC': {'free': 2}}
 
@@ -11,10 +15,17 @@ class _FakeClient:
         return {'bids': [[100.0, 5.0], [99.9, 4.0]], 'asks': [[100.2, 5.0], [100.3, 4.0]]}
 
     async def create_market_order(self, symbol, side, amount):
+        self.last_amount = amount
         return {'id': '1', 'symbol': symbol, 'side': side, 'amount': amount}
 
     async def wait_for_fill(self, symbol, order_id):
         return {'id': order_id, 'status': 'closed'}
+
+
+class _SlowBalanceClient(_FakeClient):
+    async def fetch_balance(self):
+        await asyncio.sleep(0.05)
+        return await super().fetch_balance()
 
 
 class _FakeDB:
