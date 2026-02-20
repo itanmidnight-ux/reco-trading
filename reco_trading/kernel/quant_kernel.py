@@ -32,6 +32,8 @@ from reco_trading.monitoring.health_check import HealthCheck
 from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
 from reco_trading.research.metrics import aggregate_execution_quality
 from reco_trading.self_healing import EvolutionBackgroundService
+from reco_trading.system.runtime import RuntimeOptimizer
+from reco_trading.system.supervisor import KernelSupervisor, RestartPolicy
 
 
 @dataclass
@@ -218,10 +220,24 @@ class QuantKernel:
         self._shutdown_event = asyncio.Event()
         self._shutdown_lock = asyncio.Lock()
         self._worker_tasks: list[asyncio.Task[None]] = []
+        self._supervisor_task: asyncio.Task[None] | None = None
+        self.supervisor = KernelSupervisor(
+            monitor_interval_seconds=max(float(self.s.loop_interval_seconds), 2.0),
+            on_fatal=self.emergency_shutdown,
+        )
 
     async def initialize(self) -> None:
         if self._initialized:
             return
+
+        affinity = self._parse_cpu_affinity(self.s.runtime_cpu_affinity)
+        runtime_report = RuntimeOptimizer(
+            enable_uvloop=self.s.runtime_enable_uvloop,
+            min_nofile=self.s.runtime_min_nofile,
+            target_nofile=self.s.runtime_target_nofile,
+            cpu_affinity=affinity,
+        ).apply()
+        logger.info('Runtime optimizado', report=runtime_report)
 
         self.client = BinanceClient(
             self.s.binance_api_key.get_secret_value(),
@@ -309,6 +325,19 @@ class QuantKernel:
     async def _on_evolution_event(event: PipelineEvent) -> None:
         logger.info('Evolution event', topic=event.topic, payload=event.payload)
 
+    @staticmethod
+    def _parse_cpu_affinity(raw: str | None) -> set[int] | None:
+        if not raw:
+            return None
+        cpus: set[int] = set()
+        for item in raw.split(','):
+            item = item.strip()
+            if not item:
+                continue
+            if item.isdigit():
+                cpus.add(int(item))
+        return cpus or None
+
     async def run(self) -> None:
         if not self._initialized:
             await self.initialize()
@@ -331,12 +360,13 @@ class QuantKernel:
             raise RuntimeError('Health check falló: no se pudo obtener OHLCV de Binance')
 
         logger.info('QuantKernel iniciado: pipeline + control de capital + validación live + RL/meta-learning + ejecución')
-        self._worker_tasks = [
-            asyncio.create_task(self.pipeline.run(), name='signal_pipeline'),
-            asyncio.create_task(self.global_risk_check(), name='global_risk_check'),
-            asyncio.create_task(self.capital_allocation_cycle(), name='capital_allocation_cycle'),
-            asyncio.create_task(self.health_supervision(), name='health_supervision'),
-        ]
+        self.supervisor.register_module('signal_pipeline', self.pipeline.run, RestartPolicy(max_retries=8, backoff_base_seconds=1.0, backoff_max_seconds=20.0))
+        self.supervisor.register_module('global_risk_check', self.global_risk_check, RestartPolicy(max_retries=5, backoff_base_seconds=1.0, backoff_max_seconds=15.0))
+        self.supervisor.register_module('capital_allocation_cycle', self.capital_allocation_cycle, RestartPolicy(max_retries=5, backoff_base_seconds=1.0, backoff_max_seconds=15.0))
+        self.supervisor.register_module('health_supervision', self.health_supervision, RestartPolicy(max_retries=5, backoff_base_seconds=1.0, backoff_max_seconds=20.0))
+
+        self._supervisor_task = asyncio.create_task(self.supervisor.run(), name='kernel_supervisor')
+        self._worker_tasks = [self._supervisor_task]
 
         try:
             done, _ = await asyncio.wait(self._worker_tasks, return_when=asyncio.FIRST_EXCEPTION)
@@ -438,6 +468,12 @@ class QuantKernel:
             if self._worker_tasks:
                 await asyncio.gather(*self._worker_tasks, return_exceptions=True)
                 self._worker_tasks.clear()
+
+            await self.supervisor.stop()
+            if self._supervisor_task and not self._supervisor_task.done() and self._supervisor_task is not asyncio.current_task():
+                self._supervisor_task.cancel()
+                await asyncio.gather(self._supervisor_task, return_exceptions=True)
+            self._supervisor_task = None
 
             await self.pipeline.shutdown()
             await self.evolution_service.stop()
