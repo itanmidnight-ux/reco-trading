@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from scipy.stats import kurtosis, skew
 
 
 def sharpe(returns, periods: int = 365 * 24 * 12):
@@ -12,6 +13,25 @@ def sortino(returns, periods: int = 365 * 24 * 12):
     r = np.asarray(returns, dtype=float)
     downside = r[r < 0]
     return float(np.sqrt(periods) * r.mean() / (downside.std() + 1e-12))
+
+
+def information_ratio(returns, benchmark_returns, periods: int = 365 * 24 * 12):
+    r = np.asarray(returns, dtype=float)
+    b = np.asarray(benchmark_returns, dtype=float)
+    n = min(r.size, b.size)
+    if n == 0:
+        return 0.0
+    active = r[-n:] - b[-n:]
+    return float(np.sqrt(periods) * active.mean() / (active.std() + 1e-12))
+
+
+def cvar(returns, alpha: float = 0.95):
+    r = np.asarray(returns, dtype=float)
+    if r.size == 0:
+        return 0.0
+    q = np.quantile(r, 1.0 - alpha)
+    tail = r[r <= q]
+    return float(abs(tail.mean()) if tail.size else abs(q))
 
 
 def max_drawdown(equity_curve):
@@ -32,6 +52,24 @@ def ulcer_index(equity_curve):
     peak = np.maximum.accumulate(ec)
     drawdown_pct = ((ec / (peak + 1e-12)) - 1.0) * 100.0
     return float(np.sqrt(np.mean(np.square(np.minimum(drawdown_pct, 0.0)))))
+
+
+def equity_curve_smoothness(equity_curve):
+    ec = np.asarray(equity_curve, dtype=float)
+    if ec.size < 3:
+        return 0.0
+    second_diff = np.diff(ec, n=2)
+    return float(1.0 / (1.0 + np.mean(np.abs(second_diff))))
+
+
+def return_skewness(returns):
+    r = np.asarray(returns, dtype=float)
+    return float(skew(r, bias=False)) if r.size > 2 else 0.0
+
+
+def return_kurtosis(returns):
+    r = np.asarray(returns, dtype=float)
+    return float(kurtosis(r, fisher=True, bias=False)) if r.size > 3 else 0.0
 
 
 def expectancy(returns):

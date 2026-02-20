@@ -69,6 +69,11 @@ class ExecutionEngine:
         if not self._validate_order(side, amount):
             return None
 
+        if microstructure:
+            amount *= max(0.25, 1.0 - microstructure.vpin)
+            if microstructure.liquidity_shock:
+                amount *= 0.35
+
         for attempt in range(1, max_retries + 1):
             try:
                 await self._rate_limiter.acquire()
@@ -76,13 +81,17 @@ class ExecutionEngine:
                 if not await self._has_sufficient_balance(side, amount):
                     return None
 
-                order = await self.client.create_market_order(self.symbol, side, amount)
+                order = await asyncio.wait_for(
+                    self.client.create_market_order(self.symbol, side, amount), timeout=timeout_seconds
+                )
                 await self.db.record_order(order)
                 order_id = order.get('id')
                 if not order_id:
                     raise RuntimeError('Binance no devolvió order id')
 
-                fill = await self.client.wait_for_fill(self.symbol, str(order_id))
+                fill = await asyncio.wait_for(
+                    self.client.wait_for_fill(self.symbol, str(order_id)), timeout=timeout_seconds + 20
+                )
                 if fill:
                     await self.db.record_fill(fill)
                     self._persist_execution(

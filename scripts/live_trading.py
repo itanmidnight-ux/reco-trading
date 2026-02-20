@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from reco_trading.ai.rl_agent import TradingRLAgent
 from reco_trading.config.settings import get_settings
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
@@ -14,6 +15,8 @@ from reco_trading.core.institutional_risk import InstitutionalRiskManager, RiskC
 from reco_trading.core.market_data import MarketDataService
 from reco_trading.core.market_regime import MarketRegimeDetector
 from reco_trading.core.mean_reversion_model import MeanReversionModel
+from reco_trading.core.meta_learning import AdaptiveMetaLearner
+from reco_trading.core.microstructure import MicrostructureSnapshot, OrderBookMicrostructureAnalyzer
 from reco_trading.core.momentum_model import MomentumModel
 from reco_trading.core.pipeline import TradingPipeline
 from reco_trading.core.signal_fusion_engine import SignalFusionEngine, SignalObservation
