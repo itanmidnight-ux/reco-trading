@@ -21,12 +21,15 @@ from reco_trading.core.microstructure import MicrostructureSnapshot, OrderBookMi
 from reco_trading.core.momentum_model import MomentumModel
 from reco_trading.core.pipeline import TradingPipeline
 from reco_trading.core.signal_fusion_engine import SignalFusionEngine, SignalObservation
+from reco_trading.core.event_pipeline import AsyncEventBus, PipelineEvent
+from reco_trading.evolution import EvolutionEngine, ProbabilisticModelContract, ReversionModelContract
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 from reco_trading.infra.state_manager import StateManager
 from reco_trading.monitoring.health_check import HealthCheck
 from reco_trading.core.portfolio_engine import PortfolioState
 from reco_trading.research.metrics import aggregate_execution_quality
+from reco_trading.self_healing import EvolutionBackgroundService
 
 
 @dataclass
@@ -52,8 +55,8 @@ class FeatureEngineAdapter:
     def __init__(
         self,
         feature_engine: FeatureEngine,
-        momentum: MomentumModel,
-        reversion: MeanReversionModel,
+        momentum: ProbabilisticModelContract,
+        reversion: ReversionModelContract,
         state: RuntimeState,
     ):
         self.feature_engine = feature_engine
@@ -226,9 +229,34 @@ class InstitutionalTradingPipeline:
             execution_engine=self.execution,
             queue_maxsize=512,
         )
+        self.event_bus = AsyncEventBus(maxsize=1024)
+        self.evolution_service = EvolutionBackgroundService(
+            engine=EvolutionEngine(),
+            event_bus=self.event_bus,
+            health_snapshot_provider=self._health_snapshot,
+            interval_seconds=max(float(self.s.loop_interval_seconds) * 6.0, 30.0),
+        )
+
+    def _health_snapshot(self) -> dict:
+        return {
+            'daily_pnl': float(self.risk.daily_pnl),
+            'consecutive_losses': int(self.risk.consecutive_losses),
+            'kill_switch': bool(self.risk.kill_switch),
+        }
+
+    @staticmethod
+    async def _on_evolution_event(event: PipelineEvent) -> None:
+        logger.info('Evolution event', topic=event.topic, payload=event.payload)
 
     async def run(self) -> None:
         await self.db.init()
+        self.event_bus.subscribe('evolution.health_evaluated', self._on_evolution_event)
+        self.event_bus.subscribe('evolution.mutation_planned', self._on_evolution_event)
+        self.event_bus.subscribe('evolution.configuration_deployed', self._on_evolution_event)
+        self.event_bus.subscribe('evolution.error', self._on_evolution_event)
+        await self.event_bus.start(workers=1)
+        await self.evolution_service.start()
+
         health = await HealthCheck().run(self.client, self.s.symbol, self.s.timeframe)
         if not health['ok']:
             raise RuntimeError('Health check falló: no se pudo obtener OHLCV de Binance')
@@ -237,6 +265,8 @@ class InstitutionalTradingPipeline:
         try:
             await self.pipeline.run()
         finally:
+            await self.evolution_service.stop()
+            await self.event_bus.shutdown()
             self.state_manager.save(
                 PortfolioState(
                     equity=self.state.equity,
