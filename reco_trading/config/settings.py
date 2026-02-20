@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     binance_testnet: bool = False
 
     postgres_dsn: str = Field(default='postgresql+asyncpg://trading:trading@localhost:5432/trading')
+    postgres_admin_dsn: str | None = Field(default=None)
     redis_url: str = Field(default='redis://localhost:6379/0')
 
     risk_per_trade: float = Field(default=0.01, ge=0.001, le=0.05)
