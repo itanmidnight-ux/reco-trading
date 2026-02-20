@@ -9,7 +9,7 @@ import pandas as pd
 from loguru import logger
 
 from reco_trading.ai.rl_agent import TradingRLAgent
-from reco_trading.config.settings import get_settings
+from reco_trading.config.settings import ALLOWED_STRATEGIES, get_settings
 from reco_trading.core.event_pipeline import AsyncEventBus, PipelineEvent
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
@@ -256,6 +256,15 @@ class QuantKernel:
         self.risk.daily_pnl = self.state.daily_pnl
         self.risk.consecutive_losses = self.state.consecutive_losses
         self.risk.update_equity(self.state.equity)
+
+        if self.s.runtime_profile == 'research':
+            logger.warning('QuantKernel iniciado en perfil research: se habilitan módulos no productivos bajo responsabilidad del operador.')
+
+        disallowed = [name for name in self.s.enabled_strategies if name not in ALLOWED_STRATEGIES]
+        if disallowed:
+            raise ValueError(f'Estrategias no permitidas detectadas: {disallowed}. Permitidas: {ALLOWED_STRATEGIES}')
+
+        logger.info('Kernel strategy configuration', allowed=ALLOWED_STRATEGIES, enabled=self.s.enabled_strategies, conservative_mode=self.s.conservative_mode_enabled)
 
         self.alert_manager = AlertManager()
         self.metrics = TradingMetrics()

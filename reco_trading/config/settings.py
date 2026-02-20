@@ -5,11 +5,18 @@ from functools import lru_cache
 from pydantic import Field, SecretStr, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+ALLOWED_STRATEGIES: tuple[str, str, str] = (
+    'directional',
+    'adaptive_market_making',
+    'multi_exchange_arbitrage',
+)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', case_sensitive=False)
 
     environment: str = Field(default='production')
+    runtime_profile: str = Field(default='production')
     symbol: str = Field(default='BTC/USDT')
     timeframe: str = Field(default='5m')
 
@@ -56,12 +63,24 @@ class Settings(BaseSettings):
     taker_fee: float = Field(default=0.001)
     slippage_bps: float = Field(default=5.0)
 
+    conservative_mode_enabled: bool = Field(default=True)
+    enable_directional_strategy: bool = Field(default=True)
+    enable_adaptive_market_making: bool = Field(default=True)
+    enable_multi_exchange_arbitrage: bool = Field(default=False)
+
     loop_interval_seconds: int = Field(default=5, ge=1, le=60)
 
     monitoring_metrics_enabled: bool = Field(default=True)
     monitoring_metrics_host: str = Field(default='0.0.0.0')
     monitoring_metrics_port: int = Field(default=8001, ge=1, le=65535)
 
+    @field_validator('runtime_profile')
+    @classmethod
+    def validate_runtime_profile(cls, value: str) -> str:
+        normalized = value.lower()
+        if normalized not in {'production', 'research'}:
+            raise ValueError('runtime_profile debe ser "production" o "research".')
+        return normalized
 
     @field_validator('broker_backend')
     @classmethod
@@ -90,6 +109,24 @@ class Settings(BaseSettings):
         if not self.binance_testnet and not self.confirm_mainnet:
             raise ValueError('Mainnet requiere confirm_mainnet=true explícito por seguridad institucional.')
         return self
+
+    @model_validator(mode='after')
+    def validate_strategy_toggles(self) -> 'Settings':
+        if not self.enabled_strategies:
+            raise ValueError('Debe existir al menos una estrategia habilitada en el kernel.')
+        return self
+
+    @computed_field
+    @property
+    def enabled_strategies(self) -> tuple[str, ...]:
+        enabled: list[str] = []
+        if self.enable_directional_strategy:
+            enabled.append('directional')
+        if self.enable_adaptive_market_making:
+            enabled.append('adaptive_market_making')
+        if self.enable_multi_exchange_arbitrage:
+            enabled.append('multi_exchange_arbitrage')
+        return tuple(enabled)
 
     @computed_field
     @property

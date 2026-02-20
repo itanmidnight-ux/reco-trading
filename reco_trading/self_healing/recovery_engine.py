@@ -62,8 +62,8 @@ class RecoveryEngine:
     def activate_conservative_fallback(self) -> RecoveryAction:
         if self.strategy_controller is None:
             return RecoveryAction('conservative_fallback', 'skipped', 'No hay StrategyController')
-        self.strategy_controller.disable_temporarily('aggressive_mm', ttl_seconds=900)
-        self.strategy_controller.disable_temporarily('cross_exchange_arbitrage', ttl_seconds=900)
+        self.strategy_controller.disable_temporarily('adaptive_market_making', ttl_seconds=900)
+        self.strategy_controller.disable_temporarily('multi_exchange_arbitrage', ttl_seconds=900)
         logger.bind(component='self_healing', action='conservative_fallback').critical('Fallback conservador activado')
         return RecoveryAction('conservative_fallback', 'ok', 'Estrategias agresivas deshabilitadas')
 

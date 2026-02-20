@@ -49,7 +49,7 @@ services:
       - postgres
 
   architecture-search-worker:
-    profiles: ["workers"]
+    profiles: ["research"]
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -61,7 +61,7 @@ services:
       - postgres
 
   self-healing-worker:
-    profiles: ["workers"]
+    profiles: ["research"]
     build:
       context: ../..
       dockerfile: docker/Dockerfile
@@ -74,7 +74,7 @@ services:
 
   postgres:
     image: timescale/timescaledb:latest-pg15
-    profiles: ["infra", "core", "workers"]
+    profiles: ["infra", "core", "workers", "research"]
     environment:
       POSTGRES_USER: trading
       POSTGRES_PASSWORD: trading
@@ -84,6 +84,6 @@ services:
 
   redis:
     image: redis:7
-    profiles: ["infra", "core", "workers"]
+    profiles: ["infra", "core", "workers", "research"]
     ports:
       - "6379:6379"

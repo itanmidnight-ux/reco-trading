@@ -197,7 +197,7 @@ class HealthMonitor:
                 actions.append(self.recovery_engine.restart_module('cluster_coordinator'))
                 actions.append(self.recovery_engine.switch_to_backup_exchange('primary', 'backup'))
             elif 'gpu' in title:
-                actions.append(self.recovery_engine.disable_strategy_temporarily('gpu_inference_alpha'))
+                actions.append(self.recovery_engine.disable_strategy_temporarily('directional'))
             elif 'api_error_rate' in title:
                 actions.append(self.recovery_engine.activate_conservative_fallback())
         return actions

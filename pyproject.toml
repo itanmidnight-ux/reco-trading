@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reco-trading"
+version = "0.1.0"
+description = "Kernel cuantitativo para trading institucional BTC/USDT"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "aiohttp",
+  "asyncpg",
+  "ccxt",
+  "cryptography",
+  "hmmlearn",
+  "lightgbm>=4.3,<5",
+  "loguru",
+  "numpy",
+  "pandas",
+  "prometheus-client",
+  "pydantic",
+  "pydantic-settings",
+  "redis",
+  "scikit-learn",
+  "scipy",
+  "sqlalchemy",
+  "torch>=2.1,<3",
+  "xgboost",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

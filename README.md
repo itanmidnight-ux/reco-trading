@@ -60,10 +60,20 @@ Sistema cuantitativo modular para Binance Spot con activo único BTC/USDT en tim
 
 ```bash
 ./install.sh
-cp .env.example .env
+cp .env.template .env
 # Editar claves reales
 ./run.sh
 ```
+
+
+## Estrategias permitidas en producción
+
+El kernel valida una lista cerrada de estrategias habilitables por configuración:
+- `directional` (stacking + transformer)
+- `adaptive_market_making`
+- `multi_exchange_arbitrage`
+
+Los módulos experimentales quedan fuera del camino productivo y se ejecutan solo bajo perfil `research`.
 
 ## Seguridad
 
