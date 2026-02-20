@@ -35,9 +35,60 @@ CREATE TABLE IF NOT EXISTS portfolio_state (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS system_config_versions (
+    id BIGSERIAL PRIMARY KEY,
+    version VARCHAR(64) NOT NULL UNIQUE,
+    config_hash VARCHAR(128) NOT NULL,
+    signature TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'active', 'failed', 'rolled_back')),
+    reason TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    activated_at TIMESTAMP,
+    failed_at TIMESTAMP,
+    rolled_back_at TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS system_config_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    version_id BIGINT NOT NULL REFERENCES system_config_versions(id) ON DELETE CASCADE,
+    snapshot_hash VARCHAR(128) NOT NULL,
+    snapshot_signature TEXT NOT NULL,
+    snapshot_payload JSONB NOT NULL,
+    reason TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS system_deployments (
+    id BIGSERIAL PRIMARY KEY,
+    version_id BIGINT NOT NULL REFERENCES system_config_versions(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'active', 'failed', 'rolled_back')),
+    reason TEXT,
+    deployed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS system_rollbacks (
+    id BIGSERIAL PRIMARY KEY,
+    deployment_id BIGINT REFERENCES system_deployments(id) ON DELETE SET NULL,
+    from_version_id BIGINT NOT NULL REFERENCES system_config_versions(id) ON DELETE CASCADE,
+    to_version_id BIGINT NOT NULL REFERENCES system_config_versions(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL CHECK (status IN ('pending', 'active', 'failed', 'rolled_back')),
+    reason TEXT NOT NULL,
+    triggered_by VARCHAR(32) NOT NULL DEFAULT 'automatic',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_created_at ON signals(created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_regime ON signals(regime);
 CREATE INDEX IF NOT EXISTS idx_portfolio_state_updated_at ON portfolio_state(updated_at);
+CREATE INDEX IF NOT EXISTS idx_system_config_versions_status ON system_config_versions(status);
+CREATE INDEX IF NOT EXISTS idx_system_config_versions_created_at ON system_config_versions(created_at);
+CREATE INDEX IF NOT EXISTS idx_system_snapshots_version_id ON system_config_snapshots(version_id);
+CREATE INDEX IF NOT EXISTS idx_system_deployments_version_id ON system_deployments(version_id);
+CREATE INDEX IF NOT EXISTS idx_system_rollbacks_from_version_id ON system_rollbacks(from_version_id);
