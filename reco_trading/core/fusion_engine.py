@@ -1,13 +1,23 @@
 from __future__ import annotations
 
+from reco_trading.core.signal_fusion_engine import SignalFusionEngine, SignalObservation
+
 
 class FusionEngine:
-    def decide(self, momentum_up_prob: float, reversion_prob: float) -> str:
-        momentum_signal = 'BUY' if momentum_up_prob >= 0.55 else 'SELL' if momentum_up_prob <= 0.45 else 'HOLD'
-        reversion_signal = 'BUY' if reversion_prob >= 0.55 else 'SELL' if reversion_prob <= 0.45 else 'HOLD'
+    """Compat layer sobre el nuevo SignalFusionEngine."""
 
-        if 'HOLD' in {momentum_signal, reversion_signal}:
-            return 'HOLD'
-        if momentum_signal == reversion_signal:
-            return momentum_signal
-        return 'HOLD'
+    def __init__(self) -> None:
+        self.engine = SignalFusionEngine(model_names=["momentum", "mean_reversion"])
+
+    def decide(self, momentum_up_prob: float, reversion_prob: float) -> str:
+        result = self.engine.fuse(
+            [
+                SignalObservation(name="momentum", score=2.0 * momentum_up_prob - 1.0, confidence=abs(momentum_up_prob - 0.5) * 2),
+                SignalObservation(name="mean_reversion", score=2.0 * reversion_prob - 1.0, confidence=abs(reversion_prob - 0.5) * 2),
+            ]
+        )
+        if result.calibrated_probability >= 0.57:
+            return "BUY"
+        if result.calibrated_probability <= 0.43:
+            return "SELL"
+        return "HOLD"

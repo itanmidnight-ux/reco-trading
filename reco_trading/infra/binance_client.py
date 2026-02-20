@@ -7,6 +7,8 @@ import aiohttp
 import ccxt.async_support as ccxt
 from ccxt.base.errors import DDoSProtection, ExchangeError, NetworkError, RateLimitExceeded
 
+from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
+
 
 class BinanceClient:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = False) -> None:
@@ -18,19 +20,23 @@ class BinanceClient:
                 'options': {'defaultType': 'spot'},
             }
         )
+        self._rate_limiter = AdaptiveRateLimitController(max_calls=8, period_seconds=1.0)
+        self._ws_backoff_seconds = 1.0
         if testnet:
             self.exchange.set_sandbox_mode(True)
 
-    async def _retry(self, fn, *args, retries: int = 5, **kwargs):
+    async def _retry(self, fn, *args, retries: int = 7, **kwargs):
         for attempt in range(1, retries + 1):
             try:
+                await self._rate_limiter.acquire()
                 return await fn(*args, **kwargs)
             except (RateLimitExceeded, NetworkError, DDoSProtection):
-                await asyncio.sleep(min(2**attempt, 10))
+                wait = min(2**attempt, 30)
+                await asyncio.sleep(wait)
             except ExchangeError:
                 if attempt == retries:
                     raise
-                await asyncio.sleep(1)
+                await asyncio.sleep(min(attempt, 5))
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 500):
         return await self._retry(self.exchange.fetch_ohlcv, symbol=symbol, timeframe=timeframe, limit=limit)
@@ -58,6 +64,7 @@ class BinanceClient:
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.ws_connect(url, heartbeat=20) as ws:
+                        self._ws_backoff_seconds = 1.0
                         async for msg in ws:
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 payload = json.loads(msg.data)
@@ -66,7 +73,8 @@ class BinanceClient:
                             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                                 break
             except Exception:
-                await asyncio.sleep(3)
+                await asyncio.sleep(self._ws_backoff_seconds)
+                self._ws_backoff_seconds = min(self._ws_backoff_seconds * 2.0, 30.0)
 
     async def close(self) -> None:
         await self.exchange.close()
