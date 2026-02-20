@@ -16,6 +16,7 @@ from reco_trading.core.institutional_risk_manager import InstitutionalRiskManage
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
 from reco_trading.hft.capital_allocator import AllocationRequest, CapitalAllocator
 from reco_trading.hft.safety import HFTSafetyMonitor
+from reco_trading.kernel.capital_governor import CapitalGovernor
 
 
 @dataclass(slots=True)
@@ -218,10 +219,12 @@ class MultiExchangeArbitrageEngine:
         min_edge_bps: float = 5.0,
         *,
         safety_monitor: HFTSafetyMonitor | None = None,
+        capital_governor: CapitalGovernor | None = None,
     ) -> None:
         self.adapters = adapters
         self.min_edge_bps = min_edge_bps
         self.safety_monitor = safety_monitor
+        self.capital_governor = capital_governor
 
     async def _fetch_books_and_tickers(
         self,
@@ -350,6 +353,32 @@ class MultiExchangeArbitrageEngine:
         allocator: CapitalAllocator,
         context: OpportunityContext,
     ) -> ExecutionReport:
+        capital_ticket = None
+        if self.capital_governor is not None:
+            capital_ticket = self.capital_governor.issue_ticket(
+                strategy='arbitrage',
+                exchange=opportunity.buy_exchange,
+                symbol=opportunity.symbol,
+                requested_notional=max(opportunity.mid_price, 0.0),
+                pnl_or_returns=context.returns_matrix.get(opportunity.symbol, []),
+                spread_bps=max(opportunity.expected_edge_bps, 0.0),
+                available_liquidity=max(opportunity.mid_price * 2.0, 1e-9),
+                price_gap_pct=max(context.annualized_volatility / 252.0, 0.0),
+            )
+            valid_ticket, ticket_reason = self.capital_governor.validate_ticket(capital_ticket)
+            if not valid_ticket:
+                return ExecutionReport(
+                    symbol=opportunity.symbol,
+                    buy_exchange=opportunity.buy_exchange,
+                    sell_exchange=opportunity.sell_exchange,
+                    buy_order_id=None,
+                    sell_order_id=None,
+                    status='rejected_governor',
+                    spread=opportunity.spread,
+                    expected_edge_bps=opportunity.expected_edge_bps,
+                    details={'reason': ticket_reason},
+                )
+
         risk_assessment = risk_manager.assess(
             symbol=opportunity.symbol,
             side='BUY',
@@ -366,6 +395,7 @@ class MultiExchangeArbitrageEngine:
             exchange=opportunity.buy_exchange,
             notional_by_exchange=context.notionals_by_exchange,
             total_exposure=context.total_exposure,
+            capital_ticket=capital_ticket,
         )
         if not risk_assessment.allowed:
             return ExecutionReport(
