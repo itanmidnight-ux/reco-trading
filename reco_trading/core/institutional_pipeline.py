@@ -61,6 +61,8 @@ class InstitutionalTradingPipeline:
         data_module: Any | None = None,
         microstructure_module: Any | None = None,
         transformer_module: Any | None = None,
+        transformer_inference_engine: Any | None = None,
+        transformer_model_name: str = 'order_flow_transformer',
         regime_module: Any | None = None,
         stacking_module: Any | None = None,
         meta_learning_module: Any | None = None,
@@ -76,6 +78,8 @@ class InstitutionalTradingPipeline:
         self.data_module = data_module
         self.microstructure_module = microstructure_module
         self.transformer_module = transformer_module
+        self.transformer_inference_engine = transformer_inference_engine
+        self.transformer_model_name = transformer_model_name
         self.regime_module = regime_module
         self.stacking_module = stacking_module
         self.meta_learning_module = meta_learning_module
@@ -126,8 +130,27 @@ class InstitutionalTradingPipeline:
     async def _handle_transformer(self, event: PipelineEvent) -> None:
         payload = dict(event.payload)
         if self.feature_flags.transformer and self.transformer_module is not None:
-            payload['transformer'] = await self._run_component(self.transformer_module, payload)
+            if self.transformer_inference_engine is not None:
+                transformer_input = self._extract_transformer_input(payload)
+                payload['transformer'] = await self.transformer_inference_engine.infer(
+                    self.transformer_model_name,
+                    transformer_input,
+                )
+            else:
+                payload['transformer'] = await self._run_component(self.transformer_module, payload)
         await self.event_bus.publish(PipelineEvent(self.TOPIC_REGIME, payload))
+
+    @staticmethod
+    def _extract_transformer_input(payload: dict[str, Any]) -> Any:
+        for key in ('transformer_input', 'sequence_features', 'microstructure', 'data'):
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, dict):
+                    for nested_key in ('transformer_input', 'sequence_features', 'microstructure'):
+                        if nested_key in value:
+                            return value[nested_key]
+                return value
+        return payload
 
     async def _handle_regime(self, event: PipelineEvent) -> None:
         payload = dict(event.payload)

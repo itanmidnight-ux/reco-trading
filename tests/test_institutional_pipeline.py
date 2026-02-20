@@ -91,3 +91,29 @@ def test_institutional_pipeline_feature_flag_and_fallback():
 
     assert len(fallback_calls) == 1
     assert strategy_calls == []
+
+
+def test_institutional_pipeline_uses_transformer_inference_engine():
+    calls = []
+
+    class _InferenceEngine:
+        async def infer(self, model_name, payload):
+            calls.append((model_name, payload))
+            return {'engine': model_name}
+
+    async def _run():
+        bus = AsyncEventBus()
+        pipeline = InstitutionalTradingPipeline(
+            bus,
+            transformer_module=lambda payload: (_ for _ in ()).throw(RuntimeError('should not run direct transformer')),
+            transformer_inference_engine=_InferenceEngine(),
+            transformer_model_name='orderflow-v2',
+        )
+        await pipeline.start(workers=1)
+        await pipeline.submit({'sequence_features': [1, 2, 3]})
+        await asyncio.wait_for(bus._queue.join(), timeout=1)
+        await pipeline.shutdown()
+
+    asyncio.run(_run())
+
+    assert calls == [('orderflow-v2', [1, 2, 3])]
