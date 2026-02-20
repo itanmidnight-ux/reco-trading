@@ -24,6 +24,19 @@ class Settings(BaseSettings):
     postgres_dsn: str = Field(default='postgresql+asyncpg://trading:trading_password@localhost/reco_trading_prod')
     postgres_admin_dsn: str | None = Field(default=None)
     redis_url: str = Field(default='redis://localhost:6379/0')
+    broker_backend: str = Field(default='redis')
+    broker_stream_prefix: str = Field(default='reco:broker')
+    broker_topic_prefix: str = Field(default='reco.broker')
+    kafka_bootstrap_servers: str = Field(default='localhost:9092')
+    broker_max_retries: int = Field(default=3, ge=0, le=20)
+    broker_retry_backoff_seconds: float = Field(default=0.5, ge=0.0, le=60.0)
+    broker_retry_backoff_max_seconds: float = Field(default=30.0, ge=0.1, le=600.0)
+    broker_consume_block_ms: int = Field(default=5000, ge=1, le=60000)
+    broker_operation_timeout_seconds: float = Field(default=5.0, ge=0.1, le=120.0)
+    broker_stream_maxlen: int = Field(default=50_000, ge=100, le=5_000_000)
+    broker_dlq_maxlen: int = Field(default=20_000, ge=100, le=5_000_000)
+    broker_retention_ms: int = Field(default=86_400_000, ge=60_000, le=2_592_000_000)
+    broker_idempotency_ttl_seconds: int = Field(default=86_400, ge=60, le=2_592_000)
 
     risk_per_trade: float = Field(default=0.01, ge=0.001, le=0.05)
     max_daily_drawdown: float = Field(default=0.03, ge=0.01, le=0.2)
@@ -43,6 +56,15 @@ class Settings(BaseSettings):
     slippage_bps: float = Field(default=5.0)
 
     loop_interval_seconds: int = Field(default=5, ge=1, le=60)
+
+
+    @field_validator('broker_backend')
+    @classmethod
+    def validate_broker_backend(cls, value: str) -> str:
+        normalized = value.lower()
+        if normalized not in {'redis', 'kafka'}:
+            raise ValueError('broker_backend debe ser "redis" o "kafka".')
+        return normalized
 
     @field_validator('symbol')
     @classmethod
