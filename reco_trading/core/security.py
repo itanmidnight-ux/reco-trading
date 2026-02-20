@@ -1,117 +1,14 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
 import os
-import secrets
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
 
-from cryptography.exceptions import InvalidTag
-from cryptography.fernet import Fernet, InvalidToken
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
-
-
-class SecurityError(RuntimeError):
-    pass
-
-
-def _derive_key(passphrase: str, salt: bytes) -> bytes:
-    kdf = Scrypt(salt=salt, length=32, n=2**14, r=8, p=1)
-    return kdf.derive(passphrase.encode('utf-8'))
-
-
-@dataclass(slots=True)
-class KeyMaterial:
-    key_id: str
-    key: bytes
-    algorithm: str = 'aesgcm'
-    created_at: float = field(default_factory=time.time)
-
-
-class KeyRotationManager:
-    def __init__(self, *, passphrase: str, active_key_id: str = 'v1') -> None:
-        self._passphrase = passphrase
-        self._keys: dict[str, KeyMaterial] = {}
-        self._active_key_id = active_key_id
-        self.rotate(active_key_id)
-
-    @property
-    def active_key_id(self) -> str:
-        return self._active_key_id
-
-    def rotate(self, new_key_id: str | None = None) -> str:
-        key_id = new_key_id or f'v{len(self._keys) + 1}'
-        salt = hashlib.sha256(f'{self._passphrase}:{key_id}'.encode('utf-8')).digest()[:16]
-        key = _derive_key(self._passphrase, salt)
-        self._keys[key_id] = KeyMaterial(key_id=key_id, key=key)
-        self._active_key_id = key_id
-        return key_id
-
-    def get(self, key_id: str) -> KeyMaterial:
-        if key_id not in self._keys:
-            raise SecurityError(f'Unknown key_id={key_id}')
-        return self._keys[key_id]
-
-    def active(self) -> KeyMaterial:
-        return self.get(self._active_key_id)
-
-
-class AuthenticatedEncryption:
-    """AES-GCM authenticated encryption with key rotation support."""
-
-    def __init__(self, key_manager: KeyRotationManager) -> None:
-        self._key_manager = key_manager
-
-    def encrypt(self, plaintext: str, *, associated_data: bytes | None = None) -> str:
-        material = self._key_manager.active()
-        nonce = secrets.token_bytes(12)
-        aesgcm = AESGCM(material.key)
-        ciphertext = aesgcm.encrypt(nonce, plaintext.encode('utf-8'), associated_data)
-        envelope = {
-            'alg': material.algorithm,
-            'key_id': material.key_id,
-            'nonce': base64.urlsafe_b64encode(nonce).decode('utf-8'),
-            'ct': base64.urlsafe_b64encode(ciphertext).decode('utf-8'),
-        }
-        return base64.urlsafe_b64encode(json.dumps(envelope).encode('utf-8')).decode('utf-8')
-
-    def decrypt(self, token: str, *, associated_data: bytes | None = None) -> str:
-        try:
-            raw = base64.urlsafe_b64decode(token.encode('utf-8'))
-            envelope = json.loads(raw.decode('utf-8'))
-            key_id = envelope['key_id']
-            nonce = base64.urlsafe_b64decode(envelope['nonce'].encode('utf-8'))
-            ciphertext = base64.urlsafe_b64decode(envelope['ct'].encode('utf-8'))
-            material = self._key_manager.get(key_id)
-            aesgcm = AESGCM(material.key)
-            plaintext = aesgcm.decrypt(nonce, ciphertext, associated_data)
-            return plaintext.decode('utf-8')
-        except (KeyError, ValueError, InvalidTag, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise SecurityError('Invalid encrypted payload') from exc
-
-
-class FernetEncryption:
-    """Alternative authenticated encryption backend based on Fernet."""
-
-    def __init__(self, passphrase: str) -> None:
-        salt = b'reco_trading_static_salt'  # constant to recover previous encrypted values per env secret.
-        key = base64.urlsafe_b64encode(_derive_key(passphrase, salt))
-        self._fernet = Fernet(key)
-
-    def encrypt(self, plaintext: str) -> str:
-        return self._fernet.encrypt(plaintext.encode('utf-8')).decode('utf-8')
-
-    def decrypt(self, token: str) -> str:
-        try:
-            return self._fernet.decrypt(token.encode('utf-8')).decode('utf-8')
-        except (InvalidToken, UnicodeDecodeError) as exc:
-            raise SecurityError('Invalid fernet payload') from exc
+from reco_trading.security.rbac import CriticalOperation, CriticalRBAC
+from reco_trading.security.secrets_vault import AuthenticatedEncryption, KeyRotationManager, SecurityError
 
 
 class VaultBackend(Protocol):
@@ -168,23 +65,16 @@ class ClusterOperation(str, Enum):
     DRAIN = 'drain'
 
 
-@dataclass(slots=True)
-class RoleBinding:
-    role: str
-    allowed_operations: set[ClusterOperation]
-
-
 class RBACAuthorizer:
     def __init__(self) -> None:
-        self._bindings: dict[str, RoleBinding] = {
-            'viewer': RoleBinding(role='viewer', allowed_operations=set()),
-            'operator': RoleBinding(role='operator', allowed_operations={ClusterOperation.REGISTER, ClusterOperation.DISPATCH}),
-            'admin': RoleBinding(role='admin', allowed_operations=set(ClusterOperation)),
+        self._legacy = {
+            'viewer': set(),
+            'operator': {ClusterOperation.REGISTER, ClusterOperation.DISPATCH},
+            'admin': set(ClusterOperation),
         }
 
     def authorize(self, role: str, operation: ClusterOperation) -> bool:
-        binding = self._bindings.get(role)
-        return bool(binding and operation in binding.allowed_operations)
+        return operation in self._legacy.get(role, set())
 
     def require(self, role: str, operation: ClusterOperation) -> None:
         if not self.authorize(role, operation):
@@ -270,14 +160,32 @@ class CircuitBreaker:
 
 
 def encrypt_secret(plaintext: str, passphrase: str) -> str:
-    manager = KeyRotationManager(passphrase=passphrase)
-    return AuthenticatedEncryption(manager).encrypt(plaintext)
+    return AuthenticatedEncryption(KeyRotationManager(passphrase=passphrase)).encrypt(plaintext)
 
 
 def decrypt_secret(ciphertext: str, passphrase: str) -> str:
     try:
-        # current format with embedded key_id/envelope
-        manager = KeyRotationManager(passphrase=passphrase)
-        return AuthenticatedEncryption(manager).decrypt(ciphertext)
+        return AuthenticatedEncryption(KeyRotationManager(passphrase=passphrase)).decrypt(ciphertext)
     except SecurityError as exc:
         raise SecurityError('Unable to decrypt secret. Ensure passphrase and key rotation state match.') from exc
+
+
+__all__ = [
+    'APIKeyVault',
+    'AuthenticatedEncryption',
+    'CircuitBreaker',
+    'CircuitState',
+    'ClusterChannelPolicy',
+    'ClusterOperation',
+    'CriticalOperation',
+    'CriticalRBAC',
+    'EnvironmentVault',
+    'InMemorySecretManagerVault',
+    'KeyRotationManager',
+    'NodeRateLimiter',
+    'RBACAuthorizer',
+    'RedisVault',
+    'SecurityError',
+    'decrypt_secret',
+    'encrypt_secret',
+]
