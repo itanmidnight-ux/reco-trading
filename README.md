@@ -60,8 +60,8 @@ Sistema cuantitativo modular para Binance Spot con activo único BTC/USDT en tim
 
 ```bash
 ./install.sh
-cp .env.template .env
-# Editar claves reales
+# install.sh sincroniza automáticamente POSTGRES_DSN en .env
+# Edita únicamente tus API keys reales si aplica
 ./run.sh
 ```
 
@@ -81,7 +81,7 @@ Los módulos experimentales quedan fuera del camino productivo y se ejecutan sol
 - `.env` ignorado por git.
 - Usar API key sin permisos de retiro y con whitelist de IP.
 - El sistema separa `BINANCE_TESTNET=false/true` por entorno.
-- La base de datos no se autocrea en producción: aprovisiona roles y DB previamente.
+- La inicialización de PostgreSQL es determinística mediante `config/database.env` + `install.sh` (idempotente).
 
 ## Solución de autenticación Postgres (usuario `trading`)
 
@@ -123,7 +123,7 @@ El script `scripts/reset_database.sh` soporta variables de entorno operativas:
 Ejemplo:
 
 ```bash
-DB_PASS='trading_password' ADMIN_OS_USER=root ./scripts/reset_database.sh
+DB_PASS='trading_secure_2026' ADMIN_OS_USER=root ./scripts/reset_database.sh
 ```
 
 ## Despliegue operacional (systemd / docker compose)
