@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,6 +26,7 @@ from reco_trading.infra.database import Database
 from reco_trading.infra.state_manager import StateManager
 from reco_trading.monitoring.health_check import HealthCheck
 from reco_trading.core.portfolio_engine import PortfolioState
+from reco_trading.research.metrics import aggregate_execution_quality
 
 
 @dataclass
@@ -116,6 +118,10 @@ class ExecutionEngineAdapter:
     def __init__(self, execution: ExecutionEngine, state: RuntimeState) -> None:
         self.execution = execution
         self.state = state
+        self._fills: list[dict] = []
+        self._quotes: list[dict] = []
+        self._midprice_path: list[dict] = []
+        self._cancel_events: list[dict] = []
 
     async def execute(self, side: str, size: float) -> None:
         fill = await self.execution.execute(side, size)
@@ -123,7 +129,50 @@ class ExecutionEngineAdapter:
             return
 
         self.state.last_signal = side
+        price = float(fill.get('average') or fill.get('price') or 0.0)
+        quantity = float(fill.get('filled') or fill.get('amount') or size)
+        timestamp = fill.get('datetime') or datetime.utcnow().isoformat()
+        exchange = str(fill.get('exchange') or 'BINANCE')
+
+        self._fills.append(
+            {
+                'timestamp': timestamp,
+                'side': side,
+                'price': price,
+                'quantity': quantity,
+                'exchange': exchange,
+                'strategy': 'live',
+            }
+        )
+        self._quotes.append(
+            {
+                'timestamp': timestamp,
+                'bid': price,
+                'ask': price,
+                'bid_size': quantity,
+                'ask_size': quantity,
+                'exchange': exchange,
+                'strategy': 'live',
+            }
+        )
+        self._midprice_path.append(
+            {
+                'timestamp': timestamp,
+                'midprice': price,
+                'exchange': exchange,
+                'strategy': 'live',
+            }
+        )
+
+        report = aggregate_execution_quality(
+            fills=self._fills,
+            quotes=self._quotes,
+            midprice_path=self._midprice_path,
+            cancel_events=self._cancel_events,
+        )
+
         logger.info(f"FILL confirmado id={fill.get('id')} side={fill.get('side')} px={fill.get('average')}")
+        logger.info('Execution quality live report', report=report)
 
 
 class InstitutionalTradingPipeline:

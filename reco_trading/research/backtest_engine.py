@@ -3,7 +3,16 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from reco_trading.research.metrics import calmar, expectancy, max_drawdown, profit_factor, sharpe, sortino, ulcer_index
+from reco_trading.research.metrics import (
+    aggregate_execution_quality,
+    calmar,
+    expectancy,
+    max_drawdown,
+    profit_factor,
+    sharpe,
+    sortino,
+    ulcer_index,
+)
 
 
 class BacktestEngine:
@@ -52,6 +61,49 @@ class BacktestEngine:
         costs = trades * (self.fee_rate + dyn_slippage)
         net = (gross - costs).fillna(0.0)
 
+        fills = []
+        quotes = []
+        mids = []
+        exchanges = frame['exchange'] if 'exchange' in frame else pd.Series('SIM', index=frame.index)
+        strategies = frame['strategy'] if 'strategy' in frame else pd.Series('default', index=frame.index)
+        for idx, ts in enumerate(frame.index):
+            close = float(frame['close'].iloc[idx])
+            exec_side = float(side_exec.iloc[idx])
+            if abs(exec_side) > 1e-12:
+                fills.append(
+                    {
+                        'timestamp': ts,
+                        'side': 'BUY' if exec_side > 0 else 'SELL',
+                        'price': close,
+                        'quantity': abs(exec_side),
+                        'exchange': exchanges.iloc[idx],
+                        'strategy': strategies.iloc[idx],
+                    }
+                )
+            spread_ratio = float(spread.iloc[idx]) if not np.isnan(float(spread.iloc[idx])) else 0.0
+            half = close * spread_ratio * 0.5
+            quotes.append(
+                {
+                    'timestamp': ts,
+                    'bid': close - half,
+                    'ask': close + half,
+                    'bid_size': 1.0,
+                    'ask_size': 1.0,
+                    'exchange': exchanges.iloc[idx],
+                    'strategy': strategies.iloc[idx],
+                }
+            )
+            mids.append(
+                {
+                    'timestamp': ts,
+                    'midprice': close,
+                    'exchange': exchanges.iloc[idx],
+                    'strategy': strategies.iloc[idx],
+                }
+            )
+
+        execution_quality = aggregate_execution_quality(fills=fills, quotes=quotes, midprice_path=mids, cancel_events=[])
+
         eq = np.cumprod(1.0 + net.to_numpy(dtype=float))
         ret = net.to_numpy(dtype=float)
 
@@ -65,4 +117,5 @@ class BacktestEngine:
             "profit_factor": profit_factor(ret),
             "trades": int(trades.sum()),
             "terminal_equity": float(eq[-1]) if len(eq) else 1.0,
+            "execution_quality": execution_quality,
         }
