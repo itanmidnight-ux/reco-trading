@@ -124,3 +124,33 @@ def test_institutional_pipeline_submit_dispatches_to_cluster_when_configured():
         assert task_id == coordinator.envelopes[0].task_id
 
     asyncio.run(_run())
+
+
+def test_institutional_pipeline_research_feedback_signal():
+    strategy_payloads = []
+
+    class _ResearchFeedback:
+        def process(self, payload):
+            return {'best_factor': 'momentum', 'ic': 0.14}
+
+    class _Strategy:
+        def handle(self, payload):
+            strategy_payloads.append(payload)
+
+    async def _run():
+        bus = AsyncEventBus()
+        pipeline = InstitutionalTradingPipeline(
+            bus,
+            research_feedback_module=_ResearchFeedback(),
+            strategy_handlers={'arbitrage': _Strategy()},
+            routing=StrategyRoutingConfig(priorities={'arbitrage': 100}, enabled={'arbitrage': True}),
+        )
+        await pipeline.start(workers=1)
+        await pipeline.submit({'strategy_scores': {'arbitrage': 1.0}})
+        await asyncio.wait_for(bus._queue.join(), timeout=1)
+        await pipeline.shutdown()
+
+    asyncio.run(_run())
+
+    assert len(strategy_payloads) == 1
+    assert strategy_payloads[0]['research_feedback']['best_factor'] == 'momentum'
