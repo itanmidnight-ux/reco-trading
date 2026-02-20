@@ -1,0 +1,19 @@
+[Unit]
+Description=Reco Trading Self Healing Worker
+After=network-online.target redis.service postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading
+Group=trading
+WorkingDirectory=/opt/reco-trading
+EnvironmentFile=-/opt/reco-trading/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/reco-trading/deploy/linux/run_service.sh self-healing-worker
+Restart=always
+RestartSec=5
+LimitNOFILE=262144
+
+[Install]
+WantedBy=multi-user.target
