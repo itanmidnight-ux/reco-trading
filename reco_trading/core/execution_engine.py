@@ -10,7 +10,7 @@ import redis
 from loguru import logger
 
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
-from reco_trading.core.microstructure import MicrostructureSnapshot
+from reco_trading.execution.smart_order_router import SmartOrderRouter, VenueSnapshot
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 
@@ -24,11 +24,15 @@ class ExecutionEngine:
         redis_url: str = 'redis://localhost:6379/0',
         redis_key: str = 'reco_trading:last_execution',
         max_order_size: float = 100_000.0,
+        institutional_order_threshold: float = 25.0,
+        sor: SmartOrderRouter | None = None,
     ) -> None:
         self.client = client
         self.symbol = symbol
         self.db = db
         self.max_order_size = max_order_size
+        self.institutional_order_threshold = institutional_order_threshold
+        self._sor = sor or SmartOrderRouter()
         self._rate_limiter = AdaptiveRateLimitController(max_calls=5, period_seconds=1.0)
         self._redis_key = redis_key
         try:
@@ -79,33 +83,13 @@ class ExecutionEngine:
         except Exception:
             logger.warning('No se pudo persistir el estado de ejecución en Redis')
 
-    async def execute_market_order(
+    async def _execute_child_order(
         self,
         side: str,
         amount: float,
+        timeout_seconds: int = 30,
         max_retries: int = 5,
-        microstructure: MicrostructureSnapshot | None = None,
-        timeout_seconds: float = 8.0,
-    ) -> dict[str, Any] | None:
-        if not self._validate_order(side, amount):
-            return None
-
-        if max_retries < 1:
-            logger.warning('max_retries inválido, debe ser >= 1', max_retries=max_retries)
-            return None
-
-        if timeout_seconds <= 0:
-            logger.warning('timeout_seconds inválido, debe ser > 0', timeout_seconds=timeout_seconds)
-            return None
-
-        if not self._validate_microstructure(microstructure):
-            return None
-
-        if microstructure:
-            amount *= max(0.25, 1.0 - microstructure.vpin)
-            if microstructure.liquidity_shock:
-                amount *= 0.35
-
+    ) -> dict | None:
         for attempt in range(1, max_retries + 1):
             try:
                 await self._rate_limiter.acquire()
@@ -177,5 +161,66 @@ class ExecutionEngine:
                 await asyncio.sleep(sleep_seconds)
         return None
 
+    async def execute_market_order(self, side: str, amount: float, max_retries: int = 5) -> dict | None:
+        if not self._validate_order(side, amount):
+            return None
+        return await self._execute_child_order(side=side, amount=amount, max_retries=max_retries)
+
+    async def _execute_institutional_order(self, side: str, amount: float) -> dict | None:
+        order_book = await self.client.fetch_order_book(self.symbol, limit=10)
+        bids = order_book.get('bids') or []
+        asks = order_book.get('asks') or []
+        top_bid = float(bids[0][0]) if bids else 0.0
+        top_ask = float(asks[0][0]) if asks else top_bid
+        spread_bps = ((top_ask - top_bid) / max(top_bid, 1e-9)) * 10_000 if top_bid > 0 else 0.0
+        depth = float(sum(level[1] for level in (bids[:5] if side == 'SELL' else asks[:5])))
+
+        venues = [
+            VenueSnapshot(
+                venue='binance_spot',
+                spread_bps=spread_bps,
+                depth=max(depth, 1e-6),
+                latency_ms=40.0,
+                fee_bps=10.0,
+                fill_ratio=0.98,
+                liquidity=max(depth * 4.0, amount),
+            ),
+            VenueSnapshot(
+                venue='binance_alt',
+                spread_bps=spread_bps * 1.03,
+                depth=max(depth * 0.8, 1e-6),
+                latency_ms=22.0,
+                fee_bps=12.0,
+                fill_ratio=0.95,
+                liquidity=max(depth * 2.0, amount * 0.5),
+            ),
+        ]
+
+        route = self._sor.route_order(
+            amount=amount,
+            venues=venues,
+            strategy='VWAP',
+            slices=5,
+            expected_volume_profile=[0.15, 0.20, 0.25, 0.20, 0.20],
+        )
+
+        fills: list[dict] = []
+        for child in route:
+            child_amount = float(child['amount'])
+            fill = await self._execute_child_order(side=side, amount=child_amount, max_retries=3)
+            if fill:
+                fills.append(fill)
+
+        if not fills:
+            return None
+        return {
+            'status': 'institutional_completed',
+            'fills': fills,
+            'routed_children': len(route),
+            'filled_children': len(fills),
+        }
+
     async def execute(self, side: str, amount: float) -> dict | None:
+        if amount >= self.institutional_order_threshold:
+            return await self._execute_institutional_order(side=side, amount=amount)
         return await self.execute_market_order(side=side, amount=amount)

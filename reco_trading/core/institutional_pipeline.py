@@ -19,6 +19,7 @@ class InstitutionalFeatureFlags:
     risk: bool = True
     portfolio: bool = True
     strategy_routing: bool = True
+    research_feedback: bool = True
 
 
 @dataclass(slots=True)
@@ -49,6 +50,7 @@ class InstitutionalTradingPipeline:
     TOPIC_REINFORCEMENT_LEARNING = 'pipeline.reinforcement_learning'
     TOPIC_RISK = 'pipeline.risk'
     TOPIC_PORTFOLIO = 'pipeline.portfolio'
+    TOPIC_RESEARCH_FEEDBACK = 'pipeline.research_feedback'
     TOPIC_STRATEGY = 'pipeline.strategy'
     STRATEGY_TOPICS = {
         'arbitrage': 'pipeline.strategy.arbitrage',
@@ -63,12 +65,15 @@ class InstitutionalTradingPipeline:
         data_module: Any | None = None,
         microstructure_module: Any | None = None,
         transformer_module: Any | None = None,
+        transformer_inference_engine: Any | None = None,
+        transformer_model_name: str = 'order_flow_transformer',
         regime_module: Any | None = None,
         stacking_module: Any | None = None,
         meta_learning_module: Any | None = None,
         rl_module: Any | None = None,
         risk_module: Any | None = None,
         portfolio_module: Any | None = None,
+        research_feedback_module: Any | None = None,
         strategy_handlers: dict[str, Any] | None = None,
         legacy_fallback: Any | None = None,
         feature_flags: InstitutionalFeatureFlags | None = None,
@@ -79,12 +84,15 @@ class InstitutionalTradingPipeline:
         self.data_module = data_module
         self.microstructure_module = microstructure_module
         self.transformer_module = transformer_module
+        self.transformer_inference_engine = transformer_inference_engine
+        self.transformer_model_name = transformer_model_name
         self.regime_module = regime_module
         self.stacking_module = stacking_module
         self.meta_learning_module = meta_learning_module
         self.rl_module = rl_module
         self.risk_module = risk_module
         self.portfolio_module = portfolio_module
+        self.research_feedback_module = research_feedback_module
         self.strategy_handlers = strategy_handlers or {}
         self.legacy_fallback = legacy_fallback
         self.feature_flags = feature_flags or InstitutionalFeatureFlags()
@@ -101,6 +109,7 @@ class InstitutionalTradingPipeline:
         self.event_bus.subscribe(self.TOPIC_REINFORCEMENT_LEARNING, self._handle_reinforcement_learning)
         self.event_bus.subscribe(self.TOPIC_RISK, self._handle_risk)
         self.event_bus.subscribe(self.TOPIC_PORTFOLIO, self._handle_portfolio)
+        self.event_bus.subscribe(self.TOPIC_RESEARCH_FEEDBACK, self._handle_research_feedback)
         self.event_bus.subscribe(self.TOPIC_STRATEGY, self._handle_strategy_routing)
 
         for strategy_name, topic in self.STRATEGY_TOPICS.items():
@@ -139,8 +148,27 @@ class InstitutionalTradingPipeline:
     async def _handle_transformer(self, event: PipelineEvent) -> None:
         payload = dict(event.payload)
         if self.feature_flags.transformer and self.transformer_module is not None:
-            payload['transformer'] = await self._run_component(self.transformer_module, payload)
+            if self.transformer_inference_engine is not None:
+                transformer_input = self._extract_transformer_input(payload)
+                payload['transformer'] = await self.transformer_inference_engine.infer(
+                    self.transformer_model_name,
+                    transformer_input,
+                )
+            else:
+                payload['transformer'] = await self._run_component(self.transformer_module, payload)
         await self.event_bus.publish(PipelineEvent(self.TOPIC_REGIME, payload))
+
+    @staticmethod
+    def _extract_transformer_input(payload: dict[str, Any]) -> Any:
+        for key in ('transformer_input', 'sequence_features', 'microstructure', 'data'):
+            if key in payload:
+                value = payload[key]
+                if isinstance(value, dict):
+                    for nested_key in ('transformer_input', 'sequence_features', 'microstructure'):
+                        if nested_key in value:
+                            return value[nested_key]
+                return value
+        return payload
 
     async def _handle_regime(self, event: PipelineEvent) -> None:
         payload = dict(event.payload)
@@ -176,6 +204,12 @@ class InstitutionalTradingPipeline:
         payload = dict(event.payload)
         if self.feature_flags.portfolio and self.portfolio_module is not None:
             payload['portfolio'] = await self._run_component(self.portfolio_module, payload)
+        await self.event_bus.publish(PipelineEvent(self.TOPIC_RESEARCH_FEEDBACK, payload))
+
+    async def _handle_research_feedback(self, event: PipelineEvent) -> None:
+        payload = dict(event.payload)
+        if self.feature_flags.research_feedback and self.research_feedback_module is not None:
+            payload['research_feedback'] = await self._run_component(self.research_feedback_module, payload)
         await self.event_bus.publish(PipelineEvent(self.TOPIC_STRATEGY, payload))
 
     async def _handle_strategy_routing(self, event: PipelineEvent) -> None:
