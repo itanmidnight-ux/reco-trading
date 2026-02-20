@@ -134,3 +134,41 @@ Valida:
 - CUDA (si `nvidia-smi` está disponible)
 - Redis (`redis-cli ping`)
 - PostgreSQL (`pg_isready`)
+
+
+## 5) Servicio dedicado `quant-kernel`
+
+Se incluye un ejemplo de unidad dedicado en `deploy/systemd/quant-kernel.service`.
+
+```bash
+sudo cp deploy/systemd/quant-kernel.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now quant-kernel
+```
+
+## 6) Entorno virtual limpio (recomendado)
+
+```bash
+cd /opt/reco-trading
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip wheel setuptools
+pip install -r requirements.txt
+cp .env.example .env
+# editar secretos
+```
+
+Validar que el runtime quedó saludable:
+
+```bash
+python -m reco_trading.kernel.quant_kernel
+```
+
+## 7) Recomendaciones Linux 6.x en Debian 13
+
+- Mantener kernel `6.x` estable de Debian 13 (`linux-image-amd64`) para eBPF, scheduler y mejoras de red.
+- Aplicar `deploy/linux/tune_kernel_network.sh` para buffers TCP/UDP y backlog.
+- Configurar `LimitNOFILE=65535` (o mayor) vía systemd y también `/etc/security/limits.d/`.
+- Activar `irqbalance` y fijar afinidad CPU para servicios críticos (`deploy/linux/set_cpu_affinity.sh`).
+- Verificar THP, swap y presión de memoria antes de sesión live (`vm.swappiness`, `vm.max_map_count`).
+- Para hardware NUMA, alinear afinidad de workers y Redis/PostgreSQL al mismo nodo NUMA para reducir latencia.

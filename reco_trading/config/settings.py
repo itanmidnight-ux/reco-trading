@@ -74,13 +74,11 @@ class Settings(BaseSettings):
     monitoring_metrics_host: str = Field(default='0.0.0.0')
     monitoring_metrics_port: int = Field(default=8001, ge=1, le=65535)
 
-    @field_validator('runtime_profile')
-    @classmethod
-    def validate_runtime_profile(cls, value: str) -> str:
-        normalized = value.lower()
-        if normalized not in {'production', 'research'}:
-            raise ValueError('runtime_profile debe ser "production" o "research".')
-        return normalized
+    runtime_enable_uvloop: bool = Field(default=True)
+    runtime_min_nofile: int = Field(default=4096, ge=256, le=1_048_576)
+    runtime_target_nofile: int = Field(default=65_535, ge=1024, le=1_048_576)
+    runtime_cpu_affinity: str | None = Field(default=None, description='Lista de CPUs separada por comas, ejemplo: 0,1,2')
+
 
     @field_validator('broker_backend')
     @classmethod

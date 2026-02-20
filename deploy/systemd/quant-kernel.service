@@ -1,5 +1,5 @@
 [Unit]
-Description=Reco Trading QuantKernel
+Description=Reco Trading Quant Kernel
 After=network-online.target redis.service postgresql.service
 Wants=network-online.target
 
@@ -8,13 +8,17 @@ Type=simple
 User=trading
 Group=trading
 WorkingDirectory=/opt/reco-trading
-EnvironmentFile=-/opt/reco-trading/.env
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/usr/bin/env bash -lc 'cd /opt/reco-trading && python main.py'
+EnvironmentFile=/opt/reco-trading/.env
+ExecStart=/opt/reco-trading/.venv/bin/python -m main
 Restart=always
 RestartSec=5
-TimeoutStopSec=30
-LimitNOFILE=262144
+LimitNOFILE=65535
+TasksMax=infinity
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/reco-trading
 
 [Install]
 WantedBy=multi-user.target
