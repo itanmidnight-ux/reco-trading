@@ -14,8 +14,8 @@ class BinanceClient:
     def __init__(self, settings: Settings, limiter: BinanceRateLimitController) -> None:
         self.settings = settings
         self.limiter = limiter
-        self.rest_base = 'https://testnet.binance.vision' if settings.testnet else 'https://api.binance.com'
-        self.ws_base = 'wss://testnet.binance.vision/stream?streams=' if settings.testnet else 'wss://stream.binance.com:9443/stream?streams='
+        self.rest_base = 'https://testnet.binance.vision' if settings.binance_testnet else 'https://api.binance.com'
+        self.ws_base = 'wss://testnet.binance.vision/stream?streams=' if settings.binance_testnet else 'wss://stream.binance.com:9443/stream?streams='
 
     async def request(self, method: str, path: str, *, params: dict[str, Any] | None = None, private: bool = False, weight: int = 1) -> dict[str, Any]:
         params = params or {}
@@ -23,8 +23,8 @@ class BinanceClient:
         if private:
             params['timestamp'] = int(time.time() * 1000)
             params['recvWindow'] = 5000
-            params['signature'] = sign_params(self.settings.api_secret, params)
-            headers['X-MBX-APIKEY'] = self.settings.api_key
+            params['signature'] = sign_params(self.settings.binance_api_secret, params)
+            headers['X-MBX-APIKEY'] = self.settings.binance_api_key
 
         for attempt in range(8):
             await self.limiter.reserve_weight(weight)
