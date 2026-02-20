@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import dataclass
 
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.microstructure import MicrostructureSnapshot
@@ -14,7 +15,7 @@ class _FakeClient:
     async def fetch_order_book(self, symbol, limit=10):
         return {'bids': [[100.0, 5.0], [99.9, 4.0]], 'asks': [[100.2, 5.0], [100.3, 4.0]]}
 
-    async def create_market_order(self, symbol, side, amount):
+    async def create_market_order(self, symbol, side, amount, **kwargs):
         self.last_amount = amount
         return {'id': '1', 'symbol': symbol, 'side': side, 'amount': amount}
 
@@ -23,7 +24,7 @@ class _FakeClient:
 
 
 class _CreateTimeoutClient(_FakeClient):
-    async def create_market_order(self, symbol, side, amount):
+    async def create_market_order(self, symbol, side, amount, **kwargs):
         await asyncio.sleep(0.2)
         return await super().create_market_order(symbol, side, amount)
 
@@ -46,6 +47,45 @@ class _FakeDB:
         self.fills.append(fill)
 
 
+@dataclass
+class _Decision:
+    allowed: bool
+    reason: str
+    risk_snapshot: dict
+    recommended_size: float
+
+
+class _AllowFirewall:
+    def __init__(self):
+        self.registered = 0
+
+    async def evaluate(self, **kwargs):
+        return _Decision(True, 'allowed', {'ok': True}, kwargs['amount'])
+
+    def register_fill(self, **kwargs):
+        self.registered += 1
+
+
+class _RejectFirewall:
+    async def evaluate(self, **kwargs):
+        return _Decision(False, 'daily_notional_limit', {'amount': kwargs['amount']}, 0.0)
+
+    def register_fill(self, **kwargs):
+        raise AssertionError('register_fill no debería ejecutarse cuando el firewall rechaza')
+
+
+class _FakeQuantKernel:
+    def __init__(self):
+        self.rejections = []
+        self.blocked = False
+
+    def should_block_trading(self):
+        return self.blocked
+
+    def on_firewall_rejection(self, reason, risk_snapshot):
+        self.rejections.append((reason, risk_snapshot))
+
+
 def test_execution_engine_validates_order_side_and_amount():
     engine = ExecutionEngine(_FakeClient(), 'BTC/USDT', _FakeDB(), redis_url='redis://localhost:6399/0')
 
@@ -58,7 +98,8 @@ def test_execution_engine_validates_order_side_and_amount():
 
 def test_execution_engine_executes_market_order_without_microstructure():
     db = _FakeDB()
-    engine = ExecutionEngine(_FakeClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0')
+    firewall = _AllowFirewall()
+    engine = ExecutionEngine(_FakeClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0', firewall=firewall)
 
     async def _run():
         out = await engine.execute_market_order('BUY', 0.1)
@@ -67,6 +108,7 @@ def test_execution_engine_executes_market_order_without_microstructure():
     asyncio.run(_run())
     assert len(db.orders) == 1
     assert len(db.fills) == 1
+    assert firewall.registered == 1
 
 
 def test_execution_engine_executes_market_order_with_microstructure():
@@ -127,3 +169,45 @@ def test_execution_engine_delegates_institutional_orders_to_sor():
     asyncio.run(_run())
     assert len(db.orders) > 1
     assert len(db.fills) > 1
+
+
+def test_execution_engine_blocks_order_when_firewall_rejects():
+    db = _FakeDB()
+    kernel = _FakeQuantKernel()
+    engine = ExecutionEngine(
+        _FakeClient(),
+        'BTC/USDT',
+        db,
+        redis_url='redis://localhost:6399/0',
+        firewall=_RejectFirewall(),
+        quant_kernel=kernel,
+    )
+
+    async def _run():
+        out = await engine.execute_market_order('BUY', 0.5)
+        assert out is None
+
+    asyncio.run(_run())
+    assert kernel.rejections
+    assert len(db.orders) == 0
+
+
+def test_execution_engine_blocks_when_quant_kernel_kill_switch_active():
+    db = _FakeDB()
+    kernel = _FakeQuantKernel()
+    kernel.blocked = True
+    engine = ExecutionEngine(
+        _FakeClient(),
+        'BTC/USDT',
+        db,
+        redis_url='redis://localhost:6399/0',
+        firewall=_AllowFirewall(),
+        quant_kernel=kernel,
+    )
+
+    async def _run():
+        out = await engine.execute('BUY', 0.1)
+        assert out is None
+
+    asyncio.run(_run())
+    assert len(db.orders) == 0

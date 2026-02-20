@@ -55,7 +55,16 @@ class BinanceClient:
     async def fetch_balance(self) -> Any:
         return await self._retry(self.exchange.fetch_balance)
 
-    async def create_market_order(self, symbol: str, side: str, amount: float) -> Any:
+    async def create_market_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        *,
+        firewall_checked: bool = False,
+    ) -> Any:
+        if not firewall_checked:
+            raise PermissionError('create_market_order requiere validación previa del ExecutionFirewall')
         return await self._retry(self.exchange.create_order, symbol, 'market', side.lower(), amount)
 
     async def fetch_order(self, symbol: str, order_id: str) -> Any:
