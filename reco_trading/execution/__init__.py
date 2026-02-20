@@ -1,3 +1,4 @@
+from reco_trading.execution.execution_firewall import ExecutionFirewall, FirewallDecision
 from reco_trading.execution.smart_order_router import (
     ImpactModel,
     OrderSplitter,
@@ -5,5 +6,12 @@ from reco_trading.execution.smart_order_router import (
     VenueScoreModel,
 )
 
-__all__ = ['VenueScoreModel', 'OrderSplitter', 'ImpactModel', 'SmartOrderRouter']
+__all__ = [
+    'VenueScoreModel',
+    'OrderSplitter',
+    'ImpactModel',
+    'SmartOrderRouter',
+    'ExecutionFirewall',
+    'FirewallDecision',
+]
 

@@ -10,7 +10,9 @@ import redis
 from loguru import logger
 
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
+from reco_trading.core.quant_kernel import QuantKernel
 from reco_trading.core.microstructure import MicrostructureSnapshot
+from reco_trading.execution.execution_firewall import ExecutionFirewall
 from reco_trading.execution.smart_order_router import SmartOrderRouter, VenueSnapshot
 from reco_trading.kernel.capital_governor import CapitalGovernor
 from reco_trading.infra.binance_client import BinanceClient
@@ -68,18 +70,18 @@ class ExecutionEngine:
             return False
         return True
 
-    async def _has_sufficient_balance(self, side: str, amount: float) -> bool:
-        balance = await self.client.fetch_balance()
-        usdt = float(balance.get('USDT', {}).get('free', 0.0))
-        btc = float(balance.get('BTC', {}).get('free', 0.0))
-
-        if side == 'BUY' and usdt <= 15:
-            logger.warning('Saldo USDT insuficiente para compra.', usdt=usdt)
-            return False
-        if side == 'SELL' and btc < amount:
-            logger.warning('Saldo BTC insuficiente para venta.', btc=btc, required=amount)
-            return False
-        return True
+    async def _evaluate_firewall(self, side: str, amount: float) -> bool:
+        decision = await self._firewall.evaluate(client=self.client, symbol=self.symbol, side=side, amount=amount)
+        if decision.allowed:
+            return True
+        logger.warning(
+            'Orden rechazada por execution firewall',
+            reason=decision.reason,
+            recommended_size=decision.recommended_size,
+            risk_snapshot=decision.risk_snapshot,
+        )
+        self._quant_kernel.on_firewall_rejection(decision.reason, decision.risk_snapshot)
+        return False
 
     def _persist_execution(self, payload: dict) -> None:
         if not self._redis:
@@ -101,24 +103,28 @@ class ExecutionEngine:
             try:
                 await self._rate_limiter.acquire()
 
+                if self._quant_kernel.should_block_trading():
+                    logger.error('Orden bloqueada por QuantKernel kill switch')
+                    return None
+
                 try:
-                    has_balance = await asyncio.wait_for(
-                        self._has_sufficient_balance(side, amount), timeout=timeout_seconds
+                    is_allowed = await asyncio.wait_for(
+                        self._evaluate_firewall(side, amount), timeout=timeout_seconds
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
-                        'Timeout verificando balance previo a la orden',
+                        'Timeout evaluando execution firewall previo a la orden',
                         timeout_seconds=timeout_seconds,
                         attempt=attempt,
                     )
                     continue
 
-                if not has_balance:
+                if not is_allowed:
                     return None
 
                 try:
                     order = await asyncio.wait_for(
-                        self.client.create_market_order(self.symbol, side, amount), timeout=timeout_seconds
+                        self.client.create_market_order(self.symbol, side, amount, firewall_checked=True), timeout=timeout_seconds
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
@@ -151,6 +157,7 @@ class ExecutionEngine:
 
                 if fill:
                     await self.db.record_fill(fill)
+                    self._firewall.register_fill(symbol=self.symbol, notional=amount * float(fill.get('average') or fill.get('price') or 0.0))
                     self._persist_execution(
                         {
                             'symbol': self.symbol,
@@ -257,6 +264,9 @@ class ExecutionEngine:
         }
 
     async def execute(self, side: str, amount: float) -> dict | None:
+        if self._quant_kernel.should_block_trading():
+            logger.error('Ejecución detenida por QuantKernel kill switch', symbol=self.symbol)
+            return None
         if amount >= self.institutional_order_threshold:
             return await self._execute_institutional_order(side=side, amount=amount)
         return await self.execute_market_order(side=side, amount=amount)
