@@ -10,6 +10,7 @@ import redis
 from loguru import logger
 
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
+from reco_trading.core.microstructure import MicrostructureSnapshot
 from reco_trading.execution.smart_order_router import SmartOrderRouter, VenueSnapshot
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
@@ -25,6 +26,7 @@ class ExecutionEngine:
         redis_key: str = 'reco_trading:last_execution',
         max_order_size: float = 100_000.0,
         institutional_order_threshold: float = 25.0,
+        order_timeout_seconds: float = 30.0,
         sor: SmartOrderRouter | None = None,
     ) -> None:
         self.client = client
@@ -32,6 +34,7 @@ class ExecutionEngine:
         self.db = db
         self.max_order_size = max_order_size
         self.institutional_order_threshold = institutional_order_threshold
+        self.order_timeout_seconds = max(float(order_timeout_seconds), 0.1)
         self._sor = sor or SmartOrderRouter()
         self._rate_limiter = AdaptiveRateLimitController(max_calls=5, period_seconds=1.0)
         self._redis_key = redis_key
@@ -87,9 +90,10 @@ class ExecutionEngine:
         self,
         side: str,
         amount: float,
-        timeout_seconds: int = 30,
+        timeout_seconds: float = 30.0,
         max_retries: int = 5,
     ) -> dict | None:
+        timeout_seconds = max(float(timeout_seconds), 0.1)
         for attempt in range(1, max_retries + 1):
             try:
                 await self._rate_limiter.acquire()
@@ -130,14 +134,14 @@ class ExecutionEngine:
 
                 try:
                     fill = await asyncio.wait_for(
-                        self.client.wait_for_fill(self.symbol, str(order_id)), timeout=timeout_seconds + 20
+                        self.client.wait_for_fill(self.symbol, str(order_id)), timeout=timeout_seconds
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
                         'Timeout esperando fill de la orden',
                         symbol=self.symbol,
                         order_id=str(order_id),
-                        timeout_seconds=timeout_seconds + 20,
+                        timeout_seconds=timeout_seconds,
                         attempt=attempt,
                     )
                     continue
@@ -161,10 +165,25 @@ class ExecutionEngine:
                 await asyncio.sleep(sleep_seconds)
         return None
 
-    async def execute_market_order(self, side: str, amount: float, max_retries: int = 5) -> dict | None:
+    async def execute_market_order(
+        self,
+        side: str,
+        amount: float,
+        microstructure: MicrostructureSnapshot | None = None,
+        timeout_seconds: float | None = None,
+        max_retries: int = 5,
+    ) -> dict | None:
         if not self._validate_order(side, amount):
             return None
-        return await self._execute_child_order(side=side, amount=amount, max_retries=max_retries)
+        if not self._validate_microstructure(microstructure):
+            return None
+        effective_timeout_seconds = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
+        return await self._execute_child_order(
+            side=side,
+            amount=amount,
+            timeout_seconds=effective_timeout_seconds,
+            max_retries=max_retries,
+        )
 
     async def _execute_institutional_order(self, side: str, amount: float) -> dict | None:
         order_book = await self.client.fetch_order_book(self.symbol, limit=10)

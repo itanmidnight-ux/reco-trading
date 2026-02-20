@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     broker_retry_backoff_max_seconds: float = Field(default=30.0, ge=0.1, le=600.0)
     broker_consume_block_ms: int = Field(default=5000, ge=1, le=60000)
     broker_operation_timeout_seconds: float = Field(default=5.0, ge=0.1, le=120.0)
+    execution_order_timeout_seconds: float = Field(default=30.0, ge=0.1, le=300.0)
     broker_stream_maxlen: int = Field(default=50_000, ge=100, le=5_000_000)
     broker_dlq_maxlen: int = Field(default=20_000, ge=100, le=5_000_000)
     broker_retention_ms: int = Field(default=86_400_000, ge=60_000, le=2_592_000_000)

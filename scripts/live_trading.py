@@ -216,7 +216,13 @@ class InstitutionalTradingPipeline:
         self.risk.update_equity(self.state.equity)
 
         self.execution = ExecutionEngineAdapter(
-            ExecutionEngine(self.client, self.s.symbol, self.db, redis_url=self.s.redis_url),
+            ExecutionEngine(
+                self.client,
+                self.s.symbol,
+                self.db,
+                redis_url=self.s.redis_url,
+                order_timeout_seconds=self.s.execution_order_timeout_seconds,
+            ),
             self.state,
         )
 
