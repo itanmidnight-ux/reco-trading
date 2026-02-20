@@ -98,6 +98,7 @@ class QuantKernel:
             self.s.binance_api_key.get_secret_value(),
             self.s.binance_api_secret.get_secret_value(),
             testnet=self.s.binance_testnet,
+            confirm_mainnet=self.s.confirm_mainnet,
         )
         try:
             self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)

@@ -13,7 +13,12 @@ from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
 
 
 class BinanceClient:
-    def __init__(self, api_key: str, api_secret: str, testnet: bool = True) -> None:
+    def __init__(self, api_key: str, api_secret: str, testnet: bool = True, confirm_mainnet: bool = False) -> None:
+        if not testnet and not confirm_mainnet:
+            raise ValueError('Mainnet requiere confirm_mainnet=true explícito por seguridad institucional.')
+
+        self.rest_base = 'https://testnet.binance.vision' if testnet else 'https://api.binance.com'
+        self.ws_base = 'wss://stream.testnet.binance.vision' if testnet else 'wss://stream.binance.com:9443'
         self.exchange = ccxt.binance(
             {
                 'apiKey': api_key,
@@ -22,6 +27,8 @@ class BinanceClient:
                 'options': {'defaultType': 'spot'},
             }
         )
+        self.exchange.urls['api']['public'] = self.rest_base + '/api/v3'
+        self.exchange.urls['api']['private'] = self.rest_base + '/api/v3'
         self._rate_limiter = AdaptiveRateLimitController(max_calls=8, period_seconds=1.0)
         self._ws_backoff_seconds = 1.0
         if testnet:
@@ -79,7 +86,7 @@ class BinanceClient:
         return None
 
     async def stream_klines(self, symbol_rest: str, interval: str):
-        url = f'wss://stream.binance.com:9443/ws/{symbol_rest.lower()}@kline_{interval}'
+        url = f'{self.ws_base}/ws/{symbol_rest.lower()}@kline_{interval}'
         while True:
             try:
                 timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=30)
