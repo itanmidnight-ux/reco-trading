@@ -5,12 +5,16 @@ from typing import Any
 
 import asyncio
 
+import pandas as pd
 import pytest
 
+from reco_trading.core.institutional_risk_manager import InstitutionalRiskManager, RiskLimits
+from reco_trading.hft.capital_allocator import AllocationLimits, CapitalAllocator
 from reco_trading.hft.multi_exchange_arbitrage import (
     ExchangeAdapter,
     ExchangeAdapterFactory,
     MultiExchangeArbitrageEngine,
+    OpportunityContext,
 )
 
 
@@ -105,3 +109,51 @@ def test_exchange_factory_registry_is_extensible() -> None:
 
     assert 'dummy' in adapters
     assert adapters['dummy'].name == 'dummy-exchange'
+
+
+def test_execute_with_risk_controls_rejects_by_risk() -> None:
+    engine = MultiExchangeArbitrageEngine(
+        adapters={
+            'a': StubAdapter(name='a', order_book={'bids': [[101.0, 1.0]], 'asks': [[102.0, 1.0]]}),
+            'b': StubAdapter(name='b', order_book={'bids': [[99.0, 1.0]], 'asks': [[100.0, 1.0]]}),
+        },
+        min_edge_bps=1,
+    )
+    opportunity = asyncio.run(engine.scan_symbol('ETH/USDT'))[0]
+
+    risk_manager = InstitutionalRiskManager(
+        RiskLimits(
+            risk_per_trade=0.01,
+            max_daily_loss=0.02,
+            max_global_drawdown=0.2,
+            max_total_exposure=0.5,
+            max_asset_exposure=0.2,
+            correlation_threshold=0.8,
+            capital_isolation={'b': 0.2},
+        )
+    )
+    allocator = CapitalAllocator(AllocationLimits(max_global_notional=10_000))
+
+    report = asyncio.run(
+        engine.execute_with_risk_controls(
+            opportunity,
+            risk_manager=risk_manager,
+            allocator=allocator,
+            context=OpportunityContext(
+                equity=1_000,
+                daily_pnl=10,
+                atr=1.5,
+                annualized_volatility=0.3,
+                volatility_multiplier=1.0,
+                expected_win_rate=0.6,
+                avg_win=2.0,
+                avg_loss=1.0,
+                returns_matrix=pd.DataFrame({'ETH/USDT': [0.01, -0.01, 0.02]}),
+                notionals_by_exchange={'b': 250},
+                total_exposure=100,
+            ),
+        )
+    )
+
+    assert report.status == 'rejected_risk'
+    assert report.details['reason'] == 'capital_isolation_limit_hit'

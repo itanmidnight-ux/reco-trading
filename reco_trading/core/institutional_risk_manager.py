@@ -16,6 +16,9 @@ class RiskLimits:
     max_total_exposure: float
     max_asset_exposure: float
     correlation_threshold: float
+    max_exchange_exposure: float = 1.0
+    capital_isolation: dict[str, float] = field(default_factory=dict)
+    max_cross_exchange_notional: float = float('inf')
 
 
 @dataclass(slots=True)
@@ -36,6 +39,7 @@ class RiskState:
     negative_streak: int = 0
     kill_switch: bool = False
     asset_exposure: dict[str, float] = field(default_factory=dict)
+    exchange_exposure: dict[str, float] = field(default_factory=dict)
 
 
 class InstitutionalRiskManager:
@@ -100,6 +104,9 @@ class InstitutionalRiskManager:
         returns_matrix: pd.DataFrame,
         microstructure: MicrostructureSnapshot | None = None,
         risk_per_trade_override: float | None = None,
+        exchange: str | None = None,
+        notional_by_exchange: dict[str, float] | None = None,
+        total_exposure: float | None = None,
     ) -> RiskAssessment:
         if self.state.kill_switch:
             return RiskAssessment(False, "kill_switch_enabled", 0.0, current_price, 0.0, 0.0)
@@ -115,6 +122,22 @@ class InstitutionalRiskManager:
 
         if atr <= 0:
             return RiskAssessment(False, "invalid_atr", 0.0, current_price, 0.0, 0.0)
+
+        exchange_notional = abs((notional_by_exchange or {}).get(exchange or '', 0.0))
+        if exchange and exchange in self.limits.capital_isolation:
+            exchange_cap = abs(equity * self.limits.capital_isolation[exchange])
+            if exchange_notional >= exchange_cap:
+                return RiskAssessment(False, "capital_isolation_limit_hit", 0.0, current_price, 0.0, 0.0)
+
+        if total_exposure is not None and abs(total_exposure) >= abs(equity * self.limits.max_total_exposure):
+            return RiskAssessment(False, "max_total_exposure_hit", 0.0, current_price, 0.0, 0.0)
+
+        if exchange and exchange_notional >= abs(equity * self.limits.max_exchange_exposure):
+            return RiskAssessment(False, "max_exchange_exposure_hit", 0.0, current_price, 0.0, 0.0)
+
+        cross_exchange_notional = sum(abs(v) for v in (notional_by_exchange or {}).values())
+        if cross_exchange_notional >= abs(self.limits.max_cross_exchange_notional):
+            return RiskAssessment(False, "max_cross_exchange_notional_hit", 0.0, current_price, 0.0, 0.0)
 
         if microstructure and microstructure.liquidity_shock:
             volatility_multiplier *= 0.25
@@ -146,6 +169,16 @@ class InstitutionalRiskManager:
         cvar = self._tail_risk_cvar(returns_matrix[symbol]) if symbol in returns_matrix else 0.0
         if cvar > 0.03:
             size *= 0.6
+
+        if exchange and exchange in self.limits.capital_isolation:
+            exchange_cap = abs(equity * self.limits.capital_isolation[exchange])
+            remaining = max(0.0, exchange_cap - exchange_notional)
+            size = min(size, remaining / max(current_price, 1e-9))
+
+        if exchange:
+            exchange_cap_units = equity * self.limits.max_exchange_exposure / max(current_price, 1e-9)
+            exchange_current_units = exchange_notional / max(current_price, 1e-9)
+            size = min(size, max(0.0, exchange_cap_units - exchange_current_units))
 
         if size <= 0:
             return RiskAssessment(False, "size_capped_to_zero", 0.0, stop_price, kelly_fraction, reward_risk, corr_reduced, cvar)
