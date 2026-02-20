@@ -102,6 +102,7 @@ class AdaptiveMarketMaker:
         time_horizon: float,
         vpin: float,
         liquidity_shock: bool,
+        transformer_prob_up: float | None = None,
     ) -> QuoteDecision:
         if mid_price <= 0:
             raise ValueError('mid_price debe ser positivo')
@@ -114,6 +115,11 @@ class AdaptiveMarketMaker:
             sigma=sigma,
             time_horizon=time_horizon,
         )
+
+
+        if transformer_prob_up is not None:
+            directional_edge = max(min(float(transformer_prob_up), 1.0), 0.0) - 0.5
+            reservation_price += directional_edge * max(mid_price * 0.001, 1e-9)
 
         spread_component = self.spread_factor * volatility_adjusted_atr
         total_half_spread = max(spread_component + optimal_spread, 1e-9)
