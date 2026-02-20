@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from loguru import logger
 from reco_trading.core.institutional_risk_manager import InstitutionalRiskManager
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
 from reco_trading.hft.capital_allocator import AllocationRequest, CapitalAllocator
+from reco_trading.hft.safety import HFTSafetyMonitor
 
 
 @dataclass(slots=True)
@@ -210,14 +212,38 @@ class OpportunityContext:
     total_exposure: float = 0.0
 
 class MultiExchangeArbitrageEngine:
-    def __init__(self, adapters: dict[str, ExchangeAdapter], min_edge_bps: float = 5.0) -> None:
+    def __init__(
+        self,
+        adapters: dict[str, ExchangeAdapter],
+        min_edge_bps: float = 5.0,
+        *,
+        safety_monitor: HFTSafetyMonitor | None = None,
+    ) -> None:
         self.adapters = adapters
         self.min_edge_bps = min_edge_bps
+        self.safety_monitor = safety_monitor
 
-    async def _fetch_books(self, symbol: str, exchange_names: list[str]) -> dict[str, dict[str, Any]]:
-        tasks = [self.adapters[name].get_order_book(symbol) for name in exchange_names]
-        results = await asyncio.gather(*tasks)
-        return {name: result for name, result in zip(exchange_names, results, strict=True)}
+    async def _fetch_books_and_tickers(
+        self,
+        symbol: str,
+        exchange_names: list[str],
+    ) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        book_tasks = [self.adapters[name].get_order_book(symbol) for name in exchange_names]
+        ticker_tasks = [self.adapters[name].get_ticker(symbol) for name in exchange_names]
+        started_at = time.perf_counter()
+        books_result, tickers_result = await asyncio.gather(asyncio.gather(*book_tasks), asyncio.gather(*ticker_tasks))
+        elapsed_ms = (time.perf_counter() - started_at) * 1_000
+
+        books = {name: result for name, result in zip(exchange_names, books_result, strict=True)}
+        tickers = {name: result for name, result in zip(exchange_names, tickers_result, strict=True)}
+
+        if self.safety_monitor is not None:
+            per_exchange_latency_ms = elapsed_ms / max(len(exchange_names), 1)
+            for exchange in exchange_names:
+                self.safety_monitor.update_heartbeat(exchange)
+                self.safety_monitor.detect_latency_spike(exchange, per_exchange_latency_ms)
+                self.safety_monitor.detect_book_ticker_desync(exchange, books[exchange], tickers[exchange])
+        return books, tickers
 
     @staticmethod
     def _best_prices(order_book: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -255,7 +281,12 @@ class MultiExchangeArbitrageEngine:
 
     async def scan_symbol(self, symbol: str) -> list[ArbitrageOpportunity]:
         exchange_names = list(self.adapters.keys())
-        books = await self._fetch_books(symbol, exchange_names)
+        if self.safety_monitor is not None:
+            exchange_names = [name for name in exchange_names if name not in self.safety_monitor.state.blocked_exchanges]
+            if self.safety_monitor.state.auto_disable_arbitrage:
+                logger.warning('safety_auto_disable_arbitrage_enabled', symbol=symbol)
+                return []
+        books, _ = await self._fetch_books_and_tickers(symbol, exchange_names)
         opportunities: list[ArbitrageOpportunity] = []
 
         for exchange_a, exchange_b in combinations(exchange_names, 2):
@@ -376,7 +407,40 @@ class MultiExchangeArbitrageEngine:
                 details={'reason': allocation.reason, 'allocator_debug': allocation.debug},
             )
 
-        amount = min(risk_assessment.position_size, allocation.units)
+        if self.safety_monitor is not None:
+            if self.safety_monitor.state.auto_disable_arbitrage:
+                return ExecutionReport(
+                    symbol=opportunity.symbol,
+                    buy_exchange=opportunity.buy_exchange,
+                    sell_exchange=opportunity.sell_exchange,
+                    buy_order_id=None,
+                    sell_order_id=None,
+                    status='rejected_safety',
+                    spread=opportunity.spread,
+                    expected_edge_bps=opportunity.expected_edge_bps,
+                    details={'reason': 'auto_disable_arbitrage'},
+                )
+
+            capital_fraction = min(
+                self.safety_monitor.allowed_capital_fraction(opportunity.buy_exchange),
+                self.safety_monitor.allowed_capital_fraction(opportunity.sell_exchange),
+            )
+            if capital_fraction <= 0:
+                return ExecutionReport(
+                    symbol=opportunity.symbol,
+                    buy_exchange=opportunity.buy_exchange,
+                    sell_exchange=opportunity.sell_exchange,
+                    buy_order_id=None,
+                    sell_order_id=None,
+                    status='rejected_safety',
+                    spread=opportunity.spread,
+                    expected_edge_bps=opportunity.expected_edge_bps,
+                    details={'reason': 'exchange_blocked_by_safety'},
+                )
+        else:
+            capital_fraction = 1.0
+
+        amount = min(risk_assessment.position_size, allocation.units) * capital_fraction
         if amount <= 0:
             return ExecutionReport(
                 symbol=opportunity.symbol,
