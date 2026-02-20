@@ -11,6 +11,7 @@ prometheus-client
 pydantic
 pydantic-settings
 redis
+rich
 scikit-learn
 scipy
 sqlalchemy
