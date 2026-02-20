@@ -103,7 +103,7 @@ class SignalFusionEngine:
         beta_post = 1.0 + (n - k)
         return alpha_post / (alpha_post + beta_post)
 
-    def fuse(self, observations: list[SignalObservation]) -> FusionResult:
+    def fuse(self, observations: list[SignalObservation], meta_weights: dict[str, float] | None = None, meta_confidence: float = 1.0) -> FusionResult:
         if not observations:
             return FusionResult(final_score=0.0, probability_up=0.5, calibrated_probability=0.5, weights={})
 
@@ -124,6 +124,9 @@ class SignalFusionEngine:
             )
             blend_weight *= float(np.clip(obs.regime_weight, 0.2, 2.0))
             blend_weight *= float(np.clip(obs.volatility_adjustment, 0.1, 1.5))
+            if meta_weights is not None:
+                blend_weight *= float(np.clip(meta_weights.get(obs.name, 0.5), 0.05, 5.0))
+            blend_weight *= float(np.clip(meta_confidence, 0.1, 1.5))
             weight_components.append(max(blend_weight, 1e-6))
             names.append(obs.name)
 

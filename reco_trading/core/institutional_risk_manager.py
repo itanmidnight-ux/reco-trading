@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from reco_trading.core.microstructure import MicrostructureSnapshot
+
 
 @dataclass(slots=True)
 class RiskLimits:
@@ -25,6 +27,7 @@ class RiskAssessment:
     kelly_fraction: float
     reward_risk_ratio: float
     reduced_by_correlation: bool = False
+    cvar_95: float = 0.0
 
 
 @dataclass(slots=True)
@@ -44,7 +47,6 @@ class InstitutionalRiskManager:
 
     @staticmethod
     def _modified_kelly(win_rate: float, avg_win: float, avg_loss: float) -> float:
-        # f* = p - (1-p)/b, con b = AvgWin/AvgLoss
         b = max(avg_win / max(avg_loss, 1e-9), 1e-6)
         raw = win_rate - (1.0 - win_rate) / b
         return float(np.clip(raw * 0.5, 0.0, 0.25))
@@ -52,6 +54,11 @@ class InstitutionalRiskManager:
     def _drawdown(self, equity: float) -> float:
         self.state.peak_equity = max(self.state.peak_equity, equity)
         return 1.0 - (equity / max(self.state.peak_equity, 1e-9))
+
+    def current_drawdown(self, equity: float) -> float:
+        """Retorna drawdown sin modificar estado interno."""
+        peak = max(self.state.peak_equity, 1e-9)
+        return 1.0 - (equity / peak)
 
     def _correlation_penalty(self, symbol: str, returns: pd.DataFrame) -> tuple[float, bool]:
         if symbol not in returns.columns or len(returns.columns) < 2:
@@ -65,6 +72,16 @@ class InstitutionalRiskManager:
             return 1.0, False
         penalty = float(np.clip(1.0 - (max_corr - self.limits.correlation_threshold), 0.3, 1.0))
         return penalty, True
+
+    @staticmethod
+    def _tail_risk_cvar(returns: pd.Series, alpha: float = 0.95) -> float:
+        if returns.empty:
+            return 0.0
+        q = float(returns.quantile(1.0 - alpha))
+        tail = returns[returns <= q]
+        if tail.empty:
+            return abs(q)
+        return float(abs(tail.mean()))
 
     def assess(
         self,
@@ -81,6 +98,8 @@ class InstitutionalRiskManager:
         avg_win: float,
         avg_loss: float,
         returns_matrix: pd.DataFrame,
+        microstructure: MicrostructureSnapshot | None = None,
+        risk_per_trade_override: float | None = None,
     ) -> RiskAssessment:
         if self.state.kill_switch:
             return RiskAssessment(False, "kill_switch_enabled", 0.0, current_price, 0.0, 0.0)
@@ -97,13 +116,21 @@ class InstitutionalRiskManager:
         if atr <= 0:
             return RiskAssessment(False, "invalid_atr", 0.0, current_price, 0.0, 0.0)
 
-        kelly_fraction = self._modified_kelly(expected_win_rate, avg_win, avg_loss)
-        risk_budget = equity * self.limits.risk_per_trade * max(kelly_fraction, 0.05)
+        if microstructure and microstructure.liquidity_shock:
+            volatility_multiplier *= 0.25
 
-        # PositionSize = (RiskPerTrade * Equity) / (ATR * Multiplier)
+        kelly_fraction = self._modified_kelly(expected_win_rate, avg_win, avg_loss)
+        risk_per_trade = float(np.clip(risk_per_trade_override if risk_per_trade_override is not None else self.limits.risk_per_trade, 0.001, 0.10))
+        risk_budget = equity * risk_per_trade * max(kelly_fraction, 0.05)
+
         base_size = risk_budget / max(atr * self.atr_multiplier, 1e-9)
         vol_adj = float(np.clip(1.0 / max(annualized_volatility, 0.10), 0.2, 1.2))
         size = base_size * vol_adj * float(np.clip(volatility_multiplier, 0.0, 1.0))
+
+        if microstructure:
+            toxicity_penalty = float(np.clip(1.0 - microstructure.vpin, 0.2, 1.0))
+            spread_penalty = float(np.clip(1.0 - 80.0 * microstructure.spread, 0.2, 1.0))
+            size *= toxicity_penalty * spread_penalty
 
         corr_penalty, corr_reduced = self._correlation_penalty(symbol, returns_matrix)
         size *= corr_penalty
@@ -116,10 +143,14 @@ class InstitutionalRiskManager:
 
         reward_risk = float(np.clip(1.5 + (1.0 - annualized_volatility), 1.0, 3.0))
 
-        if size <= 0:
-            return RiskAssessment(False, "size_capped_to_zero", 0.0, stop_price, kelly_fraction, reward_risk, corr_reduced)
+        cvar = self._tail_risk_cvar(returns_matrix[symbol]) if symbol in returns_matrix else 0.0
+        if cvar > 0.03:
+            size *= 0.6
 
-        return RiskAssessment(True, "ok", float(size), stop_price, kelly_fraction, reward_risk, corr_reduced)
+        if size <= 0:
+            return RiskAssessment(False, "size_capped_to_zero", 0.0, stop_price, kelly_fraction, reward_risk, corr_reduced, cvar)
+
+        return RiskAssessment(True, "ok", float(size), stop_price, kelly_fraction, reward_risk, corr_reduced, cvar)
 
     def register_trade_result(self, pnl: float) -> None:
         self.state.negative_streak = self.state.negative_streak + 1 if pnl < 0 else 0

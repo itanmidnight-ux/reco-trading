@@ -3,9 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from reco_trading.core.microstructure import MicrostructureSnapshot
+
 
 class FeatureEngine:
-    def build(self, df: pd.DataFrame) -> pd.DataFrame:
+    def build(self, df: pd.DataFrame, microstructure: MicrostructureSnapshot | None = None) -> pd.DataFrame:
         out = df.copy()
         out['return'] = np.log(out['close'] / out['close'].shift(1))
         out['ema12'] = out['close'].ewm(span=12, adjust=False).mean()
@@ -38,5 +40,12 @@ class FeatureEngine:
         out['bb_dev'] = (out['close'] - mean20) / (2 * std20)
         out['target_up'] = (out['return'].shift(-1) > 0).astype(int)
         out['target_reversion'] = (out['return'].shift(-1) * out['zscore20'] < 0).astype(int)
+
+        if microstructure is not None:
+            out['obi'] = microstructure.obi
+            out['cvd'] = microstructure.cvd
+            out['spread_micro'] = microstructure.spread
+            out['vpin'] = microstructure.vpin
+            out['liquidity_shock'] = 1.0 if microstructure.liquidity_shock else 0.0
 
         return out.dropna().reset_index(drop=True)

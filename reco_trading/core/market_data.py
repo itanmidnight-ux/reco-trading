@@ -14,8 +14,21 @@ class MarketDataService:
     async def latest_ohlcv(self, limit: int = 500) -> pd.DataFrame:
         rows = await self.client.fetch_ohlcv(self.symbol, self.timeframe, limit=limit)
         frame = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        if frame.empty:
+            raise ValueError('OHLCV vacío desde exchange')
+        frame = frame.replace([float('inf'), float('-inf')], pd.NA).dropna()
         frame['timestamp'] = pd.to_datetime(frame['timestamp'], unit='ms', utc=True)
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+        frame[numeric_cols] = frame[numeric_cols].astype(float)
+        if (frame[numeric_cols] < 0).any().any():
+            raise ValueError('OHLCV corrupto: valores negativos detectados')
         return frame
+
+    async def latest_order_book(self, limit: int = 20) -> dict:
+        book = await self.client.fetch_order_book(self.symbol, limit=limit)
+        if not book or 'bids' not in book or 'asks' not in book:
+            raise ValueError('Order book no disponible')
+        return book
 
     async def live_preview(self, symbol_rest: str):
         async for event in self.client.stream_klines(symbol_rest, self.timeframe):

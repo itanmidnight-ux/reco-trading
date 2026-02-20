@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+
 from loguru import logger
 
+from reco_trading.core.microstructure import MicrostructureSnapshot
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 
@@ -13,13 +15,25 @@ class ExecutionEngine:
         self.symbol = symbol
         self.db = db
 
-    async def execute_market_order(self, side: str, amount: float, max_retries: int = 3) -> dict | None:
+    async def execute_market_order(
+        self,
+        side: str,
+        amount: float,
+        max_retries: int = 3,
+        timeout_seconds: int = 30,
+        microstructure: MicrostructureSnapshot | None = None,
+    ) -> dict | None:
         if amount <= 0:
             return None
 
+        if microstructure:
+            amount *= max(0.25, 1.0 - microstructure.vpin)
+            if microstructure.liquidity_shock:
+                amount *= 0.35
+
         for attempt in range(1, max_retries + 1):
             try:
-                balance = await self.client.fetch_balance()
+                balance = await asyncio.wait_for(self.client.fetch_balance(), timeout=timeout_seconds)
                 usdt = float(balance.get('USDT', {}).get('free', 0.0))
                 btc = float(balance.get('BTC', {}).get('free', 0.0))
 
@@ -30,13 +44,17 @@ class ExecutionEngine:
                     logger.warning('Saldo BTC insuficiente para venta.')
                     return None
 
-                order = await self.client.create_market_order(self.symbol, side, amount)
+                order = await asyncio.wait_for(
+                    self.client.create_market_order(self.symbol, side, amount), timeout=timeout_seconds
+                )
                 await self.db.record_order(order)
                 order_id = order.get('id')
                 if not order_id:
                     raise RuntimeError('Binance no devolvió order id')
 
-                fill = await self.client.wait_for_fill(self.symbol, str(order_id))
+                fill = await asyncio.wait_for(
+                    self.client.wait_for_fill(self.symbol, str(order_id)), timeout=timeout_seconds + 20
+                )
                 if fill:
                     await self.db.record_fill(fill)
                     return fill
