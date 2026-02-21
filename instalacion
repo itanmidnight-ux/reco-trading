@@ -36,8 +36,8 @@ if ! command -v python >/dev/null 2>&1; then
 fi
 
 if [[ ! -f .env ]]; then
-  cp .env.example .env
-  echo "Archivo .env creado desde .env.example"
+  touch .env
+  echo "Archivo .env creado"
 fi
 
 spin "Preparando entorno virtual" "python -m venv .venv"

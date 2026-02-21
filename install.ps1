@@ -17,7 +17,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 
 if (-not (Test-Path .env)) {
-    Copy-Item .env.example .env
+    New-Item -ItemType File -Path .env | Out-Null
 }
 
 docker compose up -d postgres redis
