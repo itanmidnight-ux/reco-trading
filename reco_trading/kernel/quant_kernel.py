@@ -411,6 +411,30 @@ class QuantKernel:
                     await self.db.close()
 
 
+    async def _simulate_or_execute(self, side: str, qty: float) -> dict[str, Any] | None:
+        if side not in {'BUY', 'SELL'} or qty <= 0:
+            return None
+
+        is_paper_runtime = self.s.runtime_profile.lower() == 'paper' or self.s.environment.lower() == 'testnet'
+        if is_paper_runtime:
+            ticker = await self.client.fetch_ticker(self.s.symbol)
+            simulated_price = float(ticker.get('last') or 0.0)
+            if simulated_price <= 0:
+                return None
+            return {
+                'id': f"sim-{int(datetime.now(timezone.utc).timestamp() * 1000)}",
+                'symbol': self.s.symbol,
+                'side': side,
+                'filled': float(qty),
+                'average': simulated_price,
+                'status': 'closed',
+                'pnl': 0.0,
+                'simulated': True,
+            }
+
+        return await self.execution_engine.execute(side, float(qty))
+
+
     def _handle_cycle_exception(self, error: Exception) -> bool:
         self.state.consecutive_cycle_errors += 1
         logger.error(
