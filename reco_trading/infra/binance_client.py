@@ -62,6 +62,12 @@ class BinanceClient:
     async def fetch_balance(self) -> Any:
         return await self._retry(self.exchange.fetch_balance)
 
+    async def ping(self) -> Any:
+        return await self._retry(self.exchange.fetch_status)
+
+    async def fetch_ticker(self, symbol: str) -> Any:
+        return await self._retry(self.exchange.fetch_ticker, symbol=symbol)
+
     async def create_market_order(
         self,
         symbol: str,
