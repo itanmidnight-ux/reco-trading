@@ -62,19 +62,7 @@ class ExecutionService:
 
             if req is not None:
                 try:
-                    if self.settings.mode == 'paper':
-                        logger.info('[PAPER] %s %s %.6f', req.symbol, req.side, req.qty)
-                        await self._emit_event(
-                            {
-                                'symbol': req.symbol,
-                                'side': req.side,
-                                'qty': req.qty,
-                                'price': req.ref_price,
-                                'status': 'entry_filled',
-                            }
-                        )
-                    else:
-                        await self._execute_live(req)
+                    await self._execute_live(req)
                 except Exception as exc:  # noqa: BLE001
                     logger.exception('Fallo de ejecución: %s', exc)
                 finally:
@@ -83,8 +71,7 @@ class ExecutionService:
             now = asyncio.get_running_loop().time()
             if now - last_reconcile >= self._reconcile_interval:
                 last_reconcile = now
-                if self.settings.mode != 'paper':
-                    await self._reconcile_protections()
+                await self._reconcile_protections()
 
     async def _emit_event(self, payload: dict) -> None:
         if self.on_executed:
@@ -97,6 +84,16 @@ class ExecutionService:
             'type': 'MARKET',
             'quantity': f'{req.qty:.6f}',
         }
+        logger.info(
+            'LIVE TESTNET ORDER SENT',
+            extra={
+                'symbol': req.symbol,
+                'side': req.side,
+                'qty': req.qty,
+                'type': payload['type'],
+                'testnet': self.settings.binance_testnet,
+            },
+        )
         order_resp = await self.binance.create_order(payload)
         order_id = int(order_resp.get('orderId', 0))
         if order_id <= 0:
