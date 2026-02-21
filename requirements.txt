@@ -3,8 +3,10 @@ scikit-learn
 asyncpg
 ccxt
 cryptography
+fastapi
 hmmlearn
 lightgbm>=4.3,<5
+jinja2
 loguru
 numpy
 pandas
@@ -18,3 +20,4 @@ sqlalchemy
 torch>=2.1,<3
 xgboost
 uvloop
+uvicorn

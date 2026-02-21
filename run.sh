@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source .venv/bin/activate
+if [ -f .venv/bin/activate ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+else
+  echo "Aviso: .venv/bin/activate no existe. Usando Python del sistema."
+fi
 
 if [ -f .env ]; then
   set -a
@@ -35,6 +40,29 @@ elif [ "$MODE_OPTION" = "2" ]; then
 else
   echo "Opción inválida."
   exit 1
+fi
+
+DASHBOARD_HOST="${DASHBOARD_HOST:-127.0.0.1}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-8080}"
+AUTO_START_WEB="${AUTO_START_WEB:-true}"
+
+cleanup() {
+  if [ -n "${WEB_PID:-}" ] && kill -0 "$WEB_PID" 2>/dev/null; then
+    kill "$WEB_PID" 2>/dev/null || true
+    wait "$WEB_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [ "$AUTO_START_WEB" = "true" ]; then
+  echo "Iniciando dashboard web en http://${DASHBOARD_HOST}:${DASHBOARD_PORT} ..."
+  python -m uvicorn reco_trading.web.dashboard:app --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" --log-level warning &
+  WEB_PID=$!
+  sleep 1
+  if ! kill -0 "$WEB_PID" 2>/dev/null; then
+    echo "Error: no se pudo iniciar el dashboard web."
+    exit 1
+  fi
 fi
 
 python main.py

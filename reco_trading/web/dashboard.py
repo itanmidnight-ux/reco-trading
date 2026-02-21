@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import logging
 import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -13,6 +14,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import DictLoader, Environment, select_autoescape
 
 from reco_trading.infra.binance_client import BinanceClient
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -40,7 +44,12 @@ class DashboardService:
 
     async def startup(self) -> None:
         if self.postgres_dsn:
-            self._pool = await asyncpg.create_pool(dsn=self.postgres_dsn, min_size=1, max_size=4)
+            normalized_dsn = self.postgres_dsn.replace('postgresql+asyncpg://', 'postgresql://', 1)
+            try:
+                self._pool = await asyncpg.create_pool(dsn=normalized_dsn, min_size=1, max_size=4)
+            except Exception as exc:
+                logger.warning('dashboard_db_unavailable: %s', exc)
+                self._pool = None
         if self.binance_api_key and self.binance_api_secret:
             self._binance = BinanceClient(
                 api_key=self.binance_api_key,

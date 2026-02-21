@@ -20,10 +20,17 @@ class MeanReversionModel:
         self._fitted = False
 
     def fit(self, frame: pd.DataFrame) -> None:
-        self.model.fit(frame[self.FEATURES], frame['target_reversion'])
+        target = frame['target_reversion']
+        if target.nunique(dropna=True) < 2:
+            # Fallback defensivo para evitar error cuando solo hay una clase.
+            self._fitted = False
+            return
+        self.model.fit(frame[self.FEATURES], target)
         self._fitted = True
 
     def predict_reversion(self, frame: pd.DataFrame) -> float:
         if not self._fitted:
             self.fit(frame)
+        if not self._fitted:
+            return 0.5
         return float(self.model.predict_proba(frame[self.FEATURES].tail(1))[0, 1])

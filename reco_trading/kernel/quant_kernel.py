@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import os
 import signal
 import traceback
@@ -181,17 +182,19 @@ class QuantKernel:
             raise RuntimeError('No se pudo obtener precio válido desde Binance.')
 
     async def run(self) -> None:
-        await self.initialize()
-        await self.db.init()
-        await self.db.health_check()
-        self.metrics_exporter.start()
-        self.dashboard.start()
-        self._install_signal_handlers()
-
-        logger.info('kernel_start', symbol=self.s.symbol, timeframe=self.s.timeframe, testnet=self.s.binance_testnet)
-
-
+        initialized = False
         try:
+            await self.initialize()
+            await self.db.init()
+            await self.db.health_check()
+            self.metrics_exporter.start()
+            self.dashboard.start()
+            self._install_signal_handlers()
+            initialized = True
+
+            logger.info('kernel_start', symbol=self.s.symbol, timeframe=self.s.timeframe, testnet=self.s.binance_testnet)
+
+
             while not self.shutdown_event.is_set():
                 try:
                     cycle_started = datetime.now(timezone.utc)
@@ -371,17 +374,22 @@ class QuantKernel:
                     await asyncio.sleep(self.s.loop_interval_seconds)
                     continue
         finally:
-            logger.info(
-                'kernel_stop',
-                trades=self.state.trades,
-                daily_pnl=self.state.daily_pnl,
-                equity=self.state.equity,
-                blocked=self.blocked,
-                shutdown_reason=self._shutdown_reason,
-            )
-            self.dashboard.stop()
-            await self.client.close()
-            await self.db.close()
+            if initialized:
+                logger.info(
+                    'kernel_stop',
+                    trades=self.state.trades,
+                    daily_pnl=self.state.daily_pnl,
+                    equity=self.state.equity,
+                    blocked=self.blocked,
+                    shutdown_reason=self._shutdown_reason,
+                )
+                self.dashboard.stop()
+            if hasattr(self, 'client'):
+                with suppress(Exception):
+                    await self.client.close()
+            if hasattr(self, 'db'):
+                with suppress(Exception):
+                    await self.db.close()
 
 
     def _handle_cycle_exception(self, error: Exception) -> bool:
