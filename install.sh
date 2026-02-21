@@ -11,6 +11,63 @@ source config/database.env
 
 POSTGRES_DSN="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 
+ensure_env_file() {
+  local env_file=".env"
+
+  if [[ -f "${env_file}" ]]; then
+    echo "Actualizando archivo ${env_file} con configuración base..."
+  else
+    echo "Creando archivo ${env_file} con configuración base..."
+    cat > "${env_file}" <<ENV_TEMPLATE
+# ==============================
+# RECO TRADING - CONFIGURACIÓN
+# ==============================
+# NOTA: Reemplaza manualmente BINANCE_API_KEY y BINANCE_API_SECRET.
+# El script run.sh actualiza automáticamente BINANCE_TESTNET,
+# CONFIRM_MAINNET, ENVIRONMENT y RUNTIME_PROFILE según el modo elegido.
+
+BINANCE_API_KEY=CAMBIAR_POR_TU_API_KEY
+BINANCE_API_SECRET=CAMBIAR_POR_TU_API_SECRET
+
+# Modo por defecto (run.sh lo ajusta dinámicamente)
+BINANCE_TESTNET=true
+CONFIRM_MAINNET=false
+ENVIRONMENT=testnet
+RUNTIME_PROFILE=paper
+
+# Infraestructura
+POSTGRES_DSN=
+POSTGRES_ADMIN_DSN=
+REDIS_URL=redis://localhost:6379/0
+
+# Dashboard
+DASHBOARD_HOST=127.0.0.1
+DASHBOARD_PORT=8080
+AUTO_START_WEB=true
+ENV_TEMPLATE
+  fi
+
+  upsert_env_var "${env_file}" "POSTGRES_DSN" "${POSTGRES_DSN}"
+  upsert_env_var "${env_file}" "POSTGRES_ADMIN_DSN" "postgresql+asyncpg://postgres@${DB_HOST}:${DB_PORT}/postgres"
+  upsert_env_var "${env_file}" "BINANCE_TESTNET" "true"
+  upsert_env_var "${env_file}" "CONFIRM_MAINNET" "false"
+  upsert_env_var "${env_file}" "ENVIRONMENT" "testnet"
+  upsert_env_var "${env_file}" "RUNTIME_PROFILE" "paper"
+  upsert_env_var "${env_file}" "REDIS_URL" "redis://localhost:6379/0"
+}
+
+upsert_env_var() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+
+  if grep -qE "^${key}=" "${env_file}"; then
+    sed -i "s|^${key}=.*|${key}=${value}|" "${env_file}"
+  else
+    printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
+  fi
+}
+
 run_as_postgres() {
   ${SUDO} -u postgres "$@"
 }
@@ -105,5 +162,8 @@ if ! PGPASSWORD="${DB_PASSWORD}" psql \
   exit 1
 fi
 
+ensure_env_file
+
 echo 'PostgreSQL sincronizado y validado correctamente.'
+echo "Archivo .env sincronizado (actualiza manualmente BINANCE_API_KEY y BINANCE_API_SECRET)."
 echo 'Instalación completada con éxito.'
