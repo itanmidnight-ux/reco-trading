@@ -146,74 +146,65 @@ if command -v systemctl >/dev/null 2>&1; then
   ${SUDO} systemctl start redis-server || true
 fi
 
-echo 'Sincronizando usuario y contraseña de PostgreSQL...'
-run_as_postgres psql <<SQL
-DO
-\$do\$
-BEGIN
-   IF NOT EXISTS (
-      SELECT FROM pg_catalog.pg_roles WHERE rolname = '${DB_USER}'
-   ) THEN
-      CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
-   ELSE
-      ALTER ROLE ${DB_USER} WITH PASSWORD '${DB_PASSWORD}';
-   END IF;
-END
-\$do\$;
-SQL
+echo 'Reconfigurando PostgreSQL en modo determinista y seguro...'
 
-echo 'Creando base de datos si no existe...'
-if ! run_as_postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | rg -q '^1$'; then
-  run_as_postgres createdb --owner="${DB_USER}" "${DB_NAME}"
+CLUSTER_INFO=$(pg_lsclusters --no-header | awk 'NR==1 {print $1" "$2}')
+if [[ -z "${CLUSTER_INFO}" ]]; then
+  echo "No se detectó cluster PostgreSQL activo." >&2
+  exit 1
 fi
 
-echo 'Aplicando ownership y permisos de schema public...'
-run_as_postgres psql -d "${DB_NAME}" <<SQL
-GRANT ALL ON SCHEMA public TO ${DB_USER};
+PG_VERSION=$(echo "${CLUSTER_INFO}" | awk '{print $1}')
+PG_CLUSTER=$(echo "${CLUSTER_INFO}" | awk '{print $2}')
+PG_HBA_FILE="/etc/postgresql/${PG_VERSION}/${PG_CLUSTER}/pg_hba.conf"
+
+if [[ ! -f "${PG_HBA_FILE}" ]]; then
+  echo "No se encontró pg_hba.conf en ${PG_HBA_FILE}" >&2
+  exit 1
+fi
+
+echo "Cluster detectado: PostgreSQL ${PG_VERSION} (${PG_CLUSTER})"
+
+# Forzar autenticación correcta
+${SUDO} sed -i -E "s#^local\s+all\s+postgres\s+.*#local   all   postgres   peer#" "${PG_HBA_FILE}"
+${SUDO} sed -i -E "s#^local\s+all\s+all\s+.*#local   all   all   md5#" "${PG_HBA_FILE}"
+
+if ! grep -q "^host\s\+all\s\+all\s\+127\.0\.0\.1/32" "${PG_HBA_FILE}"; then
+  echo "host    all    all    127.0.0.1/32    md5" | ${SUDO} tee -a "${PG_HBA_FILE}" >/dev/null
+fi
+
+${SUDO} pg_ctlcluster ${PG_VERSION} ${PG_CLUSTER} restart
+
+echo 'Validando peer auth...'
+if ! ${SUDO} -u postgres psql -c "SELECT 1;" >/dev/null 2>&1; then
+  echo "ERROR: peer authentication falló." >&2
+  exit 1
+fi
+
+echo 'Recreando usuario y base completamente limpia...'
+
+${SUDO} -u postgres psql <<SQL
+DROP DATABASE IF EXISTS ${DB_NAME};
+DROP ROLE IF EXISTS ${DB_USER};
+CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
+CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};
+GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};
+SQL
+
+${SUDO} -u postgres psql -d "${DB_NAME}" <<SQL
 ALTER SCHEMA public OWNER TO ${DB_USER};
+GRANT ALL ON SCHEMA public TO ${DB_USER};
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${DB_USER};
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${DB_USER};
 SQL
 
-echo 'Ajustando pg_hba.conf de forma segura...'
+echo 'Validando autenticación TCP real...'
 
-PG_HBA_FILE=$(find /etc/postgresql -path '*/main/pg_hba.conf' | head -n 1)
-if [[ -z "${PG_HBA_FILE}" ]]; then
-  echo 'No se encontró pg_hba.conf en /etc/postgresql/*/main/pg_hba.conf' >&2
+if ! PGPASSWORD="${DB_PASSWORD}" psql   -U "${DB_USER}"   -d "${DB_NAME}"   -h "${DB_HOST}"   -p "${DB_PORT}"   -c "SELECT 1;" >/dev/null 2>&1; then
+  echo "ERROR: autenticación TCP falló." >&2
   exit 1
 fi
 
-# 1️⃣ Asegurar que postgres use peer
-if ! rg -q "^local\s+all\s+postgres\s+peer$" "${PG_HBA_FILE}"; then
-  ${SUDO} sed -i -E "s#^local\s+all\s+postgres\s+.*#local   all   postgres   peer#" "${PG_HBA_FILE}"
-fi
-
-# 2️⃣ Asegurar md5 para otros usuarios locales
-if rg -q "^local\s+all\s+all" "${PG_HBA_FILE}"; then
-  ${SUDO} sed -i -E "s#^local\s+all\s+all\s+.*#local   all   all   md5#" "${PG_HBA_FILE}"
-else
-  echo "local   all   all   md5" | ${SUDO} tee -a "${PG_HBA_FILE}" >/dev/null
-fi
-
-# 3️⃣ Asegurar md5 para conexiones TCP locales
-if rg -q "^host\s+all\s+all\s+127\.0\.0\.1/32" "${PG_HBA_FILE}"; then
-  ${SUDO} sed -i -E "s#^host\s+all\s+all\s+127\.0\.0\.1/32\s+.*#host    all   all   127.0.0.1/32   md5#" "${PG_HBA_FILE}"
-else
-  echo "host    all   all   127.0.0.1/32   md5" | ${SUDO} tee -a "${PG_HBA_FILE}" >/dev/null
-fi
-
-echo 'pg_hba.conf configurado correctamente.'
-
-${SUDO} systemctl restart postgresql || ${SUDO} service postgresql restart || restart_postgres
-
-echo 'Validando acceso local del usuario postgres...'
-if ! run_as_postgres psql -c 'SELECT 1;' >/dev/null 2>&1; then
-  echo 'ERROR: el usuario postgres no puede autenticarse con peer.' >&2
-  exit 1
-fi
-
-echo 'Validando acceso con usuario de aplicación...'
-if ! PGPASSWORD="${DB_PASSWORD}" psql -U "${DB_USER}" -d "${DB_NAME}" -h "${DB_HOST}" -p "${DB_PORT}" -c 'SELECT 1;' >/dev/null 2>&1; then
-  echo "ERROR: no fue posible autenticar con ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}" >&2
-  exit 1
-fi
+echo 'PostgreSQL completamente sincronizado y validado.'
 
 echo 'Instalación completada y validada correctamente.'
