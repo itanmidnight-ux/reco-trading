@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -22,21 +23,29 @@ class BinanceClient:
             raise ValueError('Mainnet requiere confirm_mainnet=true explícito por seguridad institucional.')
 
         self.rest_base, self.ws_base = self._resolve_endpoints(testnet)
+        self._symbol = 'BTC/USDT'
         self._log_selected_endpoint(testnet=testnet)
         self.exchange = ccxt.binance(
             {
                 'apiKey': api_key,
                 'secret': api_secret,
                 'enableRateLimit': True,
-                'options': {'defaultType': 'spot'},
+                'options': {'defaultType': 'spot', 'fetchCurrencies': False},
             }
         )
         self.exchange.urls['api']['public'] = self.rest_base + '/v3'
         self.exchange.urls['api']['private'] = self.rest_base + '/v3'
         self._rate_limiter = AdaptiveRateLimitController(max_calls=8, period_seconds=1.0)
         self._ws_backoff_seconds = 1.0
+        self._markets_loaded = False
         if testnet:
             self.exchange.set_sandbox_mode(True)
+
+    async def initialize(self) -> None:
+        if self._markets_loaded:
+            return
+        await self.exchange.load_markets(params={'type': 'spot'})
+        self._markets_loaded = True
 
     @staticmethod
     def _resolve_endpoints(testnet: bool) -> tuple[str, str]:
@@ -83,14 +92,19 @@ class BinanceClient:
         return await self._retry(self.exchange.fetch_balance)
 
     async def ping(self) -> Any:
-        """
-        Health check compatible with testnet and mainnet.
-        Uses fetch_time instead of fetch_status because
-        testnet does not support SAPI endpoints.
-        """
-        return await self._retry(self.exchange.fetch_time)
+        try:
+            await self.initialize()
+            ticker = await self.exchange.fetch_ticker(self._symbol)
+            if not ticker or ticker.get('last') is None:
+                raise RuntimeError('Ticker inválido en ping.')
+            return True
+        except Exception as e:
+            with suppress(Exception):
+                await self.close()
+            raise RuntimeError(f'Binance ping failed: {e}') from e
 
     async def fetch_ticker(self, symbol: str) -> Any:
+        await self.initialize()
         return await self._retry(self.exchange.fetch_ticker, symbol=symbol)
 
     async def create_market_order(
@@ -103,7 +117,11 @@ class BinanceClient:
     ) -> Any:
         if not firewall_checked:
             raise PermissionError('create_market_order requiere validación previa del ExecutionFirewall')
-        return await self._retry(self.exchange.create_order, symbol, 'market', side.lower(), amount)
+        if side.upper() == 'BUY':
+            return await self._retry(self.exchange.create_market_buy_order, symbol, amount)
+        if side.upper() == 'SELL':
+            return await self._retry(self.exchange.create_market_sell_order, symbol, amount)
+        raise ValueError(f'Lado de orden inválido: {side}')
 
     async def fetch_order(self, symbol: str, order_id: str) -> Any:
         return await self._retry(self.exchange.fetch_order, order_id, symbol)
