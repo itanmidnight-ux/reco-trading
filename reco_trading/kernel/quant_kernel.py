@@ -37,31 +37,6 @@ class RuntimeState:
     rolling_returns: list[float] = field(default_factory=list)
 
 
-
-
-class NullDatabase:
-    async def init(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
-
-    async def record_order(self, _order: dict[str, Any]) -> None:
-        return None
-
-    async def record_fill(self, _fill: dict[str, Any]) -> None:
-        return None
-
-    async def persist_candle(self, _payload: dict[str, Any]) -> None:
-        return None
-
-    async def persist_trade_signal(self, _payload: dict[str, Any]) -> None:
-        return None
-
-    async def persist_order_execution(self, _payload: dict[str, Any]) -> None:
-        return None
-
-
 class SignalEngine:
     def __init__(self) -> None:
         self.feature_engine = FeatureEngine()
@@ -115,8 +90,13 @@ class QuantKernel:
         try:
             self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
         except Exception as exc:
-            logger.warning('db_fallback_null', error=str(exc))
-            self.db = NullDatabase()
+            logger.exception(
+                'db_initialization_failed',
+                error=str(exc),
+                environment=self.s.environment,
+                runtime_profile=self.s.runtime_profile,
+            )
+            raise RuntimeError('Fatal startup error: database initialization failed.') from exc
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
         self.signal_engine = SignalEngine()
         self.regime_detector = MarketRegimeDetector(n_states=3)
@@ -153,6 +133,7 @@ class QuantKernel:
     async def run(self) -> None:
         await self.initialize()
         await self.db.init()
+        await self.db.health_check()
         self.metrics_exporter.start()
         self.dashboard.start()
         self._install_signal_handlers()
