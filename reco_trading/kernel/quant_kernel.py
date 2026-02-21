@@ -37,6 +37,40 @@ class RuntimeState:
     rolling_returns: list[float] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class KernelMonitoring:
+    metrics: TradingMetrics
+
+    def set_system_degraded(self, error: Exception) -> None:
+        self.metrics.set_worker_health(state='degraded', healthy=False, strategy='directional')
+        self.metrics.observe_error(component='quant_kernel', error_type=error.__class__.__name__, strategy='directional')
+
+
+
+
+class NullDatabase:
+    async def init(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+    async def record_order(self, _order: dict[str, Any]) -> None:
+        return None
+
+    async def record_fill(self, _fill: dict[str, Any]) -> None:
+        return None
+
+    async def persist_candle(self, _payload: dict[str, Any]) -> None:
+        return None
+
+    async def persist_trade_signal(self, _payload: dict[str, Any]) -> None:
+        return None
+
+    async def persist_order_execution(self, _payload: dict[str, Any]) -> None:
+        return None
+
+
 class SignalEngine:
     def __init__(self) -> None:
         self.feature_engine = FeatureEngine()
@@ -66,6 +100,7 @@ class QuantKernel:
     def __init__(self) -> None:
         self.s = get_settings()
         self.metrics = TradingMetrics()
+        self.monitoring = KernelMonitoring(metrics=self.metrics)
         self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
         self.state = RuntimeState()
         self.initial_equity = self.state.equity
@@ -140,6 +175,12 @@ class QuantKernel:
 
         logger.info('kernel_start', symbol=self.s.symbol, timeframe=self.s.timeframe, testnet=self.s.binance_testnet)
 
+        await self.client.ping()
+        startup_ticker = await self.client.fetch_ticker('BTC/USDT')
+        startup_price = startup_ticker.get('last') or startup_ticker.get('close')
+        if startup_price is None or float(startup_price) <= 0:
+            raise RuntimeError(f"Startup validation failed: invalid BTC/USDT price {startup_ticker!r}")
+
         try:
             while not self.shutdown_event.is_set():
                 try:
@@ -148,6 +189,8 @@ class QuantKernel:
                     sig = self.signal_engine.generate(ohlcv)
                     regime = self.regime_detector.predict(sig['returns'], sig['prices'])
                     last_price = float(sig['prices'].iloc[-1])
+                    if last_price is None or last_price <= 0:
+                        raise ValueError('Invalid price received from Binance')
                     status = 'OK'
 
                     self.risk_manager.update_equity(self.state.equity)
@@ -310,8 +353,9 @@ class QuantKernel:
                     await asyncio.sleep(self.s.loop_interval_seconds)
                     continue
 
-                except Exception:
+                except Exception as e:
                     logger.exception('kernel_cycle_error')
+                    self.monitoring.set_system_degraded(e)
                     self.dashboard.update(
                         self._build_dashboard_snapshot(
                             regime='N/A',
@@ -322,7 +366,8 @@ class QuantKernel:
                             system_status='DEGRADED',
                         )
                     )
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(self.s.loop_interval_seconds)
+                    continue
         finally:
             logger.info(
                 'kernel_stop',
