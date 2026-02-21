@@ -39,12 +39,16 @@ class _FakeDB:
     def __init__(self):
         self.orders = []
         self.fills = []
+        self.executions = []
 
     async def record_order(self, order):
         self.orders.append(order)
 
     async def record_fill(self, fill):
         self.fills.append(fill)
+
+    async def persist_order_execution(self, execution):
+        self.executions.append(execution)
 
 
 @dataclass
@@ -108,6 +112,7 @@ def test_execution_engine_executes_market_order_without_microstructure():
     asyncio.run(_run())
     assert len(db.orders) == 1
     assert len(db.fills) == 1
+    assert len(db.executions) == 1
     assert firewall.registered == 1
 
 
@@ -123,6 +128,7 @@ def test_execution_engine_executes_market_order_with_microstructure():
     asyncio.run(_run())
     assert len(db.orders) == 1
     assert len(db.fills) == 1
+    assert len(db.executions) == 1
 
 
 def test_execution_engine_times_out_during_create_market_order():
@@ -136,6 +142,7 @@ def test_execution_engine_times_out_during_create_market_order():
     asyncio.run(_run())
     assert len(db.orders) == 0
     assert len(db.fills) == 0
+    assert len(db.executions) == 0
 
 
 def test_execution_engine_times_out_waiting_for_fill():

@@ -52,6 +52,15 @@ class NullDatabase:
     async def record_fill(self, _fill: dict[str, Any]) -> None:
         return None
 
+    async def persist_candle(self, _payload: dict[str, Any]) -> None:
+        return None
+
+    async def persist_trade_signal(self, _payload: dict[str, Any]) -> None:
+        return None
+
+    async def persist_order_execution(self, _payload: dict[str, Any]) -> None:
+        return None
+
 
 class SignalEngine:
     def __init__(self) -> None:
