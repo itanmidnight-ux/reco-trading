@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -12,13 +13,16 @@ from ccxt.base.errors import DDoSProtection, ExchangeError, NetworkError, RateLi
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
 
 
+logger = logging.getLogger(__name__)
+
+
 class BinanceClient:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True, confirm_mainnet: bool = False) -> None:
         if not testnet and not confirm_mainnet:
             raise ValueError('Mainnet requiere confirm_mainnet=true explícito por seguridad institucional.')
 
-        self.rest_base = 'https://testnet.binance.vision' if testnet else 'https://api.binance.com'
-        self.ws_base = 'wss://stream.testnet.binance.vision' if testnet else 'wss://stream.binance.com:9443'
+        self.rest_base, self.ws_base = self._resolve_endpoints(testnet)
+        self._log_selected_endpoint(testnet=testnet)
         self.exchange = ccxt.binance(
             {
                 'apiKey': api_key,
@@ -27,12 +31,28 @@ class BinanceClient:
                 'options': {'defaultType': 'spot'},
             }
         )
-        self.exchange.urls['api']['public'] = self.rest_base + '/api/v3'
-        self.exchange.urls['api']['private'] = self.rest_base + '/api/v3'
+        self.exchange.urls['api']['public'] = self.rest_base + '/v3'
+        self.exchange.urls['api']['private'] = self.rest_base + '/v3'
         self._rate_limiter = AdaptiveRateLimitController(max_calls=8, period_seconds=1.0)
         self._ws_backoff_seconds = 1.0
         if testnet:
             self.exchange.set_sandbox_mode(True)
+
+    @staticmethod
+    def _resolve_endpoints(testnet: bool) -> tuple[str, str]:
+        if testnet:
+            return ('https://testnet.binance.vision/api', 'wss://stream.testnet.binance.vision')
+        return ('https://api.binance.com/api', 'wss://stream.binance.com:9443')
+
+    def _log_selected_endpoint(self, *, testnet: bool) -> None:
+        if not self.rest_base.endswith('/api'):
+            logger.warning('BinanceClient endpoint inesperado: rest_base=%s', self.rest_base)
+        logger.info(
+            'BinanceClient inicializado en %s | rest_base=%s | ws_base=%s',
+            'testnet' if testnet else 'mainnet',
+            self.rest_base,
+            self.ws_base,
+        )
 
     async def _retry(self, fn: Callable[..., Awaitable[Any]], *args: Any, retries: int = 7, **kwargs: Any) -> Any:
         last_exc: Exception | None = None
