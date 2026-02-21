@@ -1,20 +1,23 @@
 import hashlib
 
-from pydantic import Field
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
+    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', extra='ignore', populate_by_name=True, env_prefix='TRADING_SYSTEM_')
 
+    mode: str = Field(default='paper')
     app_env: str = Field(default='dev')
     symbol: str = Field(default='BTCUSDT')
 
-    binance_api_key: str = Field(default='')
-    binance_api_secret: str = Field(default='')
-    binance_testnet: bool = Field(default=True)
+    api_key: str = Field(default='', validation_alias=AliasChoices('api_key', 'binance_api_key'))
+    api_secret: str = Field(default='', validation_alias=AliasChoices('api_secret', 'binance_api_secret'))
+    testnet: bool = Field(default=True, validation_alias=AliasChoices('testnet', 'binance_testnet'))
     confirm_mainnet: bool = Field(default=False)
+
+    enable_live_trading: bool = Field(default=False)
+    live_ack_token: str = Field(default='')
 
     runtime_ip: str = Field(default='')
     allowed_ip_hash: str = Field(default='')
@@ -31,7 +34,7 @@ class Settings(BaseSettings):
 
     @property
     def is_live_mode(self) -> bool:
-        return True
+        return self.mode == 'live'
 
     @property
     def runtime_ip_hash(self) -> str:
@@ -42,17 +45,28 @@ class Settings(BaseSettings):
     @model_validator(mode='after')
     def validate_runtime_safety(self) -> 'Settings':
         self.app_env = self.app_env.strip().lower()
+        self.mode = self.mode.strip().lower()
 
         if self.app_env not in {'dev', 'staging', 'prod'}:
             raise ValueError(f"Invalid app_env '{self.app_env}'. Allowed values: dev, staging, prod")
+        if self.mode not in {'paper', 'live'}:
+            raise ValueError('Invalid mode. Allowed values: paper, live')
 
-        if not self.binance_api_key or not self.binance_api_secret:
-            raise ValueError('Invalid configuration: binance_api_key and binance_api_secret are required')
+        if self.mode == 'live' and (not self.api_key or not self.api_secret):
+            raise ValueError('Invalid configuration: api_key and api_secret are required')
 
-        if not self.binance_testnet and not self.confirm_mainnet:
-            raise ValueError('Mainnet requires confirm_mainnet=true')
+        if self.mode == 'live' and not self.enable_live_trading:
+            raise ValueError('mode=live requires enable_live_trading=true')
+        if self.mode == 'live' and self.live_ack_token != 'ENABLE_LIVE_TRADING':
+            raise ValueError('mode=live requires live_ack_token=ENABLE_LIVE_TRADING')
+        if self.mode == 'live' and self.app_env != 'prod':
+            raise ValueError('mode=live requires app_env=prod')
+        if self.mode == 'live' and self.testnet:
+            raise ValueError('mode=live requires testnet=False')
+        if self.mode == 'paper' and not self.testnet:
+            raise ValueError('mode=paper requires testnet=True')
 
-        if not self.binance_testnet:
+        if not self.testnet:
             if not self.allowed_ip_hash:
                 raise ValueError('Security gate blocked: allowed_ip_hash is required for mainnet mode')
             if not self.runtime_ip:

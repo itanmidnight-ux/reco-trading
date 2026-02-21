@@ -15,6 +15,10 @@ class RLAction:
     spread_factor_delta: float
     pause_trading: bool
 
+    @property
+    def size_multiplier(self) -> float:
+        return max(0.0, 1.0 + self.risk_per_trade_delta * 100.0)
+
 
 class TradingRLAgent:
     """Agente RL online con Q-learning tabular discretizado."""

@@ -176,10 +176,31 @@ class QuantKernel:
             capital_governor=self.capital_governor,
         )
 
+        if self.s.symbol != 'BTC/USDT':
+            raise RuntimeError('Símbolo inválido: solo se permite BTC/USDT en CCXT.')
+        if not self.s.binance_testnet and not self.s.confirm_mainnet:
+            raise RuntimeError('Mainnet requiere CONFIRM_MAINNET=true para evitar operación accidental.')
+
+        logger.info('Validando conexión Binance...')
         await self.client.ping()
+
         ticker = await self.client.fetch_ticker(self.s.symbol)
-        if not ticker or ticker.get('last', 0) <= 0:
-            raise RuntimeError('No se pudo obtener precio válido desde Binance.')
+        if ticker['last'] <= 0:
+            raise RuntimeError('Precio inválido desde Binance.')
+        logger.info(f"Precio inicial BTC/USDT: {ticker['last']}")
+
+        balance = await self.client.fetch_balance()
+        usdt_balance = float((balance.get('USDT') or {}).get('free') or 0.0)
+        logger.info(f'Balance detectado: {usdt_balance}')
+
+
+    async def _simulate_or_execute(self, side: str, qty: float) -> dict[str, Any] | None:
+        normalized_side = side.upper().strip()
+        if normalized_side not in {'BUY', 'SELL'}:
+            raise ValueError(f'Señal inválida para ejecución: {side}')
+        if qty <= 0:
+            raise ValueError(f'Cantidad inválida para ejecución: {qty}')
+        return await self.execution_engine.execute(normalized_side, float(qty))
 
     async def run(self) -> None:
         initialized = False
@@ -201,6 +222,16 @@ class QuantKernel:
                     ohlcv = await self.market_data.latest_ohlcv(limit=300)
                     sig = self.signal_engine.generate(ohlcv)
                     regime = self.regime_detector.predict(sig['returns'], sig['prices'])
+                    await self.db.persist_trade_signal(
+                        {
+                            'ts': int(datetime.now(timezone.utc).timestamp() * 1000),
+                            'symbol': self.s.symbol,
+                            'signal': sig['side'],
+                            'score': float(np.clip(sig['signal_score'], 0.0, 1.0)),
+                            'expected_value': float(sig['signal_score']),
+                            'reason': f"regime={regime}",
+                        }
+                    )
                     last_price = float(sig['prices'].iloc[-1])
                     if last_price is None or last_price <= 0:
                         raise ValueError('Invalid price received from Binance')
@@ -330,7 +361,7 @@ class QuantKernel:
                         continue
 
                     self.state.trades += 1
-                    realized = float(np.random.normal(2.0, 6.0))
+                    realized = float(fill.get('pnl') or 0.0)
                     self.state.daily_pnl += realized
                     self.state.equity += realized
                     if realized > 0:
@@ -368,11 +399,8 @@ class QuantKernel:
                     continue
 
                 except Exception as e:
-                    should_shutdown = self._handle_cycle_exception(e)
-                    if should_shutdown:
-                        continue
-                    await asyncio.sleep(self.s.loop_interval_seconds)
-                    continue
+                    logger.exception(f'kernel_cycle_error: {e}')
+                    raise
         finally:
             if initialized:
                 logger.info(

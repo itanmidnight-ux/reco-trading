@@ -135,3 +135,40 @@ Se añadió la carpeta `deploy/` con:
 - perfiles para bare-metal y docker compose opcional.
 
 Ver guía completa en `deploy/README.md`.
+
+
+## Operación real: validaciones obligatorias Binance
+
+El sistema arranca con validaciones estrictas para evitar estados degradados silenciosos:
+
+- `symbol` obligatorio: `BTC/USDT`.
+- En mainnet (`BINANCE_TESTNET=false`) exige `CONFIRM_MAINNET=true`.
+- `BinanceClient.ping()` valida conexión real con `load_markets()` + `fetch_ticker('BTC/USDT')`.
+- Si el precio inicial `last <= 0`, el kernel aborta.
+- Se valida balance real (`fetch_balance`) al inicio y se registra en logs.
+- En órdenes de mercado usa métodos explícitos de CCXT:
+  - `create_market_buy_order('BTC/USDT', amount)`
+  - `create_market_sell_order('BTC/USDT', amount)`
+
+## Dashboard web local (métricas operativas)
+
+La vista web local muestra en vivo:
+
+- Capital
+- Balance real Binance
+- PnL diario
+- Win rate
+- Trades del día
+- Operaciones ganadas
+- Operaciones perdidas
+- Drawdown
+- Sharpe
+- Última señal
+- Operación actual/última
+
+Ejecución:
+
+```bash
+AUTO_START_WEB=true bash run.sh
+# Dashboard: http://127.0.0.1:9000
+```

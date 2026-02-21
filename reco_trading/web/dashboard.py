@@ -26,9 +26,12 @@ class DashboardMetrics:
     pnl_diario: float = 0.0
     win_rate: float = 0.0
     trades: int = 0
+    operaciones_ganadas: int = 0
+    operaciones_perdidas: int = 0
     drawdown: float = 0.0
     sharpe: float = 0.0
     ultima_senal: str = 'N/A'
+    operacion_actual: str = 'Sin operación activa'
     binance_connected: bool = False
     updated_at: str = ''
 
@@ -55,6 +58,7 @@ class DashboardService:
                 api_key=self.binance_api_key,
                 api_secret=self.binance_api_secret,
                 testnet=self.binance_testnet,
+                confirm_mainnet=os.getenv('CONFIRM_MAINNET', 'false').lower() == 'true',
             )
 
     async def shutdown(self) -> None:
@@ -99,7 +103,7 @@ class DashboardService:
         probability = float(row['probability']) if row['probability'] is not None else 0.0
         return f"{row['regime']} ({probability:.2%})"
 
-    async def _fetch_trade_stats(self) -> tuple[float, float, int, float]:
+    async def _fetch_trade_stats(self) -> tuple[float, float, int, int, float]:
         rows = await self._query(
             """
             SELECT pnl
@@ -110,11 +114,12 @@ class DashboardService:
             """
         )
         if not rows:
-            return 0.0, 0.0, 0, 0.0
+            return 0.0, 0.0, 0, 0, 0.0
 
         pnls = [float(row['pnl']) for row in rows]
         trades = len(pnls)
         wins = sum(1 for pnl in pnls if pnl > 0)
+        losses = sum(1 for pnl in pnls if pnl <= 0)
         pnl_diario = sum(pnls)
         win_rate = (wins / trades) * 100
 
@@ -122,7 +127,25 @@ class DashboardService:
         variance = sum((value - mean) ** 2 for value in pnls) / max(trades - 1, 1)
         std = math.sqrt(max(variance, 0.0))
         sharpe = (mean / std) * math.sqrt(trades) if std > 0 else 0.0
-        return pnl_diario, win_rate, trades, sharpe
+        return pnl_diario, win_rate, wins, losses, sharpe
+
+
+    async def _fetch_current_operation(self) -> str:
+        row = await self._queryrow(
+            """
+            SELECT side, quantity, entry_price, status, created_at
+            FROM trades
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        )
+        if row is None:
+            return 'Sin operación activa'
+        side = str(row['side'] or 'N/A').upper()
+        qty = float(row['quantity'] or 0.0)
+        entry_price = float(row['entry_price'] or 0.0)
+        status = str(row['status'] or 'N/A').upper()
+        return f"{status} · {side} {qty:.6f} BTC @ {entry_price:.2f}"
 
     async def _fetch_portfolio_state(self) -> tuple[float, float]:
         row = await self._queryrow(
@@ -139,8 +162,10 @@ class DashboardService:
 
     async def get_metrics(self) -> DashboardMetrics:
         capital, drawdown = await self._fetch_portfolio_state()
-        pnl_diario, win_rate, trades, sharpe = await self._fetch_trade_stats()
+        pnl_diario, win_rate, operaciones_ganadas, operaciones_perdidas, sharpe = await self._fetch_trade_stats()
+        trades = operaciones_ganadas + operaciones_perdidas
         ultima_senal = await self._fetch_last_signal()
+        operacion_actual = await self._fetch_current_operation()
         binance_balance, binance_connected = await self._fetch_binance_balance()
 
         return DashboardMetrics(
@@ -149,9 +174,12 @@ class DashboardService:
             pnl_diario=pnl_diario,
             win_rate=win_rate,
             trades=trades,
+            operaciones_ganadas=operaciones_ganadas,
+            operaciones_perdidas=operaciones_perdidas,
             drawdown=drawdown * 100,
             sharpe=sharpe,
             ultima_senal=ultima_senal,
+            operacion_actual=operacion_actual,
             binance_connected=binance_connected,
             updated_at=datetime.now(UTC).isoformat(),
         )
@@ -192,7 +220,6 @@ templates = Environment(
   </main>
 
   <script>
-    const fields = ['capital', 'binance_balance', 'pnl_diario', 'win_rate', 'trades', 'drawdown', 'sharpe', 'ultima_senal'];
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws/metrics`);
 
@@ -209,7 +236,10 @@ templates = Environment(
       document.getElementById('trades').textContent = payload.trades;
       document.getElementById('drawdown').textContent = `${payload.drawdown.toFixed(2)}%`;
       document.getElementById('sharpe').textContent = payload.sharpe.toFixed(2);
+      document.getElementById('operaciones_ganadas').textContent = payload.operaciones_ganadas;
+      document.getElementById('operaciones_perdidas').textContent = payload.operaciones_perdidas;
       document.getElementById('ultima_senal').textContent = payload.ultima_senal;
+      document.getElementById('operacion_actual').textContent = payload.operacion_actual;
 
       const status = document.getElementById('binance-status');
       status.textContent = payload.binance_connected ? 'Binance: conectado' : 'Binance: desconectado';
@@ -255,7 +285,10 @@ async def dashboard(_request: Request) -> HTMLResponse:
             ('trades', 'Trades (hoy)'),
             ('drawdown', 'Drawdown'),
             ('sharpe', 'Sharpe'),
+            ('operaciones_ganadas', 'Operaciones ganadas'),
+            ('operaciones_perdidas', 'Operaciones perdidas'),
             ('ultima_senal', 'Última señal'),
+            ('operacion_actual', 'Operación actual/última'),
         ]
     )
     return HTMLResponse(content=html)
