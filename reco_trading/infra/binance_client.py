@@ -83,7 +83,12 @@ class BinanceClient:
         return await self._retry(self.exchange.fetch_balance)
 
     async def ping(self) -> Any:
-        return await self._retry(self.exchange.fetch_status)
+        """
+        Health check compatible with testnet and mainnet.
+        Uses fetch_time instead of fetch_status because
+        testnet does not support SAPI endpoints.
+        """
+        return await self._retry(self.exchange.fetch_time)
 
     async def fetch_ticker(self, symbol: str) -> Any:
         return await self._retry(self.exchange.fetch_ticker, symbol=symbol)

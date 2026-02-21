@@ -171,6 +171,11 @@ class QuantKernel:
             capital_governor=self.capital_governor,
         )
 
+        await self.client.ping()
+        ticker = await self.client.fetch_ticker(self.s.symbol)
+        if not ticker or ticker.get('last', 0) <= 0:
+            raise RuntimeError('No se pudo obtener precio válido desde Binance.')
+
     async def run(self) -> None:
         await self.initialize()
         await self.db.init()
@@ -181,11 +186,6 @@ class QuantKernel:
 
         logger.info('kernel_start', symbol=self.s.symbol, timeframe=self.s.timeframe, testnet=self.s.binance_testnet)
 
-        await self.client.ping()
-        startup_ticker = await self.client.fetch_ticker('BTC/USDT')
-        startup_price = startup_ticker.get('last') or startup_ticker.get('close')
-        if startup_price is None or float(startup_price) <= 0:
-            raise RuntimeError(f"Startup validation failed: invalid BTC/USDT price {startup_ticker!r}")
 
         try:
             while not self.shutdown_event.is_set():
