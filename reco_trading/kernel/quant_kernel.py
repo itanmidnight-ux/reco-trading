@@ -308,22 +308,8 @@ class QuantKernel:
                     await asyncio.sleep(self.s.loop_interval_seconds)
                     continue
 
-                alloc = self.portfolio_optimizer.risk_parity(sig['returns_df'], capital_ticket=ticket)
-                alloc_weight = alloc.weights.get('BTCUSDT', 1.0)
-                qty = position_size * alloc_weight
-                logger.info(
-                    'execution_submit_real_order',
-                    symbol=self.s.symbol,
-                    side=sig['side'],
-                    quantity=qty,
-                    route='REAL_TESTNET' if self.s.binance_testnet else 'REAL_MAINNET',
-                    testnet=self.s.binance_testnet,
-                    dispatch_mode='LIVE_ORDER',
-                )
-                fill = await self.execution_engine.execute(sig['side'], qty)
-                if fill is None:
-                    status = 'RISK'
-                    logger.warning('execution_failed', side=sig['side'], qty=qty)
+                except Exception:
+                    logger.exception('kernel_cycle_error')
                     self.dashboard.update(
                         self._build_dashboard_snapshot(
                             regime='N/A',
@@ -334,7 +320,6 @@ class QuantKernel:
                             system_status='DEGRADED',
                         )
                     )
-                    logger.exception('kernel_cycle_error')
                     await asyncio.sleep(1.0)
         finally:
             logger.info(
