@@ -390,8 +390,22 @@ class QuantKernel:
                     continue
 
                 except Exception as e:
-                    logger.exception(f'kernel_cycle_error: {e}')
-                    raise
+                    should_stop = self._handle_cycle_exception(e)
+                    if should_stop:
+                        logger.error(
+                            'kernel_cycle_error_fatal',
+                            error_type=e.__class__.__name__,
+                            consecutive_errors=self.state.consecutive_cycle_errors,
+                        )
+                        break
+                    logger.warning(
+                        'kernel_cycle_error_transient',
+                        error_type=e.__class__.__name__,
+                        consecutive_errors=self.state.consecutive_cycle_errors,
+                        backoff_seconds=1.0,
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
         finally:
             if initialized:
                 logger.info(
@@ -403,6 +417,8 @@ class QuantKernel:
                     shutdown_reason=self._shutdown_reason,
                 )
                 self.dashboard.stop()
+                with suppress(Exception):
+                    self.metrics_exporter.stop()
             if hasattr(self, 'client'):
                 with suppress(Exception):
                     await self.client.close()

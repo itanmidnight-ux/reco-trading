@@ -14,9 +14,23 @@ class MetricsExporter:
 
     port: int = 8001
     addr: str = '0.0.0.0'
+    _http_server: object | None = None
 
     def start(self) -> None:
-        start_http_server(self.port, addr=self.addr)
+        self._http_server = start_http_server(self.port, addr=self.addr)
+
+    def stop(self) -> None:
+        if self._http_server is None:
+            return
+
+        if isinstance(self._http_server, tuple) and self._http_server:
+            server = self._http_server[0]
+            if hasattr(server, 'shutdown'):
+                server.shutdown()
+            if hasattr(server, 'server_close'):
+                server.server_close()
+
+        self._http_server = None
 
 
 class TradingMetrics:
