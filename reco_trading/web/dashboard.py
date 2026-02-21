@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from jinja2 import DictLoader, Environment, select_autoescape
 
 from reco_trading.infra.binance_client import BinanceClient
+from reco_trading.web.dashboard_data_contract import CONTRACT
 
 
 logger = logging.getLogger(__name__)
@@ -90,33 +91,27 @@ class DashboardService:
             return None, False
 
     async def _fetch_last_signal(self) -> str:
-        row = await self._queryrow(
-            """
-            SELECT regime, probability, created_at
-            FROM signals
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
-        )
+        row = await self._queryrow(CONTRACT.last_signal_query)
         if row is None:
             return 'N/A'
-        probability = float(row['probability']) if row['probability'] is not None else 0.0
-        return f"{row['regime']} ({probability:.2%})"
+        score = float(row['score']) if row['score'] is not None else 0.0
+        signal = str(row['signal'] or 'N/A').upper()
+        reason = str(row['reason'] or '').strip()
+        return f"{signal} ({score:.2%}){' · ' + reason if reason else ''}"
 
     async def _fetch_trade_stats(self) -> tuple[float, float, int, int, float]:
-        rows = await self._query(
-            """
-            SELECT pnl
-            FROM trades
-            WHERE status = 'CLOSED'
-              AND pnl IS NOT NULL
-              AND closed_at::date = CURRENT_DATE
-            """
-        )
-        if not rows:
-            return 0.0, 0.0, 0, 0, 0.0
+        rows = await self._query(CONTRACT.daily_execution_pnls_query)
+        pnls = [float(row['pnl']) for row in rows if row['pnl'] is not None]
+        if not pnls:
+            fill_summary = await self._queryrow(CONTRACT.daily_fill_aggregate_query)
+            if fill_summary is None:
+                return 0.0, 0.0, 0, 0, 0.0
+            buy_notional = float(fill_summary['buy_notional'] or 0.0)
+            sell_notional = float(fill_summary['sell_notional'] or 0.0)
+            fees = float(fill_summary['fees'] or 0.0)
+            pnl_diario = sell_notional - buy_notional - fees
+            return pnl_diario, 0.0, 0, 0, 0.0
 
-        pnls = [float(row['pnl']) for row in rows]
         trades = len(pnls)
         wins = sum(1 for pnl in pnls if pnl > 0)
         losses = sum(1 for pnl in pnls if pnl <= 0)
@@ -131,34 +126,27 @@ class DashboardService:
 
 
     async def _fetch_current_operation(self) -> str:
-        row = await self._queryrow(
-            """
-            SELECT side, quantity, entry_price, status, created_at
-            FROM trades
-            ORDER BY created_at DESC
-            LIMIT 1
-            """
-        )
+        row = await self._queryrow(CONTRACT.current_operation_query)
         if row is None:
             return 'Sin operación activa'
         side = str(row['side'] or 'N/A').upper()
-        qty = float(row['quantity'] or 0.0)
-        entry_price = float(row['entry_price'] or 0.0)
+        qty = float(row['qty'] or 0.0)
+        entry_price = float(row['price'] or 0.0)
         status = str(row['status'] or 'N/A').upper()
         return f"{status} · {side} {qty:.6f} BTC @ {entry_price:.2f}"
 
     async def _fetch_portfolio_state(self) -> tuple[float, float]:
-        row = await self._queryrow(
-            """
-            SELECT equity, drawdown
-            FROM portfolio_state
-            ORDER BY updated_at DESC
-            LIMIT 1
-            """
-        )
+        row = await self._queryrow(CONTRACT.latest_portfolio_snapshot_query)
         if row is None:
             return 0.0, 0.0
-        return float(row['equity'] or 0.0), float(row['drawdown'] or 0.0)
+        snapshot = row['snapshot'] if isinstance(row['snapshot'], dict) else {}
+        equity = float(snapshot.get('equity') or 0.0)
+        initial_equity = float(snapshot.get('initial_equity') or equity or 0.0)
+        drawdown = float(snapshot.get('drawdown') or 0.0)
+        if drawdown <= 0.0 and initial_equity > 0.0 and equity > 0.0:
+            peak = max(initial_equity, equity)
+            drawdown = max((peak - equity) / peak, 0.0)
+        return equity, drawdown
 
     async def get_metrics(self) -> DashboardMetrics:
         capital, drawdown = await self._fetch_portfolio_state()
