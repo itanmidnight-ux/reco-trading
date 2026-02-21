@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -35,6 +36,7 @@ class RuntimeState:
     trades: int = 0
     winning_trades: int = 0
     rolling_returns: list[float] = field(default_factory=list)
+    consecutive_cycle_errors: int = 0
 
 
 @dataclass(slots=True)
@@ -80,7 +82,7 @@ class SignalEngine:
     def generate(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
         feats = self.feature_engine.build(ohlcv)
         if feats.empty:
-            raise ValueError('features vacías')
+            raise ValueError('features vacías: OHLCV insuficiente o corrupto para generar señal')
         mom = self.momentum.predict_proba_up(feats)
         rev = self.reversion.predict_reversion(feats)
         signal_score = 0.65 * mom + 0.35 * (1.0 - rev)
@@ -97,6 +99,8 @@ class SignalEngine:
 
 
 class QuantKernel:
+    MAX_CONSECUTIVE_CYCLE_ERRORS = 5
+
     def __init__(self) -> None:
         self.s = get_settings()
         self.metrics = TradingMetrics()
@@ -198,6 +202,7 @@ class QuantKernel:
                     if last_price is None or last_price <= 0:
                         raise ValueError('Invalid price received from Binance')
                     status = 'OK'
+                    self.state.consecutive_cycle_errors = 0
 
                     self.risk_manager.update_equity(self.state.equity)
                     self.risk_manager.check_kill_switch(self.state.equity)
@@ -360,18 +365,9 @@ class QuantKernel:
                     continue
 
                 except Exception as e:
-                    logger.exception('kernel_cycle_error')
-                    self.monitoring.set_system_degraded(e)
-                    self.dashboard.update(
-                        self._build_dashboard_snapshot(
-                            regime='N/A',
-                            signal='ERROR',
-                            last_price=0.0,
-                            latency_ms=0.0,
-                            binance_status='RISK',
-                            system_status='DEGRADED',
-                        )
-                    )
+                    should_shutdown = self._handle_cycle_exception(e)
+                    if should_shutdown:
+                        continue
                     await asyncio.sleep(self.s.loop_interval_seconds)
                     continue
         finally:
@@ -386,6 +382,37 @@ class QuantKernel:
             self.dashboard.stop()
             await self.client.close()
             await self.db.close()
+
+
+    def _handle_cycle_exception(self, error: Exception) -> bool:
+        self.state.consecutive_cycle_errors += 1
+        logger.error(
+            'kernel_cycle_error',
+            error_type=error.__class__.__name__,
+            error_message=str(error),
+            consecutive_errors=self.state.consecutive_cycle_errors,
+            traceback=traceback.format_exc(),
+        )
+        self.monitoring.set_system_degraded(error)
+        self.dashboard.update(
+            self._build_dashboard_snapshot(
+                regime='N/A',
+                signal='ERROR',
+                last_price=0.0,
+                latency_ms=0.0,
+                binance_status='RISK',
+                system_status='DEGRADED',
+            )
+        )
+        if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
+            logger.critical(
+                'kernel_emergency_shutdown',
+                reason='max_consecutive_cycle_errors_reached',
+                consecutive_errors=self.state.consecutive_cycle_errors,
+            )
+            self.request_shutdown('max_consecutive_cycle_errors')
+            return True
+        return False
 
     def request_shutdown(self, reason: str) -> None:
         if self.shutdown_event.is_set():
