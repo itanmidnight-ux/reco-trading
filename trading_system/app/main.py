@@ -62,8 +62,8 @@ class TradingSystem:
         self._last_snapshot_ts = 0.0
 
     def _enforce_startup_security(self) -> None:
-        if self.settings.is_live_mode and not self.settings.enable_live_trading:
-            raise RuntimeError('Startup blocked: live mode requested without enable_live_trading=true')
+        if not self.settings.binance_testnet and not self.settings.confirm_mainnet:
+            raise RuntimeError('Startup blocked: mainnet requested without confirm_mainnet=true')
 
     async def bootstrap_history(self) -> None:
         klines = await self.binance.get_klines(self.settings.symbol, '1m', 500)

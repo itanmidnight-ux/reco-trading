@@ -19,20 +19,63 @@ run_as_postgres() {
   fi
 }
 
-upsert_env_key() {
-  local key="$1"
-  local value="$2"
-  local env_file="$3"
+write_env_file() {
+  local env_file="$1"
+  local binance_api_key="$2"
+  local binance_api_secret="$3"
 
-  if [[ ! -f "${env_file}" ]]; then
-    touch "${env_file}"
-  fi
+  cat > "${env_file}" <<EOF
+ENVIRONMENT=production
+SYMBOL=BTC/USDT
+TIMEFRAME=5m
 
-  if rg -q "^${key}=" "${env_file}"; then
-    sed -i "s#^${key}=.*#${key}=${value}#" "${env_file}"
-  else
-    printf '\n%s=%s\n' "${key}" "${value}" >> "${env_file}"
-  fi
+# Binance Spot API (habilita whitelist IP desde tu cuenta Binance)
+BINANCE_API_KEY=${binance_api_key}
+BINANCE_API_SECRET=${binance_api_secret}
+BINANCE_TESTNET=true
+
+POSTGRES_DSN=${POSTGRES_DSN}
+# Opcional: DSN admin para crear DB cuando no existe (ej: postgresql://postgres:postgres@localhost:5432/postgres)
+POSTGRES_ADMIN_DSN=
+REDIS_URL=redis://localhost:6379/0
+
+RISK_PER_TRADE=0.01
+MAX_DAILY_DRAWDOWN=0.03
+MAX_CONSECUTIVE_LOSSES=3
+ATR_STOP_MULTIPLIER=2.0
+VOLATILITY_TARGET=0.20
+CIRCUIT_BREAKER_VOLATILITY=0.08
+
+MAKER_FEE=0.001
+TAKER_FEE=0.001
+SLIPPAGE_BPS=5
+LOOP_INTERVAL_SECONDS=5
+EOF
+}
+
+validate_allowed_env_vars() {
+  local env_file="$1"
+  local allowed_regex='^(ENVIRONMENT|SYMBOL|TIMEFRAME|BINANCE_API_KEY|BINANCE_API_SECRET|BINANCE_TESTNET|POSTGRES_DSN|POSTGRES_ADMIN_DSN|REDIS_URL|RISK_PER_TRADE|MAX_DAILY_DRAWDOWN|MAX_CONSECUTIVE_LOSSES|ATR_STOP_MULTIPLIER|VOLATILITY_TARGET|CIRCUIT_BREAKER_VOLATILITY|MAKER_FEE|TAKER_FEE|SLIPPAGE_BPS|LOOP_INTERVAL_SECONDS)$'
+  local line_number=0
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    ((line_number += 1))
+
+    if [[ -z "${line}" || "${line}" =~ ^# ]]; then
+      continue
+    fi
+
+    if [[ ! "${line}" =~ ^[A-Z0-9_]+= ]]; then
+      echo "ERROR: línea inválida en .env (${line_number}): ${line}" >&2
+      exit 1
+    fi
+
+    local key="${line%%=*}"
+    if [[ ! "${key}" =~ ${allowed_regex} ]]; then
+      echo "ERROR: variable no permitida en .env: ${key}" >&2
+      exit 1
+    fi
+  done < "${env_file}"
 }
 
 restart_postgres() {
@@ -89,10 +132,13 @@ pip install --upgrade pip
 pip install -r requirements.txt --no-cache-dir
 
 if [[ ! -f .env ]]; then
-  cp .env.example .env
+  read -r -p "Enter Binance Testnet API Key: " BINANCE_API_KEY
+  read -r -s -p "Enter Binance Testnet API Secret: " BINANCE_API_SECRET
+  echo
+  write_env_file ".env" "${BINANCE_API_KEY}" "${BINANCE_API_SECRET}"
 fi
 
-upsert_env_key "POSTGRES_DSN" "${POSTGRES_DSN}" ".env"
+validate_allowed_env_vars ".env"
 
 echo 'Asegurando servicios...'
 start_postgres
