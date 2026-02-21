@@ -177,6 +177,14 @@ class Database:
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
 
+    async def health_check(self) -> None:
+        try:
+            async with self.session_factory() as session:
+                await session.execute(select(1))
+        except Exception as exc:
+            logger.exception('database_health_check_failed', error=str(exc))
+            raise RuntimeError('Database health check failed: SELECT 1 did not return successfully.') from exc
+
     async def _execute_in_transaction(self, action: str, operation) -> Any:
         async with self.session_factory() as session:
             try:

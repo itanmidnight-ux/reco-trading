@@ -125,8 +125,13 @@ class QuantKernel:
         try:
             self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
         except Exception as exc:
-            logger.warning('db_fallback_null', error=str(exc))
-            self.db = NullDatabase()
+            logger.exception(
+                'db_initialization_failed',
+                error=str(exc),
+                environment=self.s.environment,
+                runtime_profile=self.s.runtime_profile,
+            )
+            raise RuntimeError('Fatal startup error: database initialization failed.') from exc
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
         self.signal_engine = SignalEngine()
         self.regime_detector = MarketRegimeDetector(n_states=3)
@@ -163,6 +168,7 @@ class QuantKernel:
     async def run(self) -> None:
         await self.initialize()
         await self.db.init()
+        await self.db.health_check()
         self.metrics_exporter.start()
         self.dashboard.start()
         self._install_signal_handlers()
