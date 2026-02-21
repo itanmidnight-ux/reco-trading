@@ -89,7 +89,7 @@ pip install --upgrade pip
 pip install -r requirements.txt --no-cache-dir
 
 if [[ ! -f .env ]]; then
-  cp .env.example .env
+  touch .env
 fi
 
 upsert_env_key "POSTGRES_DSN" "${POSTGRES_DSN}" ".env"
