@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import suppress
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -29,7 +30,7 @@ class BinanceClient:
                 'apiKey': api_key,
                 'secret': api_secret,
                 'enableRateLimit': True,
-                'options': {'defaultType': 'spot'},
+                'options': {'defaultType': 'spot', 'fetchCurrencies': False},
             }
         )
         self.exchange.urls['api']['public'] = self.rest_base + '/v3'
