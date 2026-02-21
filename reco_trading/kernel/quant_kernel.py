@@ -37,6 +37,15 @@ class RuntimeState:
     rolling_returns: list[float] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class KernelMonitoring:
+    metrics: TradingMetrics
+
+    def set_system_degraded(self, error: Exception) -> None:
+        self.metrics.set_worker_health(state='degraded', healthy=False, strategy='directional')
+        self.metrics.observe_error(component='quant_kernel', error_type=error.__class__.__name__, strategy='directional')
+
+
 
 
 class NullDatabase:
@@ -91,6 +100,7 @@ class QuantKernel:
     def __init__(self) -> None:
         self.s = get_settings()
         self.metrics = TradingMetrics()
+        self.monitoring = KernelMonitoring(metrics=self.metrics)
         self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
         self.state = RuntimeState()
         self.initial_equity = self.state.equity
@@ -329,8 +339,9 @@ class QuantKernel:
                     await asyncio.sleep(self.s.loop_interval_seconds)
                     continue
 
-                except Exception:
+                except Exception as e:
                     logger.exception('kernel_cycle_error')
+                    self.monitoring.set_system_degraded(e)
                     self.dashboard.update(
                         self._build_dashboard_snapshot(
                             regime='N/A',
@@ -341,7 +352,8 @@ class QuantKernel:
                             system_status='DEGRADED',
                         )
                     )
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(self.s.loop_interval_seconds)
+                    continue
         finally:
             logger.info(
                 'kernel_stop',
