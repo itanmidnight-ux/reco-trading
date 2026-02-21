@@ -177,6 +177,8 @@ class QuantKernel:
                     sig = self.signal_engine.generate(ohlcv)
                     regime = self.regime_detector.predict(sig['returns'], sig['prices'])
                     last_price = float(sig['prices'].iloc[-1])
+                    if last_price is None or last_price <= 0:
+                        raise ValueError('Invalid price received from Binance')
                     status = 'OK'
 
                     self.risk_manager.update_equity(self.state.equity)
