@@ -99,7 +99,7 @@ docker compose -f deploy/profiles/docker-compose.optional.yml --profile infra --
    deploy/linux/validate_compatibility.sh
    ```
 2. Verificar conectividad a Redis/PostgreSQL.
-3. Aplicar esquema SQL (`database/schema.sql`) y variables `.env.template`.
+3. Aplicar esquema SQL (`database/schema.sql`) y configurar variables en `.env`.
 4. Iniciar `quant-kernel`:
    ```bash
    sudo systemctl start quant-kernel
@@ -154,7 +154,7 @@ python3.11 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip wheel setuptools
 pip install -r requirements.txt
-cp .env.example .env
+touch .env
 # editar secretos
 ```
 
