@@ -249,7 +249,28 @@ class QuantKernel:
                         await asyncio.sleep(self.s.loop_interval_seconds)
                         continue
 
-                    alloc = self.portfolio_optimizer.risk_parity(sig['returns_df'], capital_ticket=ticket)
+                    try:
+                        alloc = self.portfolio_optimizer.risk_parity(sig['returns_df'], capital_ticket=ticket)
+                    except Exception as e:
+                        logger.exception('risk_parity_failed', error=str(e))
+                        alloc = None
+
+                    if alloc is None:
+                        status = 'RISK'
+                        self.dashboard.update(
+                            self._build_dashboard_snapshot(
+                                regime=regime,
+                                signal=sig['side'],
+                                last_price=last_price,
+                                latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
+                                binance_status='RISK',
+                                system_status=status,
+                                exposure=notional,
+                            )
+                        )
+                        await asyncio.sleep(self.s.loop_interval_seconds)
+                        continue
+
                     alloc_weight = alloc.weights.get('BTCUSDT', 1.0)
                     qty = position_size * alloc_weight
                     fill = await self._simulate_or_execute(sig['side'], qty)
