@@ -22,6 +22,8 @@ class MarketDataService:
         frame[numeric_cols] = frame[numeric_cols].astype(float)
         if (frame[numeric_cols] < 0).any().any():
             raise ValueError('OHLCV corrupto: valores negativos detectados')
+        if (frame['close'] <= 0).any():
+            raise ValueError('Invalid price received from Binance')
         return frame
 
     async def latest_order_book(self, limit: int = 20) -> dict:
@@ -33,11 +35,14 @@ class MarketDataService:
     async def live_preview(self, symbol_rest: str):
         async for event in self.client.stream_klines(symbol_rest, self.timeframe):
             kline = event.get('k', {})
+            close_price = float(kline.get('c', 0.0))
+            if close_price <= 0:
+                raise ValueError('Invalid price received from Binance')
             yield {
                 'close_time': kline.get('T'),
                 'open': float(kline.get('o', 0.0)),
                 'high': float(kline.get('h', 0.0)),
                 'low': float(kline.get('l', 0.0)),
-                'close': float(kline.get('c', 0.0)),
+                'close': close_price,
                 'volume': float(kline.get('v', 0.0)),
             }
