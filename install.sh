@@ -174,31 +174,45 @@ GRANT ALL ON SCHEMA public TO ${DB_USER};
 ALTER SCHEMA public OWNER TO ${DB_USER};
 SQL
 
-echo 'Ajustando pg_hba.conf...'
+echo 'Ajustando pg_hba.conf de forma segura...'
+
 PG_HBA_FILE=$(find /etc/postgresql -path '*/main/pg_hba.conf' | head -n 1)
 if [[ -z "${PG_HBA_FILE}" ]]; then
   echo 'No se encontró pg_hba.conf en /etc/postgresql/*/main/pg_hba.conf' >&2
   exit 1
 fi
 
-${SUDO} sed -i -E "s#^local\s+all\s+all\s+.*#local   all   all   md5#" "${PG_HBA_FILE}"
-if rg -q "^local\s+all\s+all\s+md5$" "${PG_HBA_FILE}"; then
-  true
+# 1️⃣ Asegurar que postgres use peer
+if ! rg -q "^local\s+all\s+postgres\s+peer$" "${PG_HBA_FILE}"; then
+  ${SUDO} sed -i -E "s#^local\s+all\s+postgres\s+.*#local   all   postgres   peer#" "${PG_HBA_FILE}"
+fi
+
+# 2️⃣ Asegurar md5 para otros usuarios locales
+if rg -q "^local\s+all\s+all" "${PG_HBA_FILE}"; then
+  ${SUDO} sed -i -E "s#^local\s+all\s+all\s+.*#local   all   all   md5#" "${PG_HBA_FILE}"
 else
   echo "local   all   all   md5" | ${SUDO} tee -a "${PG_HBA_FILE}" >/dev/null
 fi
 
-${SUDO} sed -i -E "s#^host\s+all\s+all\s+127\.0\.0\.1/32\s+.*#host    all   all   127.0.0.1/32   md5#" "${PG_HBA_FILE}"
-if rg -q "^host\s+all\s+all\s+127\.0\.0\.1/32\s+md5$" "${PG_HBA_FILE}"; then
-  true
+# 3️⃣ Asegurar md5 para conexiones TCP locales
+if rg -q "^host\s+all\s+all\s+127\.0\.0\.1/32" "${PG_HBA_FILE}"; then
+  ${SUDO} sed -i -E "s#^host\s+all\s+all\s+127\.0\.0\.1/32\s+.*#host    all   all   127.0.0.1/32   md5#" "${PG_HBA_FILE}"
 else
   echo "host    all   all   127.0.0.1/32   md5" | ${SUDO} tee -a "${PG_HBA_FILE}" >/dev/null
 fi
 
-restart_postgres
+echo 'pg_hba.conf configurado correctamente.'
 
-echo 'Validando conexión con credenciales sincronizadas...'
-if ! PGPASSWORD="${DB_PASSWORD}" psql -U "${DB_USER}" -d "${DB_NAME}" -h "${DB_HOST}" -p "${DB_PORT}" -c 'SELECT 1;' ; then
+${SUDO} systemctl restart postgresql || ${SUDO} service postgresql restart || restart_postgres
+
+echo 'Validando acceso local del usuario postgres...'
+if ! run_as_postgres psql -c 'SELECT 1;' >/dev/null 2>&1; then
+  echo 'ERROR: el usuario postgres no puede autenticarse con peer.' >&2
+  exit 1
+fi
+
+echo 'Validando acceso con usuario de aplicación...'
+if ! PGPASSWORD="${DB_PASSWORD}" psql -U "${DB_USER}" -d "${DB_NAME}" -h "${DB_HOST}" -p "${DB_PORT}" -c 'SELECT 1;' >/dev/null 2>&1; then
   echo "ERROR: no fue posible autenticar con ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}" >&2
   exit 1
 fi
