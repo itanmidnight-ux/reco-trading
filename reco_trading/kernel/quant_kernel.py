@@ -331,12 +331,13 @@ class QuantKernel:
                         await asyncio.sleep(self.s.loop_interval_seconds)
                         continue
 
-                    alloc_weight = alloc.weights.get('BTCUSDT', 1.0)
-                    qty = position_size * alloc_weight
-                    fill = await self._simulate_or_execute(sig['side'], qty)
+                    alloc_weight = float(alloc.weights.get('BTCUSDT', 1.0))
+                    qty = float(position_size * alloc_weight)
+                    notional = float(qty * last_price)
+                    fill = await self._execute_order(sig['side'], qty)
                     if fill is None:
                         status = 'RISK'
-                        logger.warning('execution_failed', side=sig['side'], qty=qty)
+                        logger.warning('execution_rejected_or_unfilled', side=sig['side'], qty=qty, notional=notional)
                         self.dashboard.update(
                             self._build_dashboard_snapshot(
                                 regime=regime,
@@ -494,3 +495,60 @@ class QuantKernel:
             estado_binance=binance_status,
             estado_sistema=system_status,
         )
+
+    async def _execute_order(self, side: str, qty: float) -> dict[str, Any] | None:
+        qty = float(qty)
+        if qty <= 0.0:
+            logger.warning('execution_rejected_invalid_qty', side=side, qty=qty)
+            return None
+
+        execution = await self.execution_engine.execute(side=side, amount=qty)
+        if execution is None:
+            return None
+
+        normalized_side = str(side).upper()
+        symbol = str(self.s.symbol)
+
+        fills: list[dict[str, Any]]
+        if isinstance(execution.get('fills'), list):
+            fills = [fill for fill in execution['fills'] if isinstance(fill, dict)]
+        else:
+            fills = [execution]
+
+        if not fills:
+            return None
+
+        total_qty = 0.0
+        weighted_price_sum = 0.0
+        latest_status = str(execution.get('status') or 'closed')
+        order_id = execution.get('id')
+
+        for fill in fills:
+            fill_qty = float(fill.get('filled') or fill.get('amount') or 0.0)
+            fill_price = float(fill.get('average') or fill.get('price') or 0.0)
+            if fill_qty > 0.0:
+                total_qty += fill_qty
+                weighted_price_sum += fill_price * fill_qty
+            latest_status = str(fill.get('status') or latest_status)
+            if order_id is None and fill.get('id') is not None:
+                order_id = fill.get('id')
+            if symbol == str(self.s.symbol) and fill.get('symbol'):
+                symbol = str(fill.get('symbol'))
+            if normalized_side == str(side).upper() and fill.get('side'):
+                normalized_side = str(fill.get('side')).upper()
+
+        if total_qty <= 0.0:
+            return None
+
+        avg_price = weighted_price_sum / total_qty if weighted_price_sum > 0.0 else 0.0
+        return {
+            'symbol': symbol,
+            'side': normalized_side,
+            'qty': total_qty,
+            'price': avg_price,
+            'status': latest_status,
+            'pnl': float(execution.get('pnl') or 0.0),
+            'order_id': str(order_id) if order_id is not None else None,
+            'fills': fills,
+            'raw': execution,
+        }
