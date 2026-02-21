@@ -30,7 +30,7 @@ class BinanceClient:
                 'apiKey': api_key,
                 'secret': api_secret,
                 'enableRateLimit': True,
-                'options': {'defaultType': 'spot'},
+                'options': {'defaultType': 'spot', 'fetchCurrencies': False},
             }
         )
         self.exchange.urls['api']['public'] = self.rest_base + '/v3'
@@ -99,8 +99,6 @@ class BinanceClient:
                 raise RuntimeError('Ticker inválido en ping.')
             return True
         except Exception as e:
-            with suppress(Exception):
-                await self.close()
             raise RuntimeError(f'Binance ping failed: {e}') from e
 
     async def fetch_ticker(self, symbol: str) -> Any:

@@ -193,15 +193,6 @@ class QuantKernel:
         usdt_balance = float((balance.get('USDT') or {}).get('free') or 0.0)
         logger.info(f'Balance detectado: {usdt_balance}')
 
-
-    async def _simulate_or_execute(self, side: str, qty: float) -> dict[str, Any] | None:
-        normalized_side = side.upper().strip()
-        if normalized_side not in {'BUY', 'SELL'}:
-            raise ValueError(f'Señal inválida para ejecución: {side}')
-        if qty <= 0:
-            raise ValueError(f'Cantidad inválida para ejecución: {qty}')
-        return await self.execution_engine.execute(normalized_side, float(qty))
-
     async def run(self) -> None:
         initialized = False
         try:
