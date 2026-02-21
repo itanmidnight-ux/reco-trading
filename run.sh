@@ -112,7 +112,7 @@ if [ ${#missing_vars[@]} -gt 0 ]; then
 fi
 
 DASHBOARD_HOST="${DASHBOARD_HOST:-127.0.0.1}"
-DASHBOARD_PORT="${DASHBOARD_PORT:-8080}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-9000}"
 AUTO_START_WEB="${AUTO_START_WEB:-true}"
 
 cleanup() {
