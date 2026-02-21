@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from sqlalchemy import JSON, BigInteger, Column, DateTime, ForeignKey, MetaData, Numeric, String, Table, Text, func, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from loguru import logger
 
 metadata = MetaData()
 
@@ -50,6 +51,48 @@ validation_history = Table(
     metadata,
     Column('id', BigInteger, primary_key=True),
     Column('snapshot', JSON, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+candles = Table(
+    'candles',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('symbol', String, nullable=False),
+    Column('interval', String, nullable=False),
+    Column('ts', BigInteger, nullable=False),
+    Column('open', Numeric, nullable=False),
+    Column('high', Numeric, nullable=False),
+    Column('low', Numeric, nullable=False),
+    Column('close', Numeric, nullable=False),
+    Column('volume', Numeric, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+trade_signals = Table(
+    'trade_signals',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('ts', BigInteger, nullable=False),
+    Column('symbol', String, nullable=False),
+    Column('signal', String, nullable=False),
+    Column('score', Numeric, nullable=False),
+    Column('expected_value', Numeric, nullable=False),
+    Column('reason', Text, nullable=False, server_default=''),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+order_executions = Table(
+    'order_executions',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('ts', BigInteger, nullable=False),
+    Column('symbol', String, nullable=False),
+    Column('side', String, nullable=False),
+    Column('qty', Numeric, nullable=False),
+    Column('price', Numeric, nullable=False),
+    Column('status', String, nullable=False),
+    Column('pnl', Numeric, nullable=False, server_default='0'),
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
@@ -133,6 +176,16 @@ class Database:
     async def init(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+
+    async def _execute_in_transaction(self, action: str, operation) -> Any:
+        async with self.session_factory() as session:
+            try:
+                async with session.begin():
+                    return await operation(session)
+            except Exception:
+                await session.rollback()
+                logger.exception('database_transaction_error', action=action)
+                raise
 
     @staticmethod
     def _payload_hash(payload: dict[str, Any]) -> str:
@@ -405,9 +458,10 @@ class Database:
             'amount': order.get('amount') or order.get('filled') or 0,
             'status': order.get('status', 'unknown'),
         }
-        async with self.session_factory() as session:
+        async def _op(session: AsyncSession) -> None:
             await session.execute(insert(orders).values(**payload))
-            await session.commit()
+
+        await self._execute_in_transaction('record_order', _op)
 
     async def record_fill(self, order: dict) -> None:
         fee = order.get('fee') if isinstance(order.get('fee'), dict) else {}
@@ -419,19 +473,40 @@ class Database:
             'fill_amount': order.get('filled') or order.get('amount') or 0,
             'fee': float(fee.get('cost') or 0.0),
         }
-        async with self.session_factory() as session:
+        async def _op(session: AsyncSession) -> None:
             await session.execute(insert(fills).values(**payload))
-            await session.commit()
+
+        await self._execute_in_transaction('record_fill', _op)
 
     async def snapshot_portfolio(self, state) -> None:
-        async with self.session_factory() as session:
+        async def _op(session: AsyncSession) -> None:
             await session.execute(insert(portfolio_state).values(snapshot=asdict(state)))
-            await session.commit()
+
+        await self._execute_in_transaction('snapshot_portfolio', _op)
 
     async def persist_validation_event(self, payload: dict[str, Any]) -> None:
-        async with self.session_factory() as session:
+        async def _op(session: AsyncSession) -> None:
             await session.execute(insert(validation_history).values(snapshot=payload))
-            await session.commit()
+
+        await self._execute_in_transaction('persist_validation_event', _op)
+
+    async def persist_candle(self, payload: dict[str, Any]) -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(insert(candles).values(**payload))
+
+        await self._execute_in_transaction('persist_candle', _op)
+
+    async def persist_trade_signal(self, payload: dict[str, Any]) -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(insert(trade_signals).values(**payload))
+
+        await self._execute_in_transaction('persist_trade_signal', _op)
+
+    async def persist_order_execution(self, payload: dict[str, Any]) -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(insert(order_executions).values(**payload))
+
+        await self._execute_in_transaction('persist_order_execution', _op)
 
     async def fill_stats(self) -> dict:
         async with self.session_factory() as session:

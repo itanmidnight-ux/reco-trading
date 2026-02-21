@@ -117,6 +117,17 @@ class ExecutionEngine:
 
             await self.db.record_fill(fill)
             fill_price = float(fill.get('average') or fill.get('price') or 0.0)
+            await self.db.persist_order_execution(
+                {
+                    'ts': int(datetime.now(timezone.utc).timestamp() * 1000),
+                    'symbol': str(fill.get('symbol') or self.symbol),
+                    'side': str(fill.get('side') or side).upper(),
+                    'qty': float(fill.get('filled') or fill.get('amount') or amount),
+                    'price': fill_price,
+                    'status': str(fill.get('status') or 'closed'),
+                    'pnl': 0.0,
+                }
+            )
             self._firewall.register_fill(symbol=self.symbol, notional=max(fill_price, 0.0) * amount)
             if self._capital_governor:
                 self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * amount)

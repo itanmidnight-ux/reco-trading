@@ -51,6 +51,15 @@ class NullDatabase:
     async def record_fill(self, _fill: dict[str, Any]) -> None:
         return None
 
+    async def persist_candle(self, _payload: dict[str, Any]) -> None:
+        return None
+
+    async def persist_trade_signal(self, _payload: dict[str, Any]) -> None:
+        return None
+
+    async def persist_order_execution(self, _payload: dict[str, Any]) -> None:
+        return None
+
 
 class SignalEngine:
     def __init__(self) -> None:
@@ -165,7 +174,30 @@ class QuantKernel:
             while self.state.trades < max_trades and not self.blocked:
                 cycle_started = datetime.now(timezone.utc)
                 ohlcv = await self.market_data.latest_ohlcv(limit=300)
+                last_candle = ohlcv.iloc[-1]
+                await self.db.persist_candle(
+                    {
+                        'symbol': self.s.symbol,
+                        'interval': self.s.timeframe,
+                        'ts': int(last_candle['timestamp'].value // 10**6),
+                        'open': float(last_candle['open']),
+                        'high': float(last_candle['high']),
+                        'low': float(last_candle['low']),
+                        'close': float(last_candle['close']),
+                        'volume': float(last_candle['volume']),
+                    }
+                )
                 sig = self.signal_engine.generate(ohlcv)
+                await self.db.persist_trade_signal(
+                    {
+                        'ts': int(last_candle['timestamp'].value // 10**6),
+                        'symbol': self.s.symbol,
+                        'signal': sig['side'],
+                        'score': float(sig['signal_score']),
+                        'expected_value': float(sig['signal_score'] - 0.5),
+                        'reason': 'signal_engine_combined_momentum_reversion',
+                    }
+                )
                 regime = self.regime_detector.predict(sig['returns'], sig['prices'])
                 last_price = float(sig['prices'].iloc[-1])
                 status = 'OK'
