@@ -106,9 +106,15 @@ class QuantKernel:
         logger.warning('firewall_rejected', reason=reason, risk_snapshot=risk_snapshot)
 
     async def initialize(self) -> None:
+        api_key = self.s.binance_api_key.get_secret_value().strip()
+        api_secret = self.s.binance_api_secret.get_secret_value().strip()
+        if not api_key or not api_secret:
+            logger.error('kernel_startup_failed', reason='missing_binance_credentials')
+            raise RuntimeError('Binance API credentials missing')
+
         self.client = BinanceClient(
-            self.s.binance_api_key.get_secret_value(),
-            self.s.binance_api_secret.get_secret_value(),
+            api_key,
+            api_secret,
             testnet=self.s.binance_testnet,
             confirm_mainnet=self.s.confirm_mainnet,
         )
