@@ -44,7 +44,7 @@ class BinanceClient:
     async def initialize(self) -> None:
         if self._markets_loaded:
             return
-        await self.exchange.load_markets(params={'type': 'spot'})
+        await self.exchange.load_markets()
         self._markets_loaded = True
 
     @staticmethod
@@ -99,8 +99,6 @@ class BinanceClient:
                 raise RuntimeError('Ticker inválido en ping.')
             return True
         except Exception as e:
-            with suppress(Exception):
-                await self.close()
             raise RuntimeError(f'Binance ping failed: {e}') from e
 
     async def fetch_ticker(self, symbol: str) -> Any:
