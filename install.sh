@@ -28,7 +28,6 @@ ensure_env_file() {
 
 BINANCE_API_KEY=CAMBIAR_POR_TU_API_KEY
 BINANCE_API_SECRET=CAMBIAR_POR_TU_API_SECRET
-TIMEFRAME=5m
 
 # Modo por defecto (run.sh lo ajusta dinámicamente)
 BINANCE_TESTNET=true
