@@ -40,6 +40,7 @@ class BinanceClient:
         self._rate_limiter = AdaptiveRateLimitController(max_calls=8, period_seconds=1.0)
         self._ws_backoff_seconds = 1.0
         self._markets_loaded = False
+        self._symbol_rules_cache: dict[str, dict[str, float | None]] = {}
         if testnet:
             self.exchange.set_sandbox_mode(True)
 
@@ -109,6 +110,50 @@ class BinanceClient:
     async def fetch_ticker(self, symbol: str) -> Any:
         await self.initialize()
         return await self._retry(self.exchange.fetch_ticker, symbol=symbol)
+
+    async def get_symbol_rules(self, symbol: str) -> dict[str, float | None]:
+        await self.initialize()
+        cached = self._symbol_rules_cache.get(symbol)
+        if cached is not None:
+            return cached
+
+        market = self.exchange.market(symbol)
+        limits = market.get('limits') or {}
+        amount_limits = limits.get('amount') or {}
+        cost_limits = limits.get('cost') or {}
+        rules = {
+            'min_qty': float(amount_limits.get('min') or 0.0),
+            'max_qty': float(amount_limits.get('max') or 0.0) or None,
+            'min_notional': float(cost_limits.get('min') or 0.0),
+        }
+        self._symbol_rules_cache[symbol] = rules
+        return rules
+
+    async def sanitize_order_quantity(self, symbol: str, amount: float, reference_price: float) -> float:
+        await self.initialize()
+        if amount <= 0:
+            raise ValueError('Cantidad inválida: debe ser mayor a cero')
+
+        normalized = float(self.exchange.amount_to_precision(symbol, amount))
+        rules = await self.get_symbol_rules(symbol)
+
+        min_qty = float(rules.get('min_qty') or 0.0)
+        max_qty = rules.get('max_qty')
+        min_notional = float(rules.get('min_notional') or 0.0)
+
+        if normalized < min_qty:
+            raise ValueError(f'Cantidad {normalized} por debajo del mínimo permitido {min_qty} para {symbol}')
+        if max_qty is not None and normalized > float(max_qty):
+            raise ValueError(f'Cantidad {normalized} supera el máximo permitido {max_qty} para {symbol}')
+        if reference_price <= 0:
+            raise ValueError('Precio de referencia inválido para validar notional')
+
+        notional = normalized * reference_price
+        if min_notional > 0.0 and notional < min_notional:
+            raise ValueError(
+                f'Notional {notional:.8f} por debajo del mínimo {min_notional:.8f} en {symbol}'
+            )
+        return normalized
 
     async def create_market_order(
         self,

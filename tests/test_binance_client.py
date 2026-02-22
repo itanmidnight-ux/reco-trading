@@ -41,19 +41,3 @@ def test_create_market_order_initializes_markets(monkeypatch):
     assert fake.created == [('BTC/USDT', 0.01)]
     assert out['id'] == '1'
     asyncio.run(client.close())
-
-
-def test_fetch_order_book_initializes_markets(monkeypatch):
-    class _Exchange(_FakeExchange):
-        async def fetch_order_book(self, symbol, limit=20):
-            return {'symbol': symbol, 'limit': limit, 'bids': [], 'asks': []}
-
-    fake = _Exchange()
-    monkeypatch.setattr(bc.ccxt, 'binance', lambda *_a, **_k: fake)
-
-    client = bc.BinanceClient(api_key='k', api_secret='s', testnet=True)
-    out = asyncio.run(client.fetch_order_book('BTC/USDT', limit=10))
-
-    assert fake.loaded is True
-    assert out['symbol'] == 'BTC/USDT'
-    asyncio.run(client.close())

@@ -89,13 +89,18 @@ class TradingMetrics:
             labelnames=('scope', *_DEFAULT_LABELS),
             registry=self.registry,
         )
-        self.error_total = Counter(
+        # NOTE:
+        # prometheus_client.Counter normaliza los nombres terminados en `_total`
+        # y expone la familia sin el sufijo, lo cual rompe la convención utilizada
+        # por el resto del sistema (dashboards/tests esperan `*_total` literal).
+        # Usamos Gauge monotónico con `inc()` para mantener el nombre exacto.
+        self.error_total = Gauge(
             'reco_errors_total',
             'Total de errores por componente y tipo.',
             labelnames=('component', 'error_type', *_DEFAULT_LABELS),
             registry=self.registry,
         )
-        self.request_total = Counter(
+        self.request_total = Gauge(
             'reco_requests_total',
             'Total de requests/eventos por componente.',
             labelnames=('component', *_DEFAULT_LABELS),
