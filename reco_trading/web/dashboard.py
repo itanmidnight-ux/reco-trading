@@ -5,7 +5,7 @@ import math
 import logging
 import os
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import asyncpg
@@ -80,13 +80,35 @@ class DashboardService:
         async with self._pool.acquire() as conn:
             return await conn.fetch(query)
 
+    @staticmethod
+    def _extract_binance_usdt_balance(balance: dict[str, Any]) -> float:
+        if not isinstance(balance, dict):
+            return 0.0
+
+        total_bucket = balance.get('total')
+        if isinstance(total_bucket, dict) and total_bucket.get('USDT') is not None:
+            return float(total_bucket.get('USDT') or 0.0)
+
+        free_bucket = balance.get('free')
+        if isinstance(free_bucket, dict) and free_bucket.get('USDT') is not None:
+            return float(free_bucket.get('USDT') or 0.0)
+
+        asset_bucket = balance.get('USDT')
+        if isinstance(asset_bucket, dict):
+            if asset_bucket.get('total') is not None:
+                return float(asset_bucket.get('total') or 0.0)
+            if asset_bucket.get('free') is not None:
+                return float(asset_bucket.get('free') or 0.0)
+
+        return 0.0
+
     async def _fetch_binance_balance(self) -> tuple[float | None, bool]:
         if self._binance is None:
             return None, False
         try:
             balance = await self._binance.fetch_balance()
-            total_usdt = float(balance.get('total', {}).get('USDT', 0.0) or 0.0)
-            return total_usdt, True
+            usdt = self._extract_binance_usdt_balance(balance)
+            return usdt, True
         except Exception:
             return None, False
 
@@ -149,12 +171,14 @@ class DashboardService:
         return equity, drawdown
 
     async def get_metrics(self) -> DashboardMetrics:
-        capital, drawdown = await self._fetch_portfolio_state()
-        pnl_diario, win_rate, operaciones_ganadas, operaciones_perdidas, sharpe = await self._fetch_trade_stats()
+        (capital, drawdown), (pnl_diario, win_rate, operaciones_ganadas, operaciones_perdidas, sharpe), ultima_senal, operacion_actual, (binance_balance, binance_connected) = await asyncio.gather(
+            self._fetch_portfolio_state(),
+            self._fetch_trade_stats(),
+            self._fetch_last_signal(),
+            self._fetch_current_operation(),
+            self._fetch_binance_balance(),
+        )
         trades = operaciones_ganadas + operaciones_perdidas
-        ultima_senal = await self._fetch_last_signal()
-        operacion_actual = await self._fetch_current_operation()
-        binance_balance, binance_connected = await self._fetch_binance_balance()
 
         return DashboardMetrics(
             capital=capital,
@@ -169,7 +193,7 @@ class DashboardService:
             ultima_senal=ultima_senal,
             operacion_actual=operacion_actual,
             binance_connected=binance_connected,
-            updated_at=datetime.now(UTC).isoformat(),
+            updated_at=datetime.now(timezone.utc).isoformat(),
         )
 
 
@@ -209,25 +233,31 @@ templates = Environment(
 
   <script>
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws/metrics`);
+
+    function safeNumber(value, fallback = 0) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : fallback;
+    }
 
     function formatCurrency(value) {
       if (value === null || value === undefined) return 'N/A';
-      return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'USD' }).format(value);
+      const n = safeNumber(value, NaN);
+      if (!Number.isFinite(n)) return 'N/A';
+      return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'USD' }).format(n);
     }
 
     function render(payload) {
       document.getElementById('capital').textContent = formatCurrency(payload.capital);
       document.getElementById('binance_balance').textContent = formatCurrency(payload.binance_balance);
       document.getElementById('pnl_diario').textContent = formatCurrency(payload.pnl_diario);
-      document.getElementById('win_rate').textContent = `${payload.win_rate.toFixed(2)}%`;
-      document.getElementById('trades').textContent = payload.trades;
-      document.getElementById('drawdown').textContent = `${payload.drawdown.toFixed(2)}%`;
-      document.getElementById('sharpe').textContent = payload.sharpe.toFixed(2);
-      document.getElementById('operaciones_ganadas').textContent = payload.operaciones_ganadas;
-      document.getElementById('operaciones_perdidas').textContent = payload.operaciones_perdidas;
-      document.getElementById('ultima_senal').textContent = payload.ultima_senal;
-      document.getElementById('operacion_actual').textContent = payload.operacion_actual;
+      document.getElementById('win_rate').textContent = `${safeNumber(payload.win_rate).toFixed(2)}%`;
+      document.getElementById('trades').textContent = safeNumber(payload.trades, 0);
+      document.getElementById('drawdown').textContent = `${safeNumber(payload.drawdown).toFixed(2)}%`;
+      document.getElementById('sharpe').textContent = safeNumber(payload.sharpe).toFixed(2);
+      document.getElementById('operaciones_ganadas').textContent = safeNumber(payload.operaciones_ganadas, 0);
+      document.getElementById('operaciones_perdidas').textContent = safeNumber(payload.operaciones_perdidas, 0);
+      document.getElementById('ultima_senal').textContent = payload.ultima_senal || 'N/A';
+      document.getElementById('operacion_actual').textContent = payload.operacion_actual || 'Sin operación activa';
 
       const status = document.getElementById('binance-status');
       status.textContent = payload.binance_connected ? 'Binance: conectado' : 'Binance: desconectado';
@@ -235,13 +265,26 @@ templates = Environment(
         ? 'px-3 py-1 rounded-full bg-emerald-900 text-emerald-200 text-sm'
         : 'px-3 py-1 rounded-full bg-rose-900 text-rose-200 text-sm';
 
-      document.getElementById('updated-at').textContent = `Última actualización: ${new Date(payload.updated_at).toLocaleString('es-ES')}`;
+      const updatedAt = payload.updated_at ? new Date(payload.updated_at) : null;
+      document.getElementById('updated-at').textContent =
+        updatedAt && !Number.isNaN(updatedAt.getTime())
+          ? `Última actualización: ${updatedAt.toLocaleString('es-ES')}`
+          : 'Última actualización: --';
     }
 
-    socket.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      render(payload);
-    };
+    function connectWebSocket() {
+      const socket = new WebSocket(`${wsProtocol}://${window.location.host}/ws/metrics`);
+      socket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        render(payload);
+      };
+      socket.onclose = () => {
+        setTimeout(connectWebSocket, 1500);
+      };
+      socket.onerror = () => socket.close();
+    }
+
+    connectWebSocket();
   </script>
 </body>
 </html>
