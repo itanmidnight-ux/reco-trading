@@ -9,7 +9,34 @@ from rich.table import Table
 from rich.text import Text
 
 
-from reco_trading.ui.visual_snapshot import VisualSnapshot
+@dataclass(slots=True)
+class VisualSnapshot:
+    capital: float
+    balance: float
+    pnl_total: float
+    pnl_diario: float
+    drawdown: float
+    riesgo_activo: float
+    exposicion: float
+    trades: int
+    win_rate: float
+    expectancy: float
+    sharpe_rolling: float
+    regimen: str
+    senal: str
+    latencia_ms: float
+    ultimo_precio: float
+    estado_binance: str
+    estado_sistema: str
+    actividad: str
+    motivo_bloqueo: str
+    confianza: float = 0.0
+    tiempo_en_posicion_s: float = 0.0
+    cooldown_restante_s: float = 0.0
+    score_momentum: float = 0.5
+    score_reversion: float = 0.5
+    score_regime: float = 0.5
+
 
 class TerminalDashboard:
     def __init__(self, refresh_per_second: int = 4) -> None:
@@ -100,9 +127,8 @@ class TerminalDashboard:
         activity = Text(f'Actividad: {snapshot.actividad}', style='bold white')
         pos_time = Text(f'Tiempo en posición: {snapshot.tiempo_en_posicion_s:.1f}s', style='bold cyan')
         cooldown = Text(f'Cooldown restante: {snapshot.cooldown_restante_s:.1f}s', style='bold yellow')
-        learning = Text(f'Tiempo aprendizaje restante: {snapshot.learning_remaining_seconds:.1f}s', style='bold magenta')
         blocked = Text(f'Motivo bloqueo: {snapshot.motivo_bloqueo}', style='bold red' if snapshot.motivo_bloqueo != 'none' else 'bold green')
-        return Panel(Group(risk_progress, dd_progress, activity, pos_time, cooldown, learning, blocked), title='[bold]Riesgo y Actividad[/bold]', border_style='red')
+        return Panel(Group(risk_progress, dd_progress, activity, pos_time, cooldown, blocked), title='[bold]Riesgo y Actividad[/bold]', border_style='red')
 
     def _render_header(self, snapshot: VisualSnapshot) -> Text:
         title = Text(' RECO TRADING · TERMINAL LIVE ', style='bold white on blue')
