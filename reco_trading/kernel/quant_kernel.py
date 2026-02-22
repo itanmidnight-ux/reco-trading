@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
-import traceback
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -25,8 +24,6 @@ from reco_trading.core.signal_fusion import SignalCombiner
 from reco_trading.core.system_state import SystemState
 from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.momentum_model import MomentumModel
-from reco_trading.core.signal_fusion import SignalCombiner
-from reco_trading.core.system_state import SystemState
 from reco_trading.execution.execution_firewall import ExecutionFirewall
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
@@ -147,20 +144,6 @@ class DecisionEngine:
 
 
 class QuantKernel:
-    MIN_SECONDS_BETWEEN_TRADES = 30
-    def __init__(self) -> None:
-        self.buy_threshold = 0.70
-        self.sell_threshold = 0.30
-
-    def decide(self, probability: float) -> str:
-        if probability >= self.buy_threshold:
-            return 'BUY'
-        if probability <= self.sell_threshold:
-            return 'SELL'
-        return 'HOLD'
-
-
-class QuantKernel:
     MIN_SECONDS_BETWEEN_TRADES = 10
     MAX_CONSECUTIVE_CYCLE_ERRORS = 5
 
@@ -272,24 +255,11 @@ class QuantKernel:
             self.system_state = 'KILL_SWITCH_ACTIVE'
         return blocked
 
-    def should_block_trading(self) -> bool:
-        if self.shutdown_event.is_set():
-            return True
-        if self.initial_equity <= 0:
-            return False
-        current_equity = self.state.equity + self.state.unrealized_pnl
-        drawdown = 1.0 - (current_equity / max(self.initial_equity, 1e-9))
-        if drawdown >= self.s.max_global_drawdown:
-            self.state.last_block_reason = 'excessive_drawdown'
-            self.system_state = SystemState.BLOCKED_BY_RISK.value
-            return True
-        return False
-
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
         self.state.rejection_count += 1
         self.state.last_block_reason = f'firewall:{reason}'
         self.system_state = SystemState.BLOCKED_BY_RISK.value
-        logger.warning('Execution blocked by firewall', reason=reason, risk_snapshot=risk_snapshot)
+        logger.warning('Execution blocked by firewall: reason={} risk_snapshot={}', reason, risk_snapshot)
 
     async def _execute_order(self, side: str, qty: float) -> dict[str, Any] | None:
         if qty <= 0.0:
@@ -406,287 +376,256 @@ class QuantKernel:
         return False
 
     async def run(self) -> None:
-        await self.initialize()
-        await self.db.init()
-        self.metrics_exporter.start()
-        self.dashboard.start()
-        self._install_signal_handlers()
+        try:
+            await self.initialize()
+            await self.db.init()
+            self.metrics_exporter.start()
+            self.dashboard.start()
+            self._install_signal_handlers()
 
-        while not self.shutdown_event.is_set():
-            try:
-                self.system_state = SystemState.WAITING_FOR_DATA.value
-                self.execution_status = 'IDLE'
-                self.activity_text = 'Esperando OHLCV desde Binance'
-                now = datetime.now(timezone.utc)
-
-                ohlcv = await self.market_data.latest_ohlcv(limit=300)
-                self.data_buffer.push_ohlcv(ohlcv)
-                if self.learning_started_at_ms is None:
-                    self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
-
+            while not self.shutdown_event.is_set():
                 try:
-                    spread_bps = await self.market_data.latest_spread_bps()
-                except Exception:
-                    spread_bps = 0.0
-                self.data_buffer.record_spread(spread_bps)
+                                    self.system_state = SystemState.WAITING_FOR_DATA.value
+                                    self.execution_status = 'IDLE'
+                                    self.activity_text = 'Esperando OHLCV desde Binance'
+                                    now = datetime.now(timezone.utc)
 
-                self._last_market_quality = self.market_data.assess_market_quality(
-                    self.data_buffer.ohlcv,
-                    spread_bps=spread_bps,
-                    max_spread_bps=self.s.market_max_spread_bps,
-                    max_volatility=self.s.market_max_realized_volatility,
-                    min_avg_volume=self.s.market_min_avg_volume,
-                    max_gap_ratio=self.s.market_max_gap_ratio,
-                )
+                                    ohlcv = await self.market_data.latest_ohlcv(limit=300)
+                                    self.data_buffer.push_ohlcv(ohlcv)
+                                    if self.learning_started_at_ms is None:
+                                        self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
 
-                progress, remaining = self.data_buffer.learning_progress(self.learning_started_at_ms, now.timestamp())
-                if remaining > 0.0:
-                    self.system_state = SystemState.LEARNING_MARKET.value
-                    decision, confidence, reason = self.decision_engine.decide(
-                        probability=0.5,
-                        expected_edge=0.0,
-                        friction_cost=0.0,
-                        trading_enabled=not self.state.kill_switch,
-                        market_operable=False,
-                        force_hold=True,
-                        reason_prefix='phase=learning;',
-                    )
-                    self.state.last_block_reason = reason
-                    self.activity_text = f'APRENDIENDO MERCADO ({progress:.0%}) restante={remaining:.1f}s'
-                    self._publish_dashboard(decision, confidence, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK', remaining)
-                    await asyncio.sleep(self.s.loop_interval_seconds)
-                    continue
+                                    try:
+                                        spread_bps = await self.market_data.latest_spread_bps()
+                                    except Exception:
+                                        spread_bps = 0.0
+                                    self.data_buffer.record_spread(spread_bps)
 
-                if self.should_block_trading():
-                    self._publish_dashboard('DISABLE_TRADING', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
-                    await asyncio.sleep(self.s.loop_interval_seconds)
-                    continue
+                                    self._last_market_quality = self.market_data.assess_market_quality(
+                                        self.data_buffer.ohlcv,
+                                        spread_bps=spread_bps,
+                                        max_spread_bps=self.s.market_max_spread_bps,
+                                        max_volatility=self.s.market_max_realized_volatility,
+                                        min_avg_volume=self.s.market_min_avg_volume,
+                                        max_gap_ratio=self.s.market_max_gap_ratio,
+                                    )
 
-                self.system_state = SystemState.ANALYZING_MARKET.value
-                if not self._last_market_quality.operable:
-                    self.system_state = SystemState.WAITING_EDGE.value
-                    self.state.last_block_reason = self._last_market_quality.reason
-                    self.activity_text = f'Mercado no operable: {self._last_market_quality.reason}'
-                    self._publish_dashboard('HOLD', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
-                if self.learning_started_at_ms is None:
-                    self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
+                                    progress, remaining = self.data_buffer.learning_progress(self.learning_started_at_ms, now.timestamp())
+                                    if remaining > 0.0:
+                                        self.system_state = SystemState.LEARNING_MARKET.value
+                                        decision, confidence, reason = self.decision_engine.decide(
+                                            probability=0.5,
+                                            expected_edge=0.0,
+                                            friction_cost=0.0,
+                                            trading_enabled=not self.state.kill_switch,
+                                            market_operable=False,
+                                            force_hold=True,
+                                            reason_prefix='phase=learning;',
+                                        )
+                                        self.state.last_block_reason = reason
+                                        self.activity_text = f'APRENDIENDO MERCADO ({progress:.0%}) restante={remaining:.1f}s'
+                                        self._publish_dashboard(decision, confidence, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK', remaining)
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
 
-                spread_bps = await self.market_data.latest_spread_bps()
-                self.data_buffer.record_spread(spread_bps)
+                                    if self.should_block_trading():
+                                        self._publish_dashboard('DISABLE_TRADING', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
 
-                if self.data_buffer.in_learning_phase(self.learning_started_at_ms, now.timestamp()):
-                    self.system_state = SystemState.LEARNING_MARKET.value
-                    stats = self.data_buffer.learning_stats(ohlcv)
-                    self.activity_text = f'Aprendizaje 5m: vol={stats.rolling_volatility:.5f} atr={stats.atr:.2f} spread={stats.average_spread:.2f}bps'
-                    self.state.last_block_reason = 'learning_phase_active'
-                    self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, stats.dominant_regime, float(ohlcv['close'].iloc[-1]), 'OK')
-                    await asyncio.sleep(self.s.loop_interval_seconds)
-                    continue
+                                    self.system_state = SystemState.ANALYZING_MARKET.value
+                                    if not self._last_market_quality.operable:
+                                        self.system_state = SystemState.WAITING_EDGE.value
+                                        self.state.last_block_reason = self._last_market_quality.reason
+                                        self.activity_text = f'Mercado no operable: {self._last_market_quality.reason}'
+                                        self._publish_dashboard('HOLD', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
+                                    if self.learning_started_at_ms is None:
+                                        self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
 
-                self.system_state = SystemState.ANALYZING_MARKET.value
-                ok_balance, free_usdt, reason = await self._fetch_account_balance()
-                if not ok_balance:
-                    self.system_state = SystemState.BLOCKED_BY_RISK.value
-                    self.state.last_block_reason = reason
-                    self.activity_text = f'Balance inválido: {reason}'
-                    self._publish_dashboard('DISABLE_TRADING', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'ERROR')
-                    await asyncio.sleep(self.s.loop_interval_seconds)
-                    continue
+                                    spread_bps = await self.market_data.latest_spread_bps()
+                                    self.data_buffer.record_spread(spread_bps)
 
-                self.state.equity = free_usdt
-                sig = self.signal_engine.generate(ohlcv, spread_bps=spread_bps)
-                last_price = float(sig['prices'].iloc[-1])
+                                    if self.data_buffer.in_learning_phase(self.learning_started_at_ms, now.timestamp()):
+                                        self.system_state = SystemState.LEARNING_MARKET.value
+                                        stats = self.data_buffer.learning_stats(ohlcv)
+                                        self.activity_text = f'Aprendizaje 5m: vol={stats.rolling_volatility:.5f} atr={stats.atr:.2f} spread={stats.average_spread:.2f}bps'
+                                        self.state.last_block_reason = 'learning_phase_active'
+                                        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, stats.dominant_regime, float(ohlcv['close'].iloc[-1]), 'OK')
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
 
-                if self.state.position_state == PositionState.LONG:
-                    self.state.unrealized_pnl = (last_price - self.state.entry_price) * self.state.position_qty
-                    self.state.capital_in_position = self.state.position_qty * last_price
-                else:
-                    self.state.unrealized_pnl = 0.0
-                    self.state.capital_in_position = 0.0
+                                    self.system_state = SystemState.ANALYZING_MARKET.value
+                                    ok_balance, free_usdt, reason = await self._fetch_account_balance()
+                                    if not ok_balance:
+                                        self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                        self.state.last_block_reason = reason
+                                        self.activity_text = f'Balance inválido: {reason}'
+                                        self._publish_dashboard('DISABLE_TRADING', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'ERROR')
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
 
-                regime_raw = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
-                regime = self._map_regime(regime_raw)
-                regime_prob = 0.78 if regime == 'TREND' else (0.62 if regime == 'RANGE' else 0.55)
-                breakdown = self.signal_combiner.combine(
-                    sig['model_scores']['momentum'],
-                    sig['model_scores']['mean_reversion'],
-                    regime_prob,
-                    regime,
-                )
+                                    self.state.equity = free_usdt
+                                    sig = self.signal_engine.generate(ohlcv, spread_bps=spread_bps)
+                                    last_price = float(sig['prices'].iloc[-1])
 
-                probability = float(breakdown.combined)
-                expected_edge = float(probability - 0.5)
-                # ajuste por colas pesadas
-                if abs(sig['skew']) > 2.0 or sig['kurtosis'] > 8.0:
-                    expected_edge *= 0.5
+                                    if self.state.position_state == PositionState.LONG:
+                                        self.state.unrealized_pnl = (last_price - self.state.entry_price) * self.state.position_qty
+                                        self.state.capital_in_position = self.state.position_qty * last_price
+                                    else:
+                                        self.state.unrealized_pnl = 0.0
+                                        self.state.capital_in_position = 0.0
 
-                friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
-                decision, confidence, reason = self.decision_engine.decide(
-                    probability=probability,
-                    expected_edge=expected_edge,
-                    friction_cost=friction_cost,
-                    trading_enabled=not self.state.kill_switch,
-                    market_operable=self._last_market_quality.operable,
-                )
-                self.state.last_block_reason = reason
-                self.activity_text = reason
+                                    regime_raw = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
+                                    regime = self._map_regime(regime_raw)
+                                    regime_prob = 0.78 if regime == 'TREND' else (0.62 if regime == 'RANGE' else 0.55)
+                                    breakdown = self.signal_combiner.combine(
+                                        sig['model_scores']['momentum'],
+                                        sig['model_scores']['mean_reversion'],
+                                        regime_prob,
+                                        regime,
+                                    )
 
-                cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
-                if cooldown > 0 and decision in {'BUY', 'SELL'}:
-                    decision = 'HOLD'
-                    self.system_state = SystemState.COOLDOWN.value
-                    self.state.last_block_reason = 'cooldown_active'
-                    self.activity_text = f'COOLDOWN activo ({cooldown:.1f}s)'
+                                    probability = float(breakdown.combined)
+                                    expected_edge = float(probability - 0.5)
+                                    # ajuste por colas pesadas
+                                    if abs(sig['skew']) > 2.0 or sig['kurtosis'] > 8.0:
+                                        expected_edge *= 0.5
 
-                if decision in {'HOLD', 'DISABLE_TRADING'}:
-                    if self.system_state not in {SystemState.COOLDOWN.value, 'KILL_SWITCH_ACTIVE'}:
-                        self.system_state = SystemState.WAITING_EDGE.value
+                                    friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
+                                    decision, confidence, reason = self.decision_engine.decide(
+                                        probability=probability,
+                                        expected_edge=expected_edge,
+                                        friction_cost=friction_cost,
+                                        trading_enabled=not self.state.kill_switch,
+                                        market_operable=self._last_market_quality.operable,
+                                    )
+                                    self.state.last_block_reason = reason
+                                    self.activity_text = reason
 
-                if self.state.position_state == PositionState.FLAT and decision == 'SELL':
-                    decision = 'HOLD'
-                    self.system_state = SystemState.WAITING_EDGE.value
-                    self.state.last_block_reason = 'no_position_to_sell'
-                    self.activity_text = 'No hay posición para cerrar'
+                                    cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
+                                    if cooldown > 0 and decision in {'BUY', 'SELL'}:
+                                        decision = 'HOLD'
+                                        self.system_state = SystemState.COOLDOWN.value
+                                        self.state.last_block_reason = 'cooldown_active'
+                                        self.activity_text = f'COOLDOWN activo ({cooldown:.1f}s)'
 
-                if self.state.position_state == PositionState.LONG:
-                    elapsed = (now - (self.state.position_opened_at or now)).total_seconds()
-                    if self.state.tp_price > 0 and last_price >= self.state.tp_price:
-                        decision = 'SELL'
-                        self.activity_text = 'TP alcanzado'
-                    elif self.state.sl_price > 0 and last_price <= self.state.sl_price:
-                        decision = 'SELL'
-                        self.activity_text = 'SL alcanzado'
-                    elif elapsed >= max(float(self.s.target_scalp_seconds), 120.0):
-                        decision = 'SELL'
-                        self.activity_text = f'Cierre por tiempo razonable ({elapsed:.0f}s)'
+                                    if decision in {'HOLD', 'DISABLE_TRADING'}:
+                                        if self.system_state not in {SystemState.COOLDOWN.value, 'KILL_SWITCH_ACTIVE'}:
+                                            self.system_state = SystemState.WAITING_EDGE.value
 
-                volatility = max(float(sig['volatility']), 1e-6)
-                risk_fraction = self._risk_fraction(expected_edge=expected_edge, volatility=volatility)
-                order_qty = 0.0
-                if decision == 'BUY':
-                    if risk_fraction <= 0.0:
-                        decision = 'HOLD'
-                        self.system_state = SystemState.WAITING_EDGE.value
-                        self.state.last_block_reason = 'risk_fraction_zero'
+                                    if self.state.position_state == PositionState.FLAT and decision == 'SELL':
+                                        decision = 'HOLD'
+                                        self.system_state = SystemState.WAITING_EDGE.value
+                                        self.state.last_block_reason = 'no_position_to_sell'
+                                        self.activity_text = 'No hay posición para cerrar'
 
-                regime = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'CHOPPY')
-                reg_prob = 0.75 if str(regime).lower() == 'trend' else (0.55 if str(regime).lower() == 'range' else 0.5)
-                breakdown = self.signal_combiner.combine(sig['model_scores']['momentum'], sig['model_scores']['mean_reversion'], reg_prob, str(regime).upper())
-                confidence = breakdown.combined
-                decision = self.decision_engine.decide(confidence)
-                self.state.last_block_reason = 'none'
+                                    if self.state.position_state == PositionState.LONG:
+                                        elapsed = (now - (self.state.position_opened_at or now)).total_seconds()
+                                        if self.state.tp_price > 0 and last_price >= self.state.tp_price:
+                                            decision = 'SELL'
+                                            self.activity_text = 'TP alcanzado'
+                                        elif self.state.sl_price > 0 and last_price <= self.state.sl_price:
+                                            decision = 'SELL'
+                                            self.activity_text = 'SL alcanzado'
+                                        elif elapsed >= max(float(self.s.target_scalp_seconds), 120.0):
+                                            decision = 'SELL'
+                                            self.activity_text = f'Cierre por tiempo razonable ({elapsed:.0f}s)'
 
-                if self.last_trade_ts and (now.timestamp() - self.last_trade_ts) < self.MIN_SECONDS_BETWEEN_TRADES:
-                    decision = 'HOLD'
-                    self.state.last_block_reason = 'cooldown_active'
-                    self.activity_text = f'COOLDOWN activo, restante={cooldown_remaining:.1f}s'
+                                    volatility = max(float(sig['volatility']), 1e-6)
+                                    risk_fraction = self._risk_fraction(expected_edge=expected_edge, volatility=volatility)
+                                    order_qty = 0.0
+                                    if decision == 'BUY':
+                                        if risk_fraction <= 0:
+                                            decision = 'HOLD'
+                                            self.system_state = SystemState.WAITING_EDGE.value
+                                            self.state.last_block_reason = 'risk_fraction_zero'
+                                            self.activity_text = 'HOLD por riesgo insuficiente para sizing'
+                                        else:
+                                            requested_notional = self.state.equity * risk_fraction
+                                            order_qty = requested_notional / max(last_price, 1e-9)
+                                    elif decision == 'SELL':
+                                        order_qty = self.state.position_qty
 
-                if decision == 'HOLD' and self.system_state != SystemState.COOLDOWN.value:
-                    self.system_state = SystemState.WAITING_EDGE.value
+                                    if decision in {'BUY', 'SELL'} and order_qty > 0.0:
+                                        self.system_state = SystemState.SENDING_ORDER.value
+                                        self.execution_engine.set_risk_context(
+                                            capital_total=self.state.equity,
+                                            risk_per_trade=risk_fraction if decision == 'BUY' else self.s.risk_per_trade,
+                                            signal_confidence=max(confidence, 0.1),
+                                        )
+                                        fill = await self._execute_order(decision, order_qty)
+                                        if fill and decision == 'BUY':
+                                            fill_price = float(fill['price'] or last_price)
+                                            self.state.position_state = PositionState.LONG
+                                            self.state.position_qty = float(fill['qty'])
+                                            self.state.entry_price = fill_price
+                                            self.state.position_opened_at = now
+                                            self.last_trade_ts = now.timestamp()
+                                            self.state.trades += 1
+                                            self.state.tp_price, self.state.sl_price = self.execution_engine.compute_dynamic_exit_levels(
+                                                entry_price=self.state.entry_price,
+                                                atr=float(sig['atr']),
+                                                side='BUY',
+                                            )
+                                            self.state.fees_paid += (self.state.position_qty * fill_price) * float(self.s.taker_fee)
+                                            self.system_state = SystemState.IN_POSITION.value
+                                            self.state.last_block_reason = 'none'
+                                            self.activity_text = f'BUY ejecutado qty={self.state.position_qty:.6f}'
+                                        elif fill and decision == 'SELL':
+                                            fill_price = float(fill['price'] or last_price)
+                                            gross_pnl = (fill_price - self.state.entry_price) * self.state.position_qty
+                                            close_fee = (self.state.position_qty * fill_price) * float(self.s.taker_fee)
+                                            self.state.fees_paid += close_fee
+                                            net_pnl = gross_pnl - close_fee
+                                            self.state.realized_pnl += net_pnl
+                                            self.state.consecutive_losses = self.state.consecutive_losses + 1 if net_pnl <= 0 else 0
+                                            if net_pnl > 0:
+                                                self.state.winning_trades += 1
+                                            self.state.position_state = PositionState.FLAT
+                                            self.state.position_qty = 0.0
+                                            self.state.entry_price = 0.0
+                                            self.state.position_opened_at = None
+                                            self.state.tp_price = 0.0
+                                            self.state.sl_price = 0.0
+                                            self.state.unrealized_pnl = 0.0
+                                            self.state.capital_in_position = 0.0
+                                            self.last_trade_ts = now.timestamp()
+                                            self.system_state = SystemState.COOLDOWN.value
+                                            self.state.last_block_reason = 'none'
+                                        else:
+                                            self.system_state = SystemState.BLOCKED_BY_RISK.value
 
-                if self.state.position_state == PositionState.FLAT and decision == 'SELL':
-                    decision = 'HOLD'
-                    self.state.last_block_reason = 'no_position_to_sell'
-                    self.activity_text = 'Sin posición abierta para cerrar'
-                    self.system_state = SystemState.WAITING_EDGE.value
+                                    self.state.consecutive_cycle_errors = 0
+                                    self._publish_dashboard(
+                                        decision=decision,
+                                        confidence=confidence,
+                                        expected_edge=expected_edge,
+                                        mom=breakdown.momentum,
+                                        rev=breakdown.mean_reversion,
+                                        reg_prob=breakdown.regime,
+                                        regime=regime,
+                                        last_price=last_price,
+                                        binance_state='OK',
+                                    )
 
-                if self.state.position_state == PositionState.LONG:
-                    elapsed = (now - (self.state.position_opened_at or now)).total_seconds()
-                    if elapsed >= self.s.target_scalp_seconds:
-                        decision = 'SELL'
-                        confidence = 1.0
-                        self.activity_text = f'Cierre por scalping ({elapsed:.1f}s)'
-                    if elapsed >= self.s.max_position_seconds:
-                        decision = 'SELL'
-                        confidence = 1.0
-                        self.activity_text = f'Cierre forzado por tiempo ({elapsed:.1f}s)'
+                except Exception as exc:
+                    logger.exception('kernel_error')
+                    should_stop = self._handle_cycle_exception(exc)
+                    if should_stop:
+                        break
+                    await asyncio.sleep(1)
+        finally:
+            await self._shutdown_resources()
 
-                risk_fraction = self._confidence_to_risk_fraction(confidence)
-                order_qty = 0.0
-                if decision == 'BUY':
-                    if risk_fraction <= 0:
-                        decision = 'HOLD'
-                        self.state.last_block_reason = 'confidence_below_threshold'
-                        self.activity_text = 'HOLD por confianza insuficiente para sizing'
-                    else:
-                        requested_notional = self.state.equity * risk_fraction
-                        order_qty = requested_notional / max(last_price, 1e-9)
-                elif decision == 'SELL':
-                    order_qty = self.state.position_qty
-
-                if decision in {'BUY', 'SELL'} and order_qty > 0.0:
-                    self.system_state = SystemState.SENDING_ORDER.value
-                    self.execution_engine.set_risk_context(
-                        capital_total=self.state.equity,
-                        risk_per_trade=risk_fraction if decision == 'BUY' else self.s.risk_per_trade,
-                        signal_confidence=max(confidence, 0.1),
-                    )
-                if decision in {'BUY', 'SELL'} and order_qty > 0:
-                    self.execution_engine.set_risk_context(capital_total=self.state.equity, risk_per_trade=risk_fraction, signal_confidence=confidence)
-                    self.system_state = SystemState.SENDING_ORDER.value
-                    fill = await self._execute_order(decision, order_qty)
-                    if fill and decision == 'BUY':
-                        fill_price = float(fill['price'] or last_price)
-                        self.state.position_state = PositionState.LONG
-                        self.state.position_qty = float(fill['qty'])
-                        self.state.entry_price = fill_price
-                        self.state.position_opened_at = now
-                        self.last_trade_ts = now.timestamp()
-                        self.state.trades += 1
-                        self.state.tp_price, self.state.sl_price = self.execution_engine.compute_dynamic_exit_levels(
-                            entry_price=self.state.entry_price,
-                            atr=float(sig['atr']),
-                            side='BUY',
-                        )
-                        self.state.fees_paid += (self.state.position_qty * fill_price) * float(self.s.taker_fee)
-                        self.system_state = SystemState.IN_POSITION.value
-                        self.state.last_block_reason = 'none'
-                        self.system_state = SystemState.IN_POSITION.value
-                        self.activity_text = f'BUY ejecutado qty={self.state.position_qty:.6f}'
-                    elif fill and decision == 'SELL':
-                        fill_price = float(fill['price'] or last_price)
-                        gross_pnl = (fill_price - self.state.entry_price) * self.state.position_qty
-                        close_fee = (self.state.position_qty * fill_price) * float(self.s.taker_fee)
-                        self.state.fees_paid += close_fee
-                        net_pnl = gross_pnl - close_fee
-                        self.state.realized_pnl += net_pnl
-                        self.state.consecutive_losses = self.state.consecutive_losses + 1 if net_pnl <= 0 else 0
-                        if net_pnl > 0:
-                            self.state.winning_trades += 1
-                        self.state.position_state = PositionState.FLAT
-                        self.state.position_qty = 0.0
-                        self.state.entry_price = 0.0
-                        self.state.position_opened_at = None
-                        self.state.tp_price = 0.0
-                        self.state.sl_price = 0.0
-                        self.state.unrealized_pnl = 0.0
-                        self.state.capital_in_position = 0.0
-                        self.last_trade_ts = now.timestamp()
-                        self.system_state = SystemState.COOLDOWN.value
-                        self.state.last_block_reason = 'none'
-                    else:
-                        self.system_state = SystemState.BLOCKED_BY_RISK.value
-
-                self.state.consecutive_cycle_errors = 0
-                self._publish_dashboard(
-                    decision=decision,
-                    confidence=confidence,
-                    expected_edge=expected_edge,
-                    mom=breakdown.momentum,
-                    rev=breakdown.mean_reversion,
-                    reg_prob=breakdown.regime,
-                    regime=regime,
-                    last_price=last_price,
-                    binance_state='OK',
-                )
-
-            except Exception as exc:
-                logger.error('kernel_error', error=str(exc))
-                traceback.print_exc()
-                should_stop = self._handle_cycle_exception(exc)
-                if should_stop:
-                    break
-                await asyncio.sleep(1)
+    async def _shutdown_resources(self) -> None:
+        with suppress(Exception):
+            self.dashboard.stop()
+        with suppress(Exception):
+            self.metrics_exporter.stop()
+        client = getattr(self, 'client', None)
+        if client is not None:
+            with suppress(Exception):
+                await client.close()
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
