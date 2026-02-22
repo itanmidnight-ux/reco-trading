@@ -8,6 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from statistics import NormalDist
 from typing import Any
 
 import numpy as np
@@ -42,11 +43,13 @@ class PositionState(Enum):
 @dataclass(slots=True)
 class RuntimeState:
     equity: float = 0.0
-    daily_pnl: float = 0.0
+    realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
+    fees_paid: float = 0.0
+    capital_in_position: float = 0.0
     trades: int = 0
     winning_trades: int = 0
-    rolling_returns: list[float] = field(default_factory=list)
+    consecutive_losses: int = 0
     consecutive_cycle_errors: int = 0
     last_block_reason: str = 'booting'
     rejection_count: int = 0
@@ -66,6 +69,7 @@ class SignalEngine:
         self.feature_engine = FeatureEngine()
         self.momentum = MomentumModel()
         self.reversion = MeanReversionModel()
+        self._normal = NormalDist(mu=0.0, sigma=1.0)
 
     def generate(self, ohlcv: pd.DataFrame, spread_bps: float) -> dict[str, Any]:
         feats = self.feature_engine.build(ohlcv)
@@ -276,8 +280,8 @@ class QuantKernel:
             VisualSnapshot(
                 capital=total_equity,
                 balance=self.state.equity,
-                pnl_total=self.state.daily_pnl + self.state.unrealized_pnl,
-                pnl_diario=self.state.daily_pnl,
+                pnl_total=self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid,
+                pnl_diario=self.state.realized_pnl,
                 drawdown=drawdown,
                 riesgo_activo=float(np.clip(self.s.risk_per_trade, 0.0, 1.0)),
                 exposicion=notional,
@@ -325,6 +329,7 @@ class QuantKernel:
                 self.system_state = SystemState.WAITING_FOR_DATA.value
                 self.activity_text = 'Esperando OHLCV desde Binance'
                 now = datetime.now(timezone.utc)
+
                 ohlcv = await self.market_data.latest_ohlcv(limit=300)
                 if self.learning_started_at_ms is None:
                     self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
@@ -357,6 +362,7 @@ class QuantKernel:
 
                 if self.state.position_state == PositionState.LONG:
                     self.state.unrealized_pnl = (last_price - self.state.entry_price) * self.state.position_qty
+                    self.state.capital_in_position = self.state.position_qty * last_price
                 else:
                     self.state.unrealized_pnl = 0.0
 
@@ -409,21 +415,25 @@ class QuantKernel:
                     self.execution_engine.set_risk_context(capital_total=self.state.equity, risk_per_trade=risk_fraction, signal_confidence=confidence)
                     self.system_state = SystemState.SENDING_ORDER.value
                     fill = await self._execute_order(decision, order_qty)
-
                     if fill and decision == 'BUY':
+                        fill_price = float(fill['price'] or last_price)
                         self.state.position_state = PositionState.LONG
                         self.state.position_qty = float(fill['qty'])
-                        self.state.entry_price = float(fill['price'] or last_price)
+                        self.state.entry_price = fill_price
                         self.state.position_opened_at = now
                         self.last_trade_ts = now.timestamp()
                         self.state.trades += 1
                         self.system_state = SystemState.IN_POSITION.value
                         self.activity_text = f'BUY ejecutado qty={self.state.position_qty:.6f}'
                     elif fill and decision == 'SELL':
-                        pnl = self.state.unrealized_pnl
-                        self.state.daily_pnl += pnl
-                        self.state.equity += pnl
-                        if pnl > 0:
+                        fill_price = float(fill['price'] or last_price)
+                        gross_pnl = (fill_price - self.state.entry_price) * self.state.position_qty
+                        close_fee = (self.state.position_qty * fill_price) * float(self.s.taker_fee)
+                        self.state.fees_paid += close_fee
+                        net_pnl = gross_pnl - close_fee
+                        self.state.realized_pnl += net_pnl
+                        self.state.consecutive_losses = self.state.consecutive_losses + 1 if net_pnl <= 0 else 0
+                        if net_pnl > 0:
                             self.state.winning_trades += 1
                         self.state.position_state = PositionState.FLAT
                         self.state.position_qty = 0.0
@@ -432,6 +442,7 @@ class QuantKernel:
                         self.state.tp_price = 0.0
                         self.state.sl_price = 0.0
                         self.state.unrealized_pnl = 0.0
+                        self.state.capital_in_position = 0.0
                         self.last_trade_ts = now.timestamp()
                         self.system_state = SystemState.WAITING_FOR_DATA.value
                         self.activity_text = f'SELL ejecutado, PnL={pnl:+.2f} USDT'

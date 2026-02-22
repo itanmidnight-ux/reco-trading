@@ -51,7 +51,7 @@ class TerminalDashboard:
             return 'bold green'
         if normalized in {'RISK', 'ANALYZING_MARKET', 'WAITING_FOR_DATA', 'WAITING_EDGE', 'COOLDOWN', 'LEARNING_MARKET'}:
             return 'bold yellow'
-        if normalized in {'BLOCKED', 'BLOCKED_BY_RISK', 'ERROR'}:
+        if normalized in {'BLOCKED', 'BLOCKED_BY_RISK', 'ERROR', 'KILL_SWITCH_ACTIVE'}:
             return 'bold red'
         if normalized == 'SENDING_ORDER':
             return 'bold cyan'
