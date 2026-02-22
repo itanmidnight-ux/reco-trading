@@ -23,11 +23,14 @@ from reco_trading.core.signal_fusion import SignalCombiner
 from reco_trading.core.system_state import SystemState
 from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.momentum_model import MomentumModel
+from reco_trading.core.signal_fusion import SignalCombiner
+from reco_trading.core.system_state import SystemState
 from reco_trading.execution.execution_firewall import ExecutionFirewall
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
-from reco_trading.ui.terminal_dashboard import TerminalDashboard, VisualSnapshot
+from reco_trading.ui.terminal_dashboard import TerminalDashboard
+from reco_trading.ui.visual_snapshot import VisualSnapshot
 
 
 class PositionState(Enum):
@@ -50,6 +53,8 @@ class RuntimeState:
     position_qty: float = 0.0
     entry_price: float = 0.0
     position_opened_at: datetime | None = None
+    tp_price: float = 0.0
+    sl_price: float = 0.0
 
 
 class SignalEngine:
@@ -157,44 +162,15 @@ class QuantKernel:
             return False, 0.0, 'invalid_usdt_balance'
         return True, usdt, 'ok'
 
-    def _analyze_market(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
-        close = ohlcv['close'].tail(20).astype(float)
-        open_ = ohlcv['open'].tail(20).astype(float)
-        if len(close) < 8:
-            return {'advantage': False, 'signal': 'HOLD', 'confidence': 0.0, 'reason': 'insufficient_ohlcv'}
-
-        momentum = float((close.iloc[-1] - close.iloc[-6]) / max(close.iloc[-6], 1e-9))
-        returns = close.pct_change().dropna()
-        volatility = float(returns.tail(12).std() or 0.0)
-        candle_direction = float(np.sign(close.iloc[-1] - open_.iloc[-1]))
-
-        long_edge = momentum > 0.0004 and candle_direction > 0 and volatility < 0.02
-        short_edge = momentum < -0.0004 and candle_direction < 0 and volatility < 0.02
-
-        strength = min(abs(momentum) / 0.002, 1.0)
-        vol_penalty = min(volatility / 0.02, 1.0)
-        confidence = float(np.clip(0.15 + (strength * (1.0 - vol_penalty)), 0.1, 1.0))
-
-        if long_edge:
-            return {
-                'advantage': True,
-                'signal': 'BUY',
-                'confidence': confidence,
-                'reason': f'edge_long momentum={momentum:.5f} vol={volatility:.5f} candle=up',
-            }
-        if short_edge:
-            return {
-                'advantage': True,
-                'signal': 'SELL',
-                'confidence': confidence,
-                'reason': f'edge_short momentum={momentum:.5f} vol={volatility:.5f} candle=down',
-            }
-        return {
-            'advantage': False,
-            'signal': 'HOLD',
-            'confidence': 0.0,
-            'reason': f'no_statistical_edge momentum={momentum:.5f} vol={volatility:.5f} candle={candle_direction:.0f}',
-        }
+    def _map_regime(self, raw_regime: str) -> str:
+        r = str(raw_regime).lower()
+        if r == 'trend':
+            return 'TREND'
+        if r in {'range', 'low_volatility'}:
+            return 'RANGE'
+        if r in {'high_volatility', 'volatile'}:
+            return 'HIGH_VOL'
+        return 'RANGE'
 
     def should_block_trading(self) -> bool:
         if self.shutdown_event.is_set():
@@ -205,13 +181,13 @@ class QuantKernel:
         drawdown = 1.0 - (current_equity / max(self.initial_equity, 1e-9))
         if drawdown >= self.s.max_global_drawdown:
             self.state.last_block_reason = 'excessive_drawdown'
-            self.system_state = 'BLOCKED_BY_RISK'
+            self.system_state = SystemState.BLOCKED_BY_RISK.value
             return True
         return False
 
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
         self.state.last_block_reason = f'firewall:{reason}'
-        self.system_state = 'BLOCKED_BY_RISK'
+        self.system_state = SystemState.BLOCKED_BY_RISK.value
         logger.warning('Execution blocked by firewall', reason=reason, risk_snapshot=risk_snapshot)
 
     async def _execute_order(self, side: str, qty: float) -> dict[str, Any] | None:
@@ -308,6 +284,17 @@ class QuantKernel:
             )
         )
 
+    def _handle_cycle_exception(self, exc: Exception) -> bool:
+        self.state.consecutive_cycle_errors += 1
+        self.activity_text = f'Error de ciclo: {exc}'
+        self.system_state = SystemState.ERROR.value
+        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'ERROR', 0.0, 'ERROR')
+        if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
+            self._shutdown_reason = 'max_consecutive_cycle_errors'
+            self.shutdown_event.set()
+            return True
+        return False
+
     async def run(self) -> None:
         await self.initialize()
         await self.db.init()
@@ -364,13 +351,17 @@ class QuantKernel:
 
                 if self.last_trade_ts and (now.timestamp() - self.last_trade_ts) < self.MIN_SECONDS_BETWEEN_TRADES:
                     decision = 'HOLD'
-                    self.activity_text = 'Cooldown activo entre operaciones'
                     self.state.last_block_reason = 'cooldown_active'
+                    self.activity_text = f'COOLDOWN activo, restante={cooldown_remaining:.1f}s'
+
+                if decision == 'HOLD' and self.system_state != SystemState.COOLDOWN.value:
+                    self.system_state = SystemState.WAITING_EDGE.value
 
                 if self.state.position_state == PositionState.FLAT and decision == 'SELL':
                     decision = 'HOLD'
-                    self.activity_text = 'Sin posición abierta para cerrar SELL'
                     self.state.last_block_reason = 'no_position_to_sell'
+                    self.activity_text = 'Sin posición abierta para cerrar'
+                    self.system_state = SystemState.WAITING_EDGE.value
 
                 if self.state.position_state == PositionState.LONG:
                     elapsed = (now - (self.state.position_opened_at or now)).total_seconds()
@@ -420,10 +411,13 @@ class QuantKernel:
                         self.state.position_qty = 0.0
                         self.state.entry_price = 0.0
                         self.state.position_opened_at = None
+                        self.state.tp_price = 0.0
+                        self.state.sl_price = 0.0
                         self.state.unrealized_pnl = 0.0
                         self.last_trade_ts = now.timestamp()
                         self.system_state = SystemState.WAITING_FOR_DATA.value
                         self.activity_text = f'SELL ejecutado, PnL={pnl:+.2f} USDT'
+                        self.state.last_block_reason = 'none'
                     else:
                         self.system_state = SystemState.BLOCKED_BY_RISK.value
                         self.activity_text = f'Orden rechazada: {self.state.last_block_reason}'
@@ -436,10 +430,10 @@ class QuantKernel:
                 self._publish_dashboard(decision, confidence, breakdown.momentum, breakdown.mean_reversion, breakdown.regime, str(regime), last_price, 'OK')
                 await asyncio.sleep(self.s.loop_interval_seconds)
 
-            except Exception as e:
-                logger.error('kernel_error', error=str(e))
+            except Exception as exc:
+                logger.error('kernel_error', error=str(exc))
                 traceback.print_exc()
-                should_stop = self._handle_cycle_exception(e)
+                should_stop = self._handle_cycle_exception(exc)
                 if should_stop:
                     break
                 await asyncio.sleep(1)

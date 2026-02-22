@@ -14,6 +14,8 @@ class RiskConfig:
     max_correlation: float = 0.8
     kelly_fraction: float = 0.5
     max_consecutive_losses: int = 5
+    confidence_hold_threshold: float = 0.60
+    max_confidence_allocation: float = 0.02
 
 
 class InstitutionalRiskManager:
@@ -73,3 +75,20 @@ class InstitutionalRiskManager:
             self.consecutive_losses += 1
         else:
             self.consecutive_losses = 0
+
+
+    def confidence_position_fraction(self, confidence: float) -> float:
+        c = float(confidence)
+        if c < self.config.confidence_hold_threshold:
+            return 0.0
+        if c >= 0.90:
+            pct = 0.020
+        elif c >= 0.80:
+            pct = 0.010
+        elif c >= 0.70:
+            pct = 0.005
+        elif c >= 0.65:
+            pct = 0.0025
+        else:
+            pct = 0.0
+        return min(pct, self.config.max_confidence_allocation)

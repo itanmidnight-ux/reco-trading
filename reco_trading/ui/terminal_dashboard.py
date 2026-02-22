@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from rich.columns import Columns
 from rich.console import Group
 from rich.live import Live
@@ -51,7 +49,7 @@ class TerminalDashboard:
         normalized = status.upper()
         if normalized in {'OK', 'IN_POSITION'}:
             return 'bold green'
-        if normalized in {'RISK', 'ANALYZING_MARKET', 'WAITING_FOR_DATA'}:
+        if normalized in {'RISK', 'ANALYZING_MARKET', 'WAITING_FOR_DATA', 'WAITING_EDGE', 'COOLDOWN', 'LEARNING_MARKET'}:
             return 'bold yellow'
         if normalized in {'BLOCKED', 'BLOCKED_BY_RISK', 'ERROR'}:
             return 'bold red'
