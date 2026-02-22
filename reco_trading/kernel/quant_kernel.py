@@ -199,7 +199,7 @@ class QuantKernel:
     MIN_SECONDS_BETWEEN_TRADES = 10
     MAX_CONSECUTIVE_CYCLE_ERRORS = 5
     MIN_WARMUP_SECONDS = 300
-    MIN_WARMUP_BARS = 60
+    MIN_WARMUP_BARS = 30
 
     def __init__(self) -> None:
         self.s = get_settings()
@@ -218,7 +218,21 @@ class QuantKernel:
         self.learning_started_at_ms: int | None = None
         self.execution_status = 'IDLE'
 
+    @staticmethod
+    def _timeframe_to_seconds(timeframe: str) -> int:
+        normalized = str(timeframe).strip().lower()
+        units = {'m': 60, 'h': 3600, 'd': 86_400}
+        if len(normalized) < 2 or normalized[-1] not in units:
+            return 60
+        try:
+            amount = int(normalized[:-1])
+        except ValueError:
+            return 60
+        return max(amount * units[normalized[-1]], 60)
+
     async def initialize(self) -> None:
+        timeframe_seconds = self._timeframe_to_seconds(self.s.timeframe)
+        warmup_window_seconds = self.MIN_WARMUP_BARS * timeframe_seconds
         self.client = BinanceClient(
             self.s.binance_api_key.get_secret_value(),
             self.s.binance_api_secret.get_secret_value(),
@@ -228,9 +242,9 @@ class QuantKernel:
         self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
         self.signal_engine = SignalEngine()
-        self.data_buffer = DataBuffer(window_seconds=self.s.learning_phase_seconds)
+        self.data_buffer = DataBuffer(window_seconds=max(self.s.learning_phase_seconds, warmup_window_seconds))
         self.signal_combiner = SignalCombiner()
-        self.decision_engine = DecisionEngine()
+        self.decision_engine = DecisionEngine(min_edge=0.0005)
         self.regime_detector = MarketRegimeDetector(n_states=3)
 
         self.execution_engine = ExecutionEngine(
@@ -308,8 +322,11 @@ class QuantKernel:
 
         elapsed = max(now_ts - (float(self.learning_started_at_ms) / 1000.0), 0.0)
         bars = int(len(self.data_buffer.ohlcv))
-        if elapsed < self.MIN_WARMUP_SECONDS or bars < self.MIN_WARMUP_BARS:
-            return False, f'warmup_active elapsed={elapsed:.1f}s bars={bars}'
+        timeframe_seconds = self._timeframe_to_seconds(self.s.timeframe)
+        max_bars_from_window = max(int(self.data_buffer.window_seconds / timeframe_seconds), 1)
+        required_bars = max(20, min(self.MIN_WARMUP_BARS, max_bars_from_window))
+        if elapsed < self.MIN_WARMUP_SECONDS or bars < required_bars:
+            return False, f'warmup_active elapsed={elapsed:.1f}s bars={bars}/{required_bars}'
         return True, 'warmup_complete'
 
     def should_block_trading(self) -> bool:
@@ -498,6 +515,8 @@ class QuantKernel:
                                         self.state.last_block_reason = self._last_market_quality.reason
                                         self.activity_text = f'Mercado no operable: {self._last_market_quality.reason}'
                                         self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
                                     if self.learning_started_at_ms is None:
                                         self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
 

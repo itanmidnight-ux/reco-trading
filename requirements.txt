@@ -1,8 +1,24 @@
-# Production Dependencies
-websocket-client
-async-orm
+aiohttp
+asyncpg
+ccxt
+cryptography
 fastapi
-scikit-learn
-pandas
+hmmlearn
+lightgbm>=4.3,<5
+jinja2
+loguru
 numpy
-# Add additional dependencies as required
+pandas
+prometheus-client
+pydantic
+pydantic-settings
+redis
+rich
+scikit-learn
+scipy
+sqlalchemy
+torch>=2.1,<3
+xgboost
+uvloop
+uvicorn
+pytest
