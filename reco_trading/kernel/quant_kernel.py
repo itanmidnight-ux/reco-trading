@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import signal
+import time
 import traceback
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -17,7 +18,7 @@ from reco_trading.config.settings import get_settings
 from reco_trading.core.data_buffer import DataBuffer
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
-from reco_trading.core.market_data import MarketDataService
+from reco_trading.core.market_data import MarketDataService, MarketQuality
 from reco_trading.core.market_regime import MarketRegimeDetector
 from reco_trading.core.signal_fusion import SignalCombiner
 from reco_trading.core.system_state import SystemState
@@ -48,6 +49,9 @@ class RuntimeState:
     rolling_returns: list[float] = field(default_factory=list)
     consecutive_cycle_errors: int = 0
     last_block_reason: str = 'booting'
+    rejection_count: int = 0
+    kill_switch: bool = False
+    avg_latency_ms: float = 0.0
 
     position_state: PositionState = PositionState.FLAT
     position_qty: float = 0.0
@@ -78,6 +82,8 @@ class SignalEngine:
             'atr': snapshot.atr,
             'returns': snapshot.returns,
             'prices': feats['close'].tail(300),
+            'skew': skew,
+            'kurtosis': kurtosis,
         }
 
 
@@ -104,6 +110,7 @@ class QuantKernel:
         self.last_trade_ts: float | None = None
         self.initial_equity = 0.0
         self._shutdown_reason = 'running'
+        self._last_market_quality = MarketQuality(True, 'booting', 0.0, 0.0, 0.0, 0.0)
 
         self.metrics = TradingMetrics()
         self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
@@ -186,6 +193,7 @@ class QuantKernel:
         return False
 
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
+        self.state.rejection_count += 1
         self.state.last_block_reason = f'firewall:{reason}'
         self.system_state = SystemState.BLOCKED_BY_RISK.value
         logger.warning('Execution blocked by firewall', reason=reason, risk_snapshot=risk_snapshot)
@@ -194,10 +202,20 @@ class QuantKernel:
         if qty <= 0.0:
             self.state.last_block_reason = 'invalid_qty'
             return None
+
+        self.execution_status = 'ORDER_SENT'
+        started = time.perf_counter()
         fill = await self.execution_engine.execute(side, qty)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self.state.avg_latency_ms = (self.state.avg_latency_ms * 0.8) + (elapsed_ms * 0.2)
+
         if not fill:
+            self.state.rejection_count += 1
+            self.execution_status = 'ORDER_REJECTED'
             self.state.last_block_reason = self.execution_engine.last_rejection_reason or 'execution_returned_none'
             return None
+
+        self.execution_status = 'ORDER_FILLED'
         if fill.get('status') == 'institutional_completed':
             fills = fill.get('fills') or []
             if not fills:
@@ -262,14 +280,14 @@ class QuantKernel:
                 pnl_diario=self.state.daily_pnl,
                 drawdown=drawdown,
                 riesgo_activo=float(np.clip(self.s.risk_per_trade, 0.0, 1.0)),
-                exposicion=max(self.state.position_qty * max(last_price, 0.0), 0.0),
+                exposicion=notional,
                 trades=self.state.trades,
                 win_rate=(self.state.winning_trades / self.state.trades if self.state.trades else 0.0),
                 expectancy=confidence - 0.5,
                 sharpe_rolling=0.0,
                 regimen=regime,
                 senal=decision,
-                latencia_ms=0.0,
+                latencia_ms=self.state.avg_latency_ms,
                 ultimo_precio=max(last_price, 0.0),
                 estado_binance=binance_state,
                 estado_sistema=self.system_state,

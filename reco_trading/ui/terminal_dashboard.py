@@ -81,6 +81,9 @@ class TerminalDashboard:
         table.add_row('Exposición', f'{snapshot.exposicion:,.2f} USDT')
         table.add_row('Último Precio', f'{snapshot.ultimo_precio:,.2f}')
         table.add_row('Latencia', f'{snapshot.latencia_ms:.1f} ms')
+        table.add_row('Spread', f'{snapshot.spread_bps:.2f} bps')
+        table.add_row('Slippage est.', f'{snapshot.slippage_bps:.2f} bps')
+        table.add_row('Fees est.', f'{snapshot.estimated_fees:.4f} USDT')
         return Panel(table, title='[bold]Resumen de Cuenta[/bold]', border_style='cyan')
 
     def _render_performance(self, snapshot: VisualSnapshot) -> Panel:

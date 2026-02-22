@@ -1,8 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import numpy as np
 import pandas as pd
 
 from reco_trading.infra.binance_client import BinanceClient
+
+
+@dataclass(frozen=True, slots=True)
+class MarketQuality:
+    operable: bool
+    reason: str
+    spread_bps: float
+    realized_volatility: float
+    avg_volume: float
+    gap_ratio: float
 
 
 class MarketDataService:
@@ -24,6 +37,7 @@ class MarketDataService:
             raise ValueError('OHLCV corrupto: valores negativos detectados')
         if (frame['close'] <= 0).any():
             raise ValueError('Invalid price received from Binance')
+        frame = frame.sort_values('timestamp').drop_duplicates(subset=['timestamp'], keep='last').reset_index(drop=True)
         return frame
 
     async def latest_order_book(self, limit: int = 20) -> dict:
