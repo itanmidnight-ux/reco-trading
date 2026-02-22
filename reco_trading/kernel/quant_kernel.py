@@ -114,7 +114,10 @@ class SignalEngine:
             'edge_z': edge_z,
         momentum = float(np.clip(self.momentum.predict_from_snapshot(snapshot), 0.0, 1.0))
         mean_rev = float(np.clip(self.reversion.predict_from_snapshot(snapshot), 0.0, 1.0))
+        }
+        
 
+        
         return {
             'snapshot': snapshot,
             'model_scores': {'momentum': momentum, 'mean_reversion': mean_rev},
