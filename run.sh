@@ -6,6 +6,10 @@ upsert_env_var() {
   local key="$2"
   local value="$3"
 
+  if [ ! -f "${env_file}" ]; then
+    touch "${env_file}"
+  fi
+
   if grep -qE "^${key}=" "${env_file}"; then
     sed -i "s|^${key}=.*|${key}=${value}|" "${env_file}"
   else

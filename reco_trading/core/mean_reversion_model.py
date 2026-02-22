@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pandas as pd
+
+from reco_trading.core.data_buffer import MarketSnapshot
 from xgboost import XGBClassifier
 
 
@@ -34,3 +36,11 @@ class MeanReversionModel:
         if not self._fitted:
             return 0.5
         return float(self.model.predict_proba(frame[self.FEATURES].tail(1))[0, 1])
+
+
+    def predict_from_snapshot(self, snapshot: MarketSnapshot) -> float:
+        magnitude = abs(snapshot.vwap_distance) + abs(snapshot.bollinger_deviation)
+        if magnitude < 1e-9:
+            return 0.5
+        score = min(magnitude * 2.5, 6.0)
+        return float(1.0 / (1.0 + pow(2.718281828, -score)))

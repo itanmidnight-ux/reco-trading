@@ -11,28 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 
-@dataclass(slots=True)
-class VisualSnapshot:
-    capital: float
-    balance: float
-    pnl_total: float
-    pnl_diario: float
-    drawdown: float
-    riesgo_activo: float
-    exposicion: float
-    trades: int
-    win_rate: float
-    expectancy: float
-    sharpe_rolling: float
-    regimen: str
-    senal: str
-    latencia_ms: float
-    ultimo_precio: float
-    estado_binance: str
-    estado_sistema: str
-    actividad: str
-    motivo_bloqueo: str
-
+from reco_trading.ui.visual_snapshot import VisualSnapshot
 
 class TerminalDashboard:
     def __init__(self, refresh_per_second: int = 4) -> None:
@@ -45,9 +24,9 @@ class TerminalDashboard:
         normalized = status.upper()
         if normalized in {'OK', 'IN_POSITION'}:
             return 'bold green'
-        if normalized in {'RISK', 'ANALYZING_MARKET', 'WAITING_FOR_DATA'}:
+        if normalized in {'RISK', 'ANALYZING_MARKET', 'WAITING_FOR_DATA', 'WAITING_EDGE', 'COOLDOWN', 'LEARNING_MARKET'}:
             return 'bold yellow'
-        if normalized in {'BLOCKED', 'BLOCKED_BY_RISK', 'ERROR'}:
+        if normalized in {'BLOCKED', 'BLOCKED_BY_RISK', 'ERROR', 'KILL_SWITCH_ACTIVE'}:
             return 'bold red'
         if normalized == 'SENDING_ORDER':
             return 'bold cyan'
@@ -77,6 +56,9 @@ class TerminalDashboard:
         table.add_row('Exposición', f'{snapshot.exposicion:,.2f} USDT')
         table.add_row('Último Precio', f'{snapshot.ultimo_precio:,.2f}')
         table.add_row('Latencia', f'{snapshot.latencia_ms:.1f} ms')
+        table.add_row('Spread', f'{snapshot.spread_bps:.2f} bps')
+        table.add_row('Slippage est.', f'{snapshot.slippage_bps:.2f} bps')
+        table.add_row('Fees est.', f'{snapshot.estimated_fees:.4f} USDT')
         return Panel(table, title='[bold]Resumen de Cuenta[/bold]', border_style='cyan')
 
     def _render_performance(self, snapshot: VisualSnapshot) -> Panel:
@@ -99,6 +81,9 @@ class TerminalDashboard:
         table.add_row('Señal Final', f'[{self._signal_style(snapshot.senal)}]{snapshot.senal}[/]')
         table.add_row('Binance', f'[{self._status_style(snapshot.estado_binance)}]{snapshot.estado_binance}[/]')
         table.add_row('Sistema', f'[{self._status_style(snapshot.estado_sistema)}]{snapshot.estado_sistema}[/]')
+        table.add_row('Exec', snapshot.execution_status)
+        table.add_row('Confianza', f'{snapshot.confianza:.2%}')
+        table.add_row('Scores', f'M={snapshot.score_momentum:.2f} R={snapshot.score_reversion:.2f} G={snapshot.score_regime:.2f}')
         return Panel(table, title='[bold]Estado de Decisión[/bold]', border_style='yellow')
 
     def _render_risk_progress(self, snapshot: VisualSnapshot) -> Panel:
@@ -119,8 +104,11 @@ class TerminalDashboard:
         dd_progress.add_task('drawdown', total=100.0, completed=max(0.0, min(snapshot.drawdown * 100.0, 100.0)))
 
         activity = Text(f'Actividad: {snapshot.actividad}', style='bold white')
+        pos_time = Text(f'Tiempo en posición: {snapshot.tiempo_en_posicion_s:.1f}s', style='bold cyan')
+        cooldown = Text(f'Cooldown restante: {snapshot.cooldown_restante_s:.1f}s', style='bold yellow')
+        learning = Text(f'Tiempo aprendizaje restante: {snapshot.learning_remaining_seconds:.1f}s', style='bold magenta')
         blocked = Text(f'Motivo bloqueo: {snapshot.motivo_bloqueo}', style='bold red' if snapshot.motivo_bloqueo != 'none' else 'bold green')
-        return Panel(Group(risk_progress, dd_progress, activity, blocked), title='[bold]Riesgo y Actividad[/bold]', border_style='red')
+        return Panel(Group(risk_progress, dd_progress, activity, pos_time, cooldown, learning, blocked), title='[bold]Riesgo y Actividad[/bold]', border_style='red')
 
     def _render_header(self, snapshot: VisualSnapshot) -> Text:
         title = Text(' RECO TRADING · TERMINAL LIVE ', style='bold white on blue')
