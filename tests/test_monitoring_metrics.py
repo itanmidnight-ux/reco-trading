@@ -33,5 +33,5 @@ def test_trading_metrics_observes_lifecycle_and_labels():
     assert 'reco_fill_quality_ratio' in families
     assert 'reco_fill_ratio' in families
     assert 'reco_drawdown_ratio' in families
-    assert 'reco_requests_total' in families
-    assert 'reco_errors_total' in families
+    assert 'reco_requests' in families
+    assert 'reco_errors' in families
