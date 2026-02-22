@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     runtime_cpu_affinity: str | None = Field(default=None, description='Lista de CPUs separada por comas, ejemplo: 0,1,2')
 
 
+
+    @field_validator('binance_api_key', 'binance_api_secret')
+    @classmethod
+    def non_empty_binance_credentials(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError('Las credenciales de Binance no pueden estar vacías.')
+        return value
+
     @field_validator('broker_backend')
     @classmethod
     def validate_broker_backend(cls, value: str) -> str:
