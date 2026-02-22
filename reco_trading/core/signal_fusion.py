@@ -172,3 +172,29 @@ class SignalFusionEngine:
             return calibrated_probability
 
         return raw_probability
+
+
+@dataclass(slots=True)
+class SignalBreakdown:
+    momentum: float
+    mean_reversion: float
+    regime: float
+    combined: float
+
+
+class SignalCombiner:
+    def combine(self, p_momentum: float, p_reversion: float, p_regime: float, regime: str) -> SignalBreakdown:
+        regime_key = str(regime).upper()
+        if regime_key == 'TREND':
+            w1, w2, w3 = 0.55, 0.20, 0.25
+        elif regime_key == 'LOW_VOL':
+            w1, w2, w3 = 0.30, 0.45, 0.25
+        else:
+            w1, w2, w3 = 0.35, 0.35, 0.30
+        combined = (w1 * p_momentum) + (w2 * p_reversion) + (w3 * p_regime)
+        return SignalBreakdown(
+            momentum=float(np.clip(p_momentum, 0.0, 1.0)),
+            mean_reversion=float(np.clip(p_reversion, 0.0, 1.0)),
+            regime=float(np.clip(p_regime, 0.0, 1.0)),
+            combined=float(np.clip(combined, 0.0, 1.0)),
+        )
