@@ -24,6 +24,13 @@ class VisualSnapshot:
     estado_sistema: str
     actividad: str
     motivo_bloqueo: str
+
+    confidence: float = 0.0
+    scores: dict[str, float] | None = None
+    decision: str = 'HOLD'
+    reason: str = ''
+    pnl: float = 0.0
+    system_state: str = ''
     confianza: float = 0.0
     tiempo_en_posicion_s: float = 0.0
     cooldown_restante_s: float = 0.0

@@ -115,32 +115,84 @@ class SignalEngine:
 class DecisionEngine:
     def __init__(self, min_edge: float = 0.08) -> None:
         self.min_edge = float(min_edge)
+        self.last_confidence: float = 0.0
+        self.last_scores: dict[str, float] = {}
+        self.last_reason: str = 'booting'
+        self._context: dict[str, Any] = {
+            'momentum': 0.5,
+            'reversion': 0.5,
+            'global_probability': 0.5,
+            'expected_edge': 0.0,
+            'friction_cost': 0.0,
+            'trading_enabled': True,
+            'market_operable': True,
+            'force_hold': False,
+            'reason_prefix': '',
+        }
 
-    def decide(
+    def update_context(
         self,
         *,
-        probability: float,
+        momentum: float,
+        reversion: float,
+        global_probability: float,
         expected_edge: float,
         friction_cost: float,
         trading_enabled: bool,
         market_operable: bool,
         force_hold: bool = False,
         reason_prefix: str = '',
-    ) -> tuple[str, float, str]:
-        p = float(np.clip(probability, 0.0, 1.0))
+    ) -> None:
+        self._context = {
+            'momentum': float(np.clip(momentum, 0.0, 1.0)),
+            'reversion': float(np.clip(reversion, 0.0, 1.0)),
+            'global_probability': float(np.clip(global_probability, 0.0, 1.0)),
+            'expected_edge': float(expected_edge),
+            'friction_cost': float(max(friction_cost, 0.0)),
+            'trading_enabled': bool(trading_enabled),
+            'market_operable': bool(market_operable),
+            'force_hold': bool(force_hold),
+            'reason_prefix': str(reason_prefix),
+        }
+
+    def decide(self) -> str:
+        momentum = float(self._context['momentum'])
+        reversion = float(self._context['reversion'])
+        p = float(self._context['global_probability'])
+        expected_edge = float(self._context['expected_edge'])
+        friction_cost = float(self._context['friction_cost'])
+        trading_enabled = bool(self._context['trading_enabled'])
+        market_operable = bool(self._context['market_operable'])
+        force_hold = bool(self._context['force_hold'])
+        reason_prefix = str(self._context['reason_prefix'])
+
+        self.last_scores = {
+            'momentum': momentum,
+            'reversion': reversion,
+            'global': p,
+        }
+        self.last_confidence = p
+
         if not trading_enabled:
-            return 'DISABLE_TRADING', p, f'{reason_prefix}kill_switch_active'
+            self.last_reason = f'{reason_prefix}kill_switch_active'
+            return 'DISABLE_TRADING'
         if force_hold:
-            return 'HOLD', p, f'{reason_prefix}learning_market'
+            self.last_reason = f'{reason_prefix}learning_market'
+            return 'HOLD'
         if not market_operable:
-            return 'HOLD', p, f'{reason_prefix}market_not_operable'
+            self.last_reason = f'{reason_prefix}market_not_operable'
+            return 'HOLD'
         if expected_edge <= friction_cost:
-            return 'HOLD', p, f'{reason_prefix}edge_below_friction edge={expected_edge:.6f} friction={friction_cost:.6f}'
+            self.last_reason = f'{reason_prefix}edge_below_friction edge={expected_edge:.6f} friction={friction_cost:.6f}'
+            return 'HOLD'
         if abs(expected_edge) < self.min_edge:
-            return 'HOLD', p, f'{reason_prefix}insufficient_edge edge={expected_edge:+.6f}'
+            self.last_reason = f'{reason_prefix}insufficient_edge edge={expected_edge:+.6f}'
+            return 'HOLD'
         if expected_edge > 0:
-            return 'BUY', p, f'{reason_prefix}positive_edge edge={expected_edge:+.6f}'
-        return 'SELL', p, f'{reason_prefix}negative_edge edge={expected_edge:+.6f}'
+            self.last_reason = f'{reason_prefix}positive_edge edge={expected_edge:+.6f}'
+            return 'BUY'
+        self.last_reason = f'{reason_prefix}negative_edge edge={expected_edge:+.6f}'
+        return 'SELL'
 
 
 class QuantKernel:
@@ -310,7 +362,6 @@ class QuantKernel:
     def _publish_dashboard(
         self,
         decision: str,
-        confidence: float,
         expected_edge: float,
         mom: float,
         rev: float,
@@ -349,7 +400,13 @@ class QuantKernel:
                 estado_sistema=self.system_state,
                 actividad=self.activity_text,
                 motivo_bloqueo=self.state.last_block_reason,
-                confianza=confidence,
+                confidence=self.decision_engine.last_confidence,
+                scores=dict(self.decision_engine.last_scores),
+                decision=decision,
+                reason=self.decision_engine.last_reason,
+                pnl=self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid,
+                system_state=self.system_state,
+                confianza=self.decision_engine.last_confidence,
                 tiempo_en_posicion_s=position_time,
                 cooldown_restante_s=cooldown,
                 score_momentum=mom,
@@ -368,7 +425,19 @@ class QuantKernel:
         self.activity_text = f'Error de ciclo: {exc}'
         self.execution_status = 'ERROR'
         self.system_state = SystemState.ERROR.value
-        self._publish_dashboard('HOLD', 0.0, 0.0, 0.5, 0.5, 0.5, 'ERROR', 0.0, 'ERROR')
+        self.decision_engine.update_context(
+            momentum=0.5,
+            reversion=0.5,
+            global_probability=0.0,
+            expected_edge=0.0,
+            friction_cost=0.0,
+            trading_enabled=False,
+            market_operable=False,
+            force_hold=True,
+            reason_prefix='phase=error;',
+        )
+        self.decision_engine.decide()
+        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'ERROR', 0.0, 'ERROR')
         if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
             self._shutdown_reason = 'max_consecutive_cycle_errors'
             self.shutdown_event.set()
@@ -413,8 +482,10 @@ class QuantKernel:
                                     progress, remaining = self.data_buffer.learning_progress(self.learning_started_at_ms, now.timestamp())
                                     if remaining > 0.0:
                                         self.system_state = SystemState.LEARNING_MARKET.value
-                                        decision, confidence, reason = self.decision_engine.decide(
-                                            probability=0.5,
+                                        self.decision_engine.update_context(
+                                            momentum=0.5,
+                                            reversion=0.5,
+                                            global_probability=0.5,
                                             expected_edge=0.0,
                                             friction_cost=0.0,
                                             trading_enabled=not self.state.kill_switch,
@@ -422,14 +493,15 @@ class QuantKernel:
                                             force_hold=True,
                                             reason_prefix='phase=learning;',
                                         )
-                                        self.state.last_block_reason = reason
+                                        decision = self.decision_engine.decide()
+                                        self.state.last_block_reason = self.decision_engine.last_reason
                                         self.activity_text = f'APRENDIENDO MERCADO ({progress:.0%}) restante={remaining:.1f}s'
-                                        self._publish_dashboard(decision, confidence, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK', remaining)
+                                        self._publish_dashboard(decision, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK', remaining)
                                         await asyncio.sleep(self.s.loop_interval_seconds)
                                         continue
 
                                     if self.should_block_trading():
-                                        self._publish_dashboard('DISABLE_TRADING', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
+                                        self._publish_dashboard('DISABLE_TRADING', 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
                                         await asyncio.sleep(self.s.loop_interval_seconds)
                                         continue
 
@@ -438,7 +510,7 @@ class QuantKernel:
                                         self.system_state = SystemState.WAITING_EDGE.value
                                         self.state.last_block_reason = self._last_market_quality.reason
                                         self.activity_text = f'Mercado no operable: {self._last_market_quality.reason}'
-                                        self._publish_dashboard('HOLD', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
+                                        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'OK')
                                     if self.learning_started_at_ms is None:
                                         self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
 
@@ -460,7 +532,7 @@ class QuantKernel:
                                         self.system_state = SystemState.BLOCKED_BY_RISK.value
                                         self.state.last_block_reason = reason
                                         self.activity_text = f'Balance inválido: {reason}'
-                                        self._publish_dashboard('DISABLE_TRADING', 0.0, 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'ERROR')
+                                        self._publish_dashboard('DISABLE_TRADING', 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'ERROR')
                                         await asyncio.sleep(self.s.loop_interval_seconds)
                                         continue
 
@@ -492,15 +564,18 @@ class QuantKernel:
                                         expected_edge *= 0.5
 
                                     friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
-                                    decision, confidence, reason = self.decision_engine.decide(
-                                        probability=probability,
+                                    self.decision_engine.update_context(
+                                        momentum=float(breakdown.momentum),
+                                        reversion=float(breakdown.mean_reversion),
+                                        global_probability=probability,
                                         expected_edge=expected_edge,
                                         friction_cost=friction_cost,
                                         trading_enabled=not self.state.kill_switch,
                                         market_operable=self._last_market_quality.operable,
                                     )
-                                    self.state.last_block_reason = reason
-                                    self.activity_text = reason
+                                    decision = self.decision_engine.decide()
+                                    self.state.last_block_reason = self.decision_engine.last_reason
+                                    self.activity_text = self.decision_engine.last_reason
 
                                     cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
                                     if cooldown > 0 and decision in {'BUY', 'SELL'}:
@@ -551,7 +626,7 @@ class QuantKernel:
                                         self.execution_engine.set_risk_context(
                                             capital_total=self.state.equity,
                                             risk_per_trade=risk_fraction if decision == 'BUY' else self.s.risk_per_trade,
-                                            signal_confidence=max(confidence, 0.1),
+                                            signal_confidence=max(self.decision_engine.last_confidence, 0.1),
                                         )
                                         fill = await self._execute_order(decision, order_qty)
                                         if fill and decision == 'BUY':
@@ -598,7 +673,6 @@ class QuantKernel:
                                     self.state.consecutive_cycle_errors = 0
                                     self._publish_dashboard(
                                         decision=decision,
-                                        confidence=confidence,
                                         expected_edge=expected_edge,
                                         mom=breakdown.momentum,
                                         rev=breakdown.mean_reversion,
@@ -609,7 +683,7 @@ class QuantKernel:
                                     )
 
                 except Exception as exc:
-                    logger.exception('kernel_error')
+                    logger.error(f'Kernel error: {exc}')
                     should_stop = self._handle_cycle_exception(exc)
                     if should_stop:
                         break
