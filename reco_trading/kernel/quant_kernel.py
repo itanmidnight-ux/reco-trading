@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-import os
 import signal
 import traceback
 from dataclasses import dataclass, field
@@ -30,127 +29,50 @@ from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
 from reco_trading.ui.terminal_dashboard import TerminalDashboard, VisualSnapshot
 
 
+# =========================
+# RUNTIME STATE CORREGIDO
+# =========================
 @dataclass(slots=True)
 class RuntimeState:
-    equity: float = 10_000.0
+    equity: float = 0.0
     daily_pnl: float = 0.0
     trades: int = 0
     winning_trades: int = 0
     rolling_returns: list[float] = field(default_factory=list)
     consecutive_cycle_errors: int = 0
-
-
-@dataclass(slots=True)
-class KernelMonitoring:
-    metrics: TradingMetrics
-
-    def set_system_degraded(self, error: Exception) -> None:
-        self.metrics.set_worker_health(state='degraded', healthy=False, strategy='directional')
-        self.metrics.observe_error(component='quant_kernel', error_type=error.__class__.__name__, strategy='directional')
-
-
-
-
-class NullDatabase:
-    async def init(self) -> None:
-        return None
-
-    async def close(self) -> None:
-        return None
-
-    async def record_order(self, _order: dict[str, Any]) -> None:
-        return None
-
-    async def record_fill(self, _fill: dict[str, Any]) -> None:
-        return None
-
-    async def persist_candle(self, _payload: dict[str, Any]) -> None:
-        return None
-
-    async def persist_trade_signal(self, _payload: dict[str, Any]) -> None:
-        return None
-
-    async def persist_order_execution(self, _payload: dict[str, Any]) -> None:
-        return None
-
-
-class SignalEngine:
-    def __init__(self) -> None:
-        self.feature_engine = FeatureEngine()
-        self.momentum = MomentumModel()
-        self.reversion = MeanReversionModel()
-
-    def generate(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
-        feats = self.feature_engine.build(ohlcv)
-        if feats.empty:
-            raise ValueError('features vacías: OHLCV insuficiente o corrupto para generar señal')
-        mom = float(self.momentum.predict_proba_up(feats))
-        rev = float(self.reversion.predict_reversion(feats))
-        return {
-            'frame': feats,
-            'model_scores': {
-                'momentum': float(np.clip(mom, 0.0, 1.0)),
-                'mean_reversion': float(np.clip(1.0 - rev, 0.0, 1.0)),
-            },
-            'atr': float(feats.iloc[-1]['atr14']),
-            'returns': feats['return'].tail(300).to_numpy(dtype=float),
-            'returns_df': pd.DataFrame({'BTCUSDT': feats['return'].tail(300).to_numpy(dtype=float)}),
-            'prices': feats['close'].tail(300),
-        }
-
-
-class DecisionEngine:
-    def __init__(self, buy_threshold: float = 0.56, sell_threshold: float = 0.44, min_edge: float = 0.02) -> None:
-        self.buy_threshold = float(buy_threshold)
-        self.sell_threshold = float(sell_threshold)
-        self.min_edge = float(min_edge)
-
-    def decide(self, model_scores: dict[str, float], regime: str) -> tuple[str, float]:
-        momentum = float(np.clip(model_scores.get('momentum', 0.5), 0.0, 1.0))
-        mean_rev = float(np.clip(model_scores.get('mean_reversion', 0.5), 0.0, 1.0))
-
-        if regime == 'high_volatility':
-            weight_mom, weight_rev = 0.45, 0.55
-        elif regime == 'trend':
-            weight_mom, weight_rev = 0.70, 0.30
-        else:
-            weight_mom, weight_rev = 0.55, 0.45
-
-        score = float(np.clip(weight_mom * momentum + weight_rev * mean_rev, 0.0, 1.0))
-        if score >= self.buy_threshold and (score - 0.5) >= self.min_edge:
-            return 'BUY', score
-        if score <= self.sell_threshold and (0.5 - score) >= self.min_edge:
-            return 'SELL', score
-        return 'HOLD', score
+    last_trade_ts: float = 0.0
 
 
 class QuantKernel:
     MAX_CONSECUTIVE_CYCLE_ERRORS = 5
+    MIN_SECONDS_BETWEEN_TRADES = 90  # ⛔ anti-overtrading
+    MIN_SIGNAL_CONFIDENCE = 0.60     # ⛔ filtro de calidad
 
     def __init__(self) -> None:
         self.s = get_settings()
         self.metrics = TradingMetrics()
-        self.monitoring = KernelMonitoring(metrics=self.metrics)
-        self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
+        self.metrics_exporter = MetricsExporter(
+            port=self.s.monitoring_metrics_port,
+            addr=self.s.monitoring_metrics_host,
+        )
+
         self.state = RuntimeState()
-        self.initial_equity = self.state.equity
+        self.initial_equity = 0.0
         self.blocked = False
+
         self.dashboard = TerminalDashboard()
         self.shutdown_event = asyncio.Event()
         self._shutdown_reason = 'running'
 
-    def should_block_trading(self) -> bool:
-        return self.blocked
-
-    def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
-        logger.warning('firewall_rejected', reason=reason, risk_snapshot=risk_snapshot)
-
+    # =========================
+    # INITIALIZATION
+    # =========================
     async def initialize(self) -> None:
         api_key = self.s.binance_api_key.get_secret_value().strip()
         api_secret = self.s.binance_api_secret.get_secret_value().strip()
+
         if not api_key or not api_secret:
-            logger.error('kernel_startup_failed', reason='missing_binance_credentials')
-            raise RuntimeError('Binance API credentials missing')
+            raise RuntimeError("Missing Binance credentials")
 
         self.client = BinanceClient(
             api_key,
@@ -158,465 +80,147 @@ class QuantKernel:
             testnet=self.s.binance_testnet,
             confirm_mainnet=self.s.confirm_mainnet,
         )
-        try:
-            self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
-        except Exception as exc:
-            logger.exception(
-                'db_initialization_failed',
-                error=str(exc),
-                environment=self.s.environment,
-                runtime_profile=self.s.runtime_profile,
-            )
-            raise RuntimeError('Fatal startup error: database initialization failed.') from exc
+
+        self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
+
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
+
         self.signal_engine = SignalEngine()
         self.regime_detector = MarketRegimeDetector(n_states=3)
-        self.decision_engine = DecisionEngine()
+        self.decision_engine = DecisionEngine(
+            buy_threshold=0.62,
+            sell_threshold=0.38,
+            min_edge=0.04,
+        )
+
         self.risk_manager = InstitutionalRiskManager(
             RiskConfig(
-                risk_per_trade=min(self.s.risk_per_trade, 0.005),
-                max_daily_loss=0.03,
-                max_drawdown=self.s.max_global_drawdown,
-                max_exposure=self.s.max_asset_exposure,
-                max_correlation=self.s.correlation_threshold,
-                kelly_fraction=0.5,
-                max_consecutive_losses=self.s.max_consecutive_losses,
+                risk_per_trade=0.002,   # ⛔ REDUCIDO
+                max_daily_loss=0.02,
+                max_drawdown=0.15,
+                max_exposure=0.15,
+                max_correlation=0.8,
+                kelly_fraction=0.4,
+                max_consecutive_losses=3,
             )
         )
-        self.capital_governor = CapitalGovernor(hard_cap_global=250_000, max_risk_per_trade_ratio=0.005, max_daily_loss_ratio=0.03)
-        self.portfolio_optimizer = ConvexPortfolioOptimizer(capital_governor=self.capital_governor)
-        self.execution_firewall = ExecutionFirewall(
-            max_total_exposure=250_000,
-            max_asset_exposure=125_000,
-            max_daily_loss=8_000,
-            max_daily_notional=500_000,
+
+        self.capital_governor = CapitalGovernor(
+            hard_cap_global=100_000,
+            max_risk_per_trade_ratio=0.002,
+            max_daily_loss_ratio=0.02,
         )
+
+        self.execution_firewall = ExecutionFirewall(
+            max_total_exposure=100_000,
+            max_asset_exposure=50_000,
+            max_daily_loss=3_000,
+            max_daily_notional=150_000,
+        )
+
         self.execution_engine = ExecutionEngine(
             self.client,
             self.s.symbol,
             self.db,
             redis_url=self.s.redis_url,
-            order_timeout_seconds=self.s.execution_order_timeout_seconds,
             firewall=self.execution_firewall,
             quant_kernel=self,
             capital_governor=self.capital_governor,
         )
 
-        if self.s.symbol != 'BTC/USDT':
-            raise RuntimeError('Símbolo inválido: solo se permite BTC/USDT en CCXT.')
-        if not self.s.binance_testnet and not self.s.confirm_mainnet:
-            raise RuntimeError('Mainnet requiere CONFIRM_MAINNET=true para evitar operación accidental.')
-
-        logger.info('Validando conexión Binance...')
+        logger.info("Validando conexión Binance...")
         await self.client.ping()
 
         ticker = await self.client.fetch_ticker(self.s.symbol)
-        if ticker['last'] <= 0:
-            raise RuntimeError('Precio inválido desde Binance.')
         logger.info(f"Precio inicial BTC/USDT: {ticker['last']}")
 
+        # 🔥 CAPITAL REAL
         balance = await self.client.fetch_balance()
         usdt_balance = float((balance.get('USDT') or {}).get('free') or 0.0)
-        logger.info(f'Balance detectado: {usdt_balance}')
 
+        if usdt_balance <= 0:
+            raise RuntimeError("Balance USDT inválido")
+
+        self.state.equity = usdt_balance
+        self.initial_equity = usdt_balance
+
+        logger.success(f"Capital REAL sincronizado: {usdt_balance:.2f} USDT")
+
+    # =========================
+    # MAIN LOOP
+    # =========================
     async def run(self) -> None:
-        initialized = False
-        try:
-            await self.initialize()
-            await self.db.init()
-            await self.db.health_check()
-            self.metrics_exporter.start()
-            self.dashboard.start()
-            self._install_signal_handlers()
-            initialized = True
+        await self.initialize()
+        await self.db.init()
+        self.metrics_exporter.start()
+        self.dashboard.start()
+        self._install_signal_handlers()
 
-            logger.info('kernel_start', symbol=self.s.symbol, timeframe=self.s.timeframe, testnet=self.s.binance_testnet)
+        while not self.shutdown_event.is_set():
+            try:
+                now = datetime.now(timezone.utc).timestamp()
 
+                if now - self.state.last_trade_ts < self.MIN_SECONDS_BETWEEN_TRADES:
+                    await asyncio.sleep(2)
+                    continue
 
-            while not self.shutdown_event.is_set():
-                try:
-                    cycle_started = datetime.now(timezone.utc)
-                    ohlcv = await self.market_data.latest_ohlcv(limit=300)
-                    sig = self.signal_engine.generate(ohlcv)
-                    regime = self.regime_detector.predict(sig['returns'], sig['prices'])
-                    regime_name = str(regime.get('regime', 'range'))
-                    decision, decision_score = self.decision_engine.decide(sig['model_scores'], regime_name)
-                    await self.db.persist_trade_signal(
-                        {
-                            'ts': int(datetime.now(timezone.utc).timestamp() * 1000),
-                            'symbol': self.s.symbol,
-                            'signal': decision,
-                            'score': float(np.clip(decision_score, 0.0, 1.0)),
-                            'expected_value': float(decision_score),
-                            'reason': f"regime={regime_name};scores={sig['model_scores']}",
-                        }
-                    )
-                    last_price = float(sig['prices'].iloc[-1])
-                    if last_price is None or last_price <= 0:
-                        raise ValueError('Invalid price received from Binance')
-                    status = 'OK'
-                    self.state.consecutive_cycle_errors = 0
+                ohlcv = await self.market_data.latest_ohlcv(limit=300)
+                sig = self.signal_engine.generate(ohlcv)
 
-                    self.risk_manager.update_equity(self.state.equity)
-                    self.risk_manager.check_kill_switch(self.state.equity)
-                    if self.risk_manager.kill_switch:
-                        self.blocked = True
-                        status = 'BLOCKED'
-                        self.dashboard.update(
-                            self._build_dashboard_snapshot(
-                                regime=regime,
-                                signal=decision,
-                                last_price=last_price,
-                                latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
-                                binance_status='OK',
-                                system_status=status,
-                            )
-                        )
-                        self.request_shutdown('risk_kill_switch')
-                        continue
+                regime = self.regime_detector.predict(sig["returns"], sig["prices"])
+                decision, score = self.decision_engine.decide(sig["model_scores"], regime["regime"])
 
-                    if decision == 'HOLD':
-                        self.dashboard.update(
-                            self._build_dashboard_snapshot(
-                                regime=regime,
-                                signal=decision,
-                                last_price=last_price,
-                                latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
-                                binance_status='OK',
-                                system_status=status,
-                            )
-                        )
-                        await asyncio.sleep(self.s.loop_interval_seconds)
-                        continue
-
-                    position_size = self.risk_manager.calculate_position_size(
-                        equity=self.state.equity,
-                        atr=max(sig['atr'], 1e-6),
-                        win_rate=0.56,
-                        reward_risk=1.8,
-                    )
-                    position_size = float(np.clip(position_size, 0.0001, 0.01))
-                    notional = position_size * last_price
-
-                    self.capital_governor.update_state(
-                        strategy='directional',
-                        exchange='binance',
-                        symbol=self.s.symbol,
-                        capital_by_strategy=notional,
-                        capital_by_exchange=notional,
-                        total_exposure=notional,
-                        asset_exposure=notional,
-                        equity=self.state.equity,
-                        daily_pnl=self.state.daily_pnl,
-                    )
-                    ticket = self.capital_governor.issue_ticket(
-                        strategy='directional',
-                        exchange='binance',
-                        symbol=self.s.symbol,
-                        requested_notional=notional,
-                        pnl_or_returns=sig['returns'].tolist(),
-                        spread_bps=5.0,
-                        available_liquidity=1_000_000.0,
-                        price_gap_pct=0.002,
-                        estimated_trade_risk=notional * self.risk_manager.config.risk_per_trade,
-                    )
-                    if ticket.status != 'approved':
-                        status = 'RISK'
-                        logger.warning('capital_blocked', reason=ticket.reason, metrics=ticket.metrics)
-                        self.dashboard.update(
-                            self._build_dashboard_snapshot(
-                                regime=regime,
-                                signal=decision,
-                                last_price=last_price,
-                                latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
-                                binance_status='OK',
-                                system_status=status,
-                                exposure=notional,
-                            )
-                        )
-                        await asyncio.sleep(self.s.loop_interval_seconds)
-                        continue
-
-                    try:
-                        alloc = self.portfolio_optimizer.risk_parity(sig['returns_df'], capital_ticket=ticket)
-                    except Exception as e:
-                        logger.exception('risk_parity_failed', error=str(e))
-                        alloc = None
-
-                    if alloc is None:
-                        status = 'RISK'
-                        self.dashboard.update(
-                            self._build_dashboard_snapshot(
-                                regime=regime,
-                                signal=decision,
-                                last_price=last_price,
-                                latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
-                                binance_status='RISK',
-                                system_status=status,
-                                exposure=notional,
-                            )
-                        )
-                        await asyncio.sleep(self.s.loop_interval_seconds)
-                        continue
-
-                    alloc_weight = float(alloc.weights.get('BTCUSDT', 1.0))
-                    qty = float(position_size * alloc_weight)
-                    notional = float(qty * last_price)
-                    fill = await self._execute_order(decision, qty)
-                    if fill is None:
-                        status = 'RISK'
-                        logger.warning('execution_rejected_or_unfilled', side=decision, qty=qty, notional=notional)
-                        self.dashboard.update(
-                            self._build_dashboard_snapshot(
-                                regime=regime,
-                                signal=decision,
-                                last_price=last_price,
-                                latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
-                                binance_status='RISK',
-                                system_status=status,
-                                exposure=notional,
-                            )
-                        )
-                        await asyncio.sleep(self.s.loop_interval_seconds)
-                        continue
-
-                    self.state.trades += 1
-                    realized = float(fill.get('pnl') or 0.0)
-                    self.state.daily_pnl += realized
-                    self.state.equity += realized
-                    if realized > 0:
-                        self.state.winning_trades += 1
-                    self.state.rolling_returns.append(realized)
-                    self.state.rolling_returns = self.state.rolling_returns[-100:]
-                    self.risk_manager.update_trade_result(realized)
-
-                    logger.info(
-                        'trade_executed',
-                        trade_num=self.state.trades,
-                        signal=decision,
-                        regime=regime,
-                        signal_score=decision_score,
-                        position_size=qty,
-                        notional=notional,
-                        risk_per_trade=self.risk_manager.config.risk_per_trade,
-                        cvar95=ticket.metrics.get('cvar95'),
-                        order_result=fill,
-                        daily_pnl=self.state.daily_pnl,
-                        equity=self.state.equity,
-                    )
-                    self.dashboard.update(
-                        self._build_dashboard_snapshot(
-                            regime=regime,
-                            signal=decision,
-                            last_price=last_price,
-                            latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
-                            binance_status='OK',
-                            system_status=status,
-                            exposure=notional,
-                        )
-                    )
+                if score < self.MIN_SIGNAL_CONFIDENCE or decision == "HOLD":
                     await asyncio.sleep(self.s.loop_interval_seconds)
                     continue
 
-                except Exception as e:
-                    should_stop = self._handle_cycle_exception(e)
-                    if should_stop:
-                        logger.error(
-                            'kernel_cycle_error_fatal',
-                            error_type=e.__class__.__name__,
-                            consecutive_errors=self.state.consecutive_cycle_errors,
-                        )
-                        break
-                    logger.warning(
-                        'kernel_cycle_error_transient',
-                        error_type=e.__class__.__name__,
-                        consecutive_errors=self.state.consecutive_cycle_errors,
-                        backoff_seconds=1.0,
-                    )
-                    await asyncio.sleep(1.0)
-                    continue
-        finally:
-            if initialized:
-                logger.info(
-                    'kernel_stop',
-                    trades=self.state.trades,
-                    daily_pnl=self.state.daily_pnl,
-                    equity=self.state.equity,
-                    blocked=self.blocked,
-                    shutdown_reason=self._shutdown_reason,
+                self.risk_manager.update_equity(self.state.equity)
+                self.risk_manager.check_kill_switch(self.state.equity)
+
+                if self.risk_manager.kill_switch:
+                    self.blocked = True
+                    self.request_shutdown("risk_kill_switch")
+                    return
+
+                last_price = float(sig["prices"].iloc[-1])
+                position_size = min(
+                    self.state.equity * 0.01 / last_price,
+                    0.002
                 )
-                self.dashboard.stop()
-                with suppress(Exception):
-                    self.metrics_exporter.stop()
-            if hasattr(self, 'client'):
-                with suppress(Exception):
-                    await self.client.close()
-            if hasattr(self, 'db'):
-                with suppress(Exception):
-                    await self.db.close()
 
+                fill = await self.execution_engine.execute(decision, position_size)
+                if not fill:
+                    await asyncio.sleep(2)
+                    continue
 
-    async def _simulate_or_execute(self, side: str, qty: float) -> dict[str, Any] | None:
-        if side not in {'BUY', 'SELL'} or qty <= 0:
-            return None
+                realized = float(fill.get("pnl", 0.0))
+                self.state.daily_pnl += realized
+                self.state.equity += realized
+                self.state.trades += 1
+                self.state.last_trade_ts = now
 
-        is_paper_runtime = self.s.runtime_profile.lower() == 'paper' or self.s.environment.lower() == 'testnet'
-        if is_paper_runtime:
-            ticker = await self.client.fetch_ticker(self.s.symbol)
-            simulated_price = float(ticker.get('last') or 0.0)
-            if simulated_price <= 0:
-                return None
-            return {
-                'id': f"sim-{int(datetime.now(timezone.utc).timestamp() * 1000)}",
-                'symbol': self.s.symbol,
-                'side': side,
-                'filled': float(qty),
-                'average': simulated_price,
-                'status': 'closed',
-                'pnl': 0.0,
-                'simulated': True,
-            }
+                if realized > 0:
+                    self.state.winning_trades += 1
 
-        return await self.execution_engine.execute(side, float(qty))
+                self.state.rolling_returns.append(realized)
+                self.state.rolling_returns = self.state.rolling_returns[-100:]
 
+                logger.success(
+                    f"TRADE {decision} | pnl={realized:.2f} | equity={self.state.equity:.2f}"
+                )
 
-    def _handle_cycle_exception(self, error: Exception) -> bool:
-        self.state.consecutive_cycle_errors += 1
-        logger.error(
-            'kernel_cycle_error',
-            error_type=error.__class__.__name__,
-            error_message=str(error),
-            consecutive_errors=self.state.consecutive_cycle_errors,
-            traceback=traceback.format_exc(),
-        )
-        self.monitoring.set_system_degraded(error)
-        self.dashboard.update(
-            self._build_dashboard_snapshot(
-                regime='N/A',
-                signal='ERROR',
-                last_price=0.0,
-                latency_ms=0.0,
-                binance_status='RISK',
-                system_status='DEGRADED',
-            )
-        )
-        if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
-            logger.critical(
-                'kernel_emergency_shutdown',
-                reason='max_consecutive_cycle_errors_reached',
-                consecutive_errors=self.state.consecutive_cycle_errors,
-            )
-            self.request_shutdown('max_consecutive_cycle_errors')
-            return True
-        return False
+                await asyncio.sleep(self.s.loop_interval_seconds)
+
+            except Exception as e:
+                logger.error("kernel_error", error=str(e))
+                await asyncio.sleep(2)
 
     def request_shutdown(self, reason: str) -> None:
-        if self.shutdown_event.is_set():
-            return
         self._shutdown_reason = reason
         self.shutdown_event.set()
-        logger.info('kernel_shutdown_requested', reason=reason)
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+            with suppress(Exception):
                 loop.add_signal_handler(sig, self.request_shutdown, sig.name)
-            except NotImplementedError:
-                logger.warning('signal_handler_not_supported', signal=sig.name)
-
-    def _build_dashboard_snapshot(
-        self,
-        regime: str,
-        signal: str,
-        last_price: float,
-        latency_ms: float,
-        binance_status: str,
-        system_status: str,
-        exposure: float = 0.0,
-    ) -> VisualSnapshot:
-        capital = max(self.state.equity, 0.0)
-        pnl_total = self.state.equity - self.initial_equity
-        peak = max(self.initial_equity, self.state.equity)
-        drawdown = max((peak - self.state.equity) / peak, 0.0) if peak else 0.0
-        trades = self.state.trades
-        wins = float(self.state.winning_trades / trades) if trades else 0.0
-        expectancy = float((self.state.daily_pnl / trades) if trades else 0.0)
-        rolling_returns = list(self.state.rolling_returns)
-        sharpe = float(np.mean(rolling_returns) / np.std(rolling_returns)) if len(rolling_returns) > 1 and np.std(rolling_returns) > 0 else 0.0
-        return VisualSnapshot(
-            capital=capital,
-            balance=self.state.equity,
-            pnl_total=pnl_total,
-            pnl_diario=self.state.daily_pnl,
-            drawdown=drawdown,
-            riesgo_activo=float(self.risk_manager.config.risk_per_trade),
-            exposicion=exposure,
-            trades=trades,
-            win_rate=wins,
-            expectancy=expectancy,
-            sharpe_rolling=sharpe,
-            regimen=str(regime),
-            senal=str(signal),
-            latencia_ms=latency_ms,
-            ultimo_precio=last_price,
-            estado_binance=binance_status,
-            estado_sistema=system_status,
-        )
-
-    async def _execute_order(self, side: str, qty: float) -> dict[str, Any] | None:
-        qty = float(qty)
-        if qty <= 0.0:
-            logger.warning('execution_rejected_invalid_qty', side=side, qty=qty)
-            return None
-
-        execution = await self.execution_engine.execute(side=side, amount=qty)
-        if execution is None:
-            return None
-
-        normalized_side = str(side).upper()
-        symbol = str(self.s.symbol)
-
-        fills: list[dict[str, Any]]
-        if isinstance(execution.get('fills'), list):
-            fills = [fill for fill in execution['fills'] if isinstance(fill, dict)]
-        else:
-            fills = [execution]
-
-        if not fills:
-            return None
-
-        total_qty = 0.0
-        weighted_price_sum = 0.0
-        latest_status = str(execution.get('status') or 'closed')
-        order_id = execution.get('id')
-
-        for fill in fills:
-            fill_qty = float(fill.get('filled') or fill.get('amount') or 0.0)
-            fill_price = float(fill.get('average') or fill.get('price') or 0.0)
-            if fill_qty > 0.0:
-                total_qty += fill_qty
-                weighted_price_sum += fill_price * fill_qty
-            latest_status = str(fill.get('status') or latest_status)
-            if order_id is None and fill.get('id') is not None:
-                order_id = fill.get('id')
-            if symbol == str(self.s.symbol) and fill.get('symbol'):
-                symbol = str(fill.get('symbol'))
-            if normalized_side == str(side).upper() and fill.get('side'):
-                normalized_side = str(fill.get('side')).upper()
-
-        if total_qty <= 0.0:
-            return None
-
-        avg_price = weighted_price_sum / total_qty if weighted_price_sum > 0.0 else 0.0
-        return {
-            'symbol': symbol,
-            'side': normalized_side,
-            'qty': total_qty,
-            'price': avg_price,
-            'status': latest_status,
-            'pnl': float(execution.get('pnl') or 0.0),
-            'order_id': str(order_id) if order_id is not None else None,
-            'fills': fills,
-            'raw': execution,
-        }
