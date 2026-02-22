@@ -64,7 +64,7 @@ if [ -z "${POSTGRES_DSN:-}" ] && [ -f config/database.env ]; then
 fi
 
 echo "Seleccione modo de ejecución:"
-echo "1) Binance Testnet (Sandbox - Simulación)"
+echo "1) Binance Testnet (Sandbox - ÓRDENES REALES EN TESTNET)"
 echo "2) Binance Producción Real (Mainnet - Dinero real)"
 read -r -p "Ingrese opción (1 o 2): " MODE_OPTION
 
