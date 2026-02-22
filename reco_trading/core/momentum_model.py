@@ -45,3 +45,6 @@ class MomentumModel:
         z_momentum = mu / sigma
         z_momentum = max(min(z_momentum, 6.0), -6.0)
         return float(1.0 / (1.0 + pow(2.718281828, -z_momentum)))
+        signal = float(snapshot.returns[-5:].mean() / max(snapshot.volatility, 1e-9))
+        centered = max(min(signal, 6.0), -6.0)
+        return float(1.0 / (1.0 + pow(2.718281828, -centered)))
