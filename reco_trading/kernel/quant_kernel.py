@@ -112,20 +112,6 @@ class SignalEngine:
             'skew': skew,
             'kurtosis': kurtosis,
             'edge_z': edge_z,
-        momentum = float(np.clip(self.momentum.predict_from_snapshot(snapshot), 0.0, 1.0))
-        mean_rev = float(np.clip(self.reversion.predict_from_snapshot(snapshot), 0.0, 1.0))
-        }
-        
-
-        
-        return {
-            'snapshot': snapshot,
-            'model_scores': {'momentum': momentum, 'mean_reversion': mean_rev},
-            'atr': snapshot.atr,
-            'returns': snapshot.returns,
-            'prices': feats['close'].tail(300),
-            'skew': skew,
-            'kurtosis': kurtosis,
         }
 
 
@@ -365,40 +351,13 @@ class QuantKernel:
         learning_remaining_seconds: float = 0.0,
     ) -> None:
         total_equity = self.state.equity + self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid
-    def _handle_cycle_exception(self, exc: Exception) -> bool:
-        self.state.consecutive_cycle_errors += 1
-        self.activity_text = f'Error de ciclo: {exc}'
-        self.system_state = SystemState.ERROR.value
-        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'error', 0.0, 'ERROR')
-        if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
-            self._shutdown_reason = 'max_consecutive_cycle_errors'
-            self.shutdown_event.set()
-            return True
-        return False
-
-    def _confidence_to_risk_fraction(self, confidence: float) -> float:
-        c = float(confidence)
-        s = self.s
-        if c < s.confidence_hold_threshold:
-            return 0.0
-        if c >= s.confidence_tier_4:
-            return min(s.confidence_alloc_tier_4, s.max_confidence_allocation)
-        if c >= s.confidence_tier_3:
-            return min(s.confidence_alloc_tier_3, s.max_confidence_allocation)
-        if c >= s.confidence_tier_2:
-            return min(s.confidence_alloc_tier_2, s.max_confidence_allocation)
-        if c >= s.confidence_tier_1:
-            return min(s.confidence_alloc_tier_1, s.max_confidence_allocation)
-        return 0.0
-
-    def _publish_dashboard(self, decision: str, confidence: float, mom: float, rev: float, reg_prob: float, regime: str, last_price: float, binance_state: str) -> None:
-        total_equity = self.state.equity + self.state.unrealized_pnl
         drawdown = 0.0 if self.initial_equity <= 0 else max(0.0, 1.0 - (total_equity / max(self.initial_equity, 1e-9)))
         now = datetime.now(timezone.utc)
         position_time = (now - self.state.position_opened_at).total_seconds() if self.state.position_opened_at else 0.0
         cooldown = 0.0
         if self.last_trade_ts:
             cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0)
+
         self.dashboard.update(
             VisualSnapshot(
                 capital=total_equity,
@@ -411,10 +370,6 @@ class QuantKernel:
                 trades=self.state.trades,
                 win_rate=(self.state.winning_trades / self.state.trades if self.state.trades else 0.0),
                 expectancy=expected_edge,
-                exposicion=notional,
-                trades=self.state.trades,
-                win_rate=(self.state.winning_trades / self.state.trades if self.state.trades else 0.0),
-                expectancy=confidence - 0.5,
                 sharpe_rolling=0.0,
                 regimen=regime,
                 senal=decision,
@@ -444,10 +399,6 @@ class QuantKernel:
         self.execution_status = 'ERROR'
         self.system_state = SystemState.ERROR.value
         self._publish_dashboard('HOLD', 0.0, 0.0, 0.5, 0.5, 0.5, 'ERROR', 0.0, 'ERROR')
-        if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
-            self.state.kill_switch = True
-        self.system_state = SystemState.ERROR.value
-        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'ERROR', 0.0, 'ERROR')
         if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
             self._shutdown_reason = 'max_consecutive_cycle_errors'
             self.shutdown_event.set()
@@ -543,14 +494,6 @@ class QuantKernel:
                     continue
 
                 self.state.equity = free_usdt
-                sig = self.signal_engine.generate(self.data_buffer.ohlcv, spread_bps=spread_bps)
-                    self.activity_text = f'Sin operación: balance inválido ({reason})'
-                    self.state.last_block_reason = reason
-                    self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'unknown', float(ohlcv['close'].iloc[-1]), 'ERROR')
-                    await asyncio.sleep(self.s.loop_interval_seconds)
-                    continue
-
-                self.state.equity = free_usdt + max(self.state.daily_pnl, 0.0)
                 sig = self.signal_engine.generate(ohlcv, spread_bps=spread_bps)
                 last_price = float(sig['prices'].iloc[-1])
 
@@ -736,20 +679,6 @@ class QuantKernel:
                     last_price=last_price,
                     binance_state='OK',
                 )
-                        self.system_state = SystemState.WAITING_FOR_DATA.value
-                        self.activity_text = f'SELL ejecutado, PnL={pnl:+.2f} USDT'
-                        self.state.last_block_reason = 'none'
-                    else:
-                        self.system_state = SystemState.BLOCKED_BY_RISK.value
-                        self.activity_text = f'Orden rechazada: {self.state.last_block_reason}'
-                elif decision == 'HOLD' and self.state.last_block_reason == 'none':
-                    self.activity_text = 'HOLD: sin ventaja probabilística suficiente'
-
-                self.state.consecutive_cycle_errors = 0
-                if self.system_state not in {SystemState.SENDING_ORDER.value, SystemState.IN_POSITION.value}:
-                    self.system_state = SystemState.WAITING_FOR_DATA.value if self.state.position_state == PositionState.FLAT else SystemState.IN_POSITION.value
-                self._publish_dashboard(decision, confidence, breakdown.momentum, breakdown.mean_reversion, breakdown.regime, str(regime), last_price, 'OK')
-                await asyncio.sleep(self.s.loop_interval_seconds)
 
             except Exception as exc:
                 logger.error('kernel_error', error=str(exc))
