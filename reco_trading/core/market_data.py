@@ -58,47 +58,6 @@ class MarketDataService:
             return 0.0
         return ((ask - bid) / bid) * 10_000.0
 
-    @staticmethod
-    def _gap_ratio(frame: pd.DataFrame) -> float:
-        if frame.empty or len(frame) < 2:
-            return 0.0
-        ts = frame['timestamp'].astype('int64')
-        deltas = ts.diff().dropna()
-        if deltas.empty:
-            return 0.0
-        expected = float(deltas.median())
-        if expected <= 0.0:
-            return 0.0
-        abnormal = float((deltas > (1.8 * expected)).mean())
-        return max(abnormal, 0.0)
-
-    def assess_market_quality(
-        self,
-        frame: pd.DataFrame,
-        *,
-        spread_bps: float,
-        max_spread_bps: float,
-        max_volatility: float,
-        min_avg_volume: float,
-        max_gap_ratio: float,
-    ) -> MarketQuality:
-        close = frame['close'].astype(float)
-        volume = frame['volume'].astype(float)
-        returns = np.log(close / close.shift(1)).dropna()
-        realized_vol = float(returns.tail(60).std() or 0.0)
-        avg_volume = float(volume.tail(60).mean() or 0.0)
-        gap_ratio = self._gap_ratio(frame.tail(300))
-
-        if spread_bps > max_spread_bps:
-            return MarketQuality(False, 'spread_anomalo', spread_bps, realized_vol, avg_volume, gap_ratio)
-        if realized_vol > max_volatility:
-            return MarketQuality(False, 'volatilidad_extrema', spread_bps, realized_vol, avg_volume, gap_ratio)
-        if avg_volume < min_avg_volume:
-            return MarketQuality(False, 'mercado_muerto_bajo_volumen', spread_bps, realized_vol, avg_volume, gap_ratio)
-        if gap_ratio > max_gap_ratio:
-            return MarketQuality(False, 'gaps_anomalos_ohlcv', spread_bps, realized_vol, avg_volume, gap_ratio)
-        return MarketQuality(True, 'market_operable', spread_bps, realized_vol, avg_volume, gap_ratio)
-
     async def live_preview(self, symbol_rest: str):
         async for event in self.client.stream_klines(symbol_rest, self.timeframe):
             kline = event.get('k', {})
