@@ -58,7 +58,8 @@ class ExecutionEngine:
             self._redis = None
 
     def _validate_order(self, side: str, amount: float) -> bool:
-        if side not in {'BUY', 'SELL'}:
+        normalized_side = str(side).upper()
+        if normalized_side not in {'BUY', 'SELL'}:
             return False
         return 0.0 < amount <= self.max_order_size
 
@@ -166,6 +167,7 @@ class ExecutionEngine:
         timeout_seconds: float | None = None,
         max_retries: int = 5,
     ) -> dict[str, Any] | None:
+        side = str(side).upper()
         if not self._validate_order(side, amount) or not self._validate_microstructure(microstructure):
             return None
         timeout = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
@@ -224,6 +226,7 @@ class ExecutionEngine:
         return {'status': 'institutional_completed', 'fills': fills, 'routed_children': len(route), 'filled_children': len(fills)}
 
     async def execute(self, side: str, amount: float) -> dict[str, Any] | None:
+        side = str(side).upper()
         if self._quant_kernel.should_block_trading():
             return None
         if amount >= self.institutional_order_threshold:

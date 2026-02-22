@@ -86,9 +86,11 @@ class BinanceClient:
         raise RuntimeError('Retry loop finalizó sin resultado')
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> Any:
+        await self.initialize()
         return await self._retry(self.exchange.fetch_ohlcv, symbol=symbol, timeframe=timeframe, limit=limit)
 
     async def fetch_order_book(self, symbol: str, limit: int = 20) -> Any:
+        await self.initialize()
         return await self._retry(self.exchange.fetch_order_book, symbol=symbol, limit=limit)
 
     async def fetch_balance(self) -> Any:
