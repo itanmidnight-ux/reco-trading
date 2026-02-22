@@ -71,6 +71,28 @@ class Settings(BaseSettings):
     enable_adaptive_market_making: bool = Field(default=True)
     enable_multi_exchange_arbitrage: bool = Field(default=False)
 
+    learning_phase_seconds: int = Field(default=300, ge=60, le=3600)
+    confidence_hold_threshold: float = Field(default=0.60, ge=0.50, le=0.95)
+    confidence_tier_1: float = Field(default=0.65, ge=0.50, le=0.99)
+    confidence_tier_2: float = Field(default=0.70, ge=0.50, le=0.99)
+    confidence_tier_3: float = Field(default=0.80, ge=0.50, le=0.99)
+    confidence_tier_4: float = Field(default=0.90, ge=0.50, le=0.99)
+    confidence_alloc_tier_1: float = Field(default=0.0025, ge=0.0, le=0.05)
+    confidence_alloc_tier_2: float = Field(default=0.0050, ge=0.0, le=0.05)
+    confidence_alloc_tier_3: float = Field(default=0.0100, ge=0.0, le=0.05)
+    confidence_alloc_tier_4: float = Field(default=0.0200, ge=0.0, le=0.05)
+    max_confidence_allocation: float = Field(default=0.02, ge=0.001, le=0.05)
+    target_scalp_seconds: int = Field(default=20, ge=5, le=120)
+    max_position_seconds: int = Field(default=30, ge=10, le=300)
+
+    market_max_spread_bps: float = Field(default=15.0, ge=0.1, le=500.0)
+    market_max_realized_volatility: float = Field(default=0.05, ge=0.001, le=1.0)
+    market_min_avg_volume: float = Field(default=1.0, ge=0.0, le=1_000_000_000.0)
+    market_max_gap_ratio: float = Field(default=0.20, ge=0.0, le=1.0)
+
+    kill_switch_max_rejections: int = Field(default=5, ge=1, le=100)
+    kill_switch_max_latency_ms: float = Field(default=2500.0, ge=10.0, le=60000.0)
+
     loop_interval_seconds: int = Field(default=5, ge=1, le=60)
 
     monitoring_metrics_enabled: bool = Field(default=True)
