@@ -365,7 +365,11 @@ class QuantKernel:
         self.state.rejection_count += 1
         self.state.last_block_reason = f'firewall:{reason}'
         self.system_state = SystemState.BLOCKED_BY_RISK.value
-        logger.warning('Execution blocked by firewall: reason={} risk_snapshot={}', reason, risk_snapshot)
+        logger.warning(
+            "Execution blocked by firewall: reason=%s risk_snapshot=%s",
+            reason,
+            risk_snapshot
+        )
 
     async def _execute_order(self, side: str, qty: float) -> dict[str, Any] | None:
         if qty <= 0.0:
@@ -774,6 +778,17 @@ class QuantKernel:
                                     )
 
                                     if decision in {'BUY', 'SELL'} and order_qty > 0.0:
+                                        # --- MINIMAL MODE: enforce exchange minimums ---
+                                        if self.s.operating_mode == 'MINIMAL':
+                                            exchange_min_qty = await self.execution_engine._firewall._min_size(self.client, self.s.symbol)
+                                            if exchange_min_qty is not None:
+                                                if order_qty < exchange_min_qty:
+                                                    logger.info(
+                                                        "MINIMAL MODE: order_qty %.10f < exchange_min_qty %.10f, adjusting to minimum",
+                                                        order_qty,
+                                                        exchange_min_qty
+                                                    )
+                                                    order_qty = exchange_min_qty
                                         self.system_state = SystemState.SENDING_ORDER.value
                                         self.execution_engine.set_risk_context(
                                             capital_total=self.state.equity,
