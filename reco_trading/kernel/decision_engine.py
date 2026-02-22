@@ -18,8 +18,10 @@ class Decision:
 class DecisionEngine:
     """Single source of truth for action, confidence and scores."""
 
-    def __init__(self, min_edge: float = 0.0005) -> None:
+    def __init__(self, min_edge: float = 0.0005, inertia_old_weight: float = 0.7) -> None:
         self._min_edge = float(min_edge)
+        self._inertia_old_weight = float(np.clip(inertia_old_weight, 0.0, 1.0))
+        self._inertia_new_weight = 1.0 - self._inertia_old_weight
         self._market_state: MarketState | None = None
         self.last_confidence: float = 0.0
         self.last_scores: dict[str, float] = {}
@@ -35,11 +37,19 @@ class DecisionEngine:
             return decision
 
         state = self._market_state
-        confidence = float(np.clip((state.expected_edge + 1.0) / 2.0, 0.0, 1.0))
+        raw_confidence = float(np.clip((state.expected_edge + 1.0) / 2.0, 0.0, 1.0))
+        confidence = float(
+            np.clip(
+                (self._inertia_old_weight * self.last_confidence) + (self._inertia_new_weight * raw_confidence),
+                0.0,
+                1.0,
+            )
+        )
         scores = {
             'edge': float(state.expected_edge),
             'friction': float(state.friction_cost),
             'regime_tradable': 1.0 if state.regime.tradable else 0.0,
+            'raw_confidence': raw_confidence,
             'global': confidence,
         }
 
