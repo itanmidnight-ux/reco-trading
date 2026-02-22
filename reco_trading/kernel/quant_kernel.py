@@ -198,6 +198,8 @@ class DecisionEngine:
 class QuantKernel:
     MIN_SECONDS_BETWEEN_TRADES = 10
     MAX_CONSECUTIVE_CYCLE_ERRORS = 5
+    MIN_WARMUP_SECONDS = 300
+    MIN_WARMUP_BARS = 60
 
     def __init__(self) -> None:
         self.s = get_settings()
@@ -299,6 +301,16 @@ class QuantKernel:
                 self.state.kill_switch = True
                 return True, 'drawdown_circuit_breaker'
         return False, 'none'
+
+    def _is_warmup_complete(self, now_ts: float) -> tuple[bool, str]:
+        if self.learning_started_at_ms is None:
+            return False, 'warmup_missing_start'
+
+        elapsed = max(now_ts - (float(self.learning_started_at_ms) / 1000.0), 0.0)
+        bars = int(len(self.data_buffer.ohlcv))
+        if elapsed < self.MIN_WARMUP_SECONDS or bars < self.MIN_WARMUP_BARS:
+            return False, f'warmup_active elapsed={elapsed:.1f}s bars={bars}'
+        return True, 'warmup_complete'
 
     def should_block_trading(self) -> bool:
         blocked, reason = self._should_activate_kill_switch()
@@ -498,6 +510,15 @@ class QuantKernel:
                                         self.activity_text = f'Aprendizaje 5m: vol={stats.rolling_volatility:.5f} atr={stats.atr:.2f} spread={stats.average_spread:.2f}bps'
                                         self.state.last_block_reason = 'learning_phase_active'
                                         self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, stats.dominant_regime, float(ohlcv['close'].iloc[-1]), 'OK')
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
+
+                                    warmup_ready, warmup_reason = self._is_warmup_complete(now.timestamp())
+                                    if not warmup_ready:
+                                        self.system_state = SystemState.LEARNING_MARKET.value
+                                        self.state.last_block_reason = warmup_reason
+                                        self.activity_text = warmup_reason
+                                        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv['close'].iloc[-1]), 'OK')
                                         await asyncio.sleep(self.s.loop_interval_seconds)
                                         continue
 
