@@ -51,17 +51,32 @@ class ExecutionEngine:
         self._capital_governor = capital_governor
         self._sor = sor or SmartOrderRouter(capital_governor=capital_governor)
         self._redis_key = redis_key
+        self._risk_context: dict[str, float | None] = {'capital_total': 1_000_000.0, 'risk_per_trade': 1.0, 'signal_confidence': 1.0}
+        self.last_rejection_reason = ''
+        self.last_capital_limited = False
+        self.last_allowed_qty = 0.0
         try:
             self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
             self._redis.ping()
         except Exception:
             self._redis = None
 
+    def set_risk_context(self, capital_total: float, risk_per_trade: float, signal_confidence: float | None) -> None:
+        self._risk_context = {
+            'capital_total': max(float(capital_total), 0.0),
+            'risk_per_trade': max(float(risk_per_trade), 0.0),
+            'signal_confidence': None if signal_confidence is None else float(signal_confidence),
+        }
+
     def _validate_order(self, side: str, amount: float) -> bool:
         normalized_side = str(side).upper()
         if normalized_side not in {'BUY', 'SELL'}:
+            self.last_rejection_reason = 'invalid_order_side'
             return False
-        return 0.0 < amount <= self.max_order_size
+        if not (0.0 < amount <= self.max_order_size):
+            self.last_rejection_reason = 'invalid_order_amount'
+            return False
+        return True
 
     @staticmethod
     def _validate_microstructure(microstructure: MicrostructureSnapshot | None) -> bool:
@@ -75,8 +90,53 @@ class ExecutionEngine:
         decision = await self._firewall.evaluate(client=self.client, symbol=self.symbol, side=side, amount=amount)
         if decision.allowed:
             return True
+        self.last_rejection_reason = f'firewall:{decision.reason}'
         self._quant_kernel.on_firewall_rejection(decision.reason, decision.risk_snapshot)
         return False
+
+    async def _apply_capital_limit(self, side: str, amount: float) -> float:
+        self.last_capital_limited = False
+        self.last_allowed_qty = 0.0
+
+        if side != 'BUY':
+            return amount
+
+        confidence = self._risk_context.get('signal_confidence')
+        if confidence is None:
+            self.last_rejection_reason = 'missing_signal_confidence'
+            return 0.0
+        confidence = float(confidence)
+        if confidence < 0.1 or confidence > 1.0:
+            self.last_rejection_reason = 'invalid_signal_confidence'
+            return 0.0
+
+        capital_total = float(self._risk_context.get('capital_total') or 0.0)
+        risk_per_trade = float(self._risk_context.get('risk_per_trade') or 0.0)
+        if capital_total <= 0.0 or risk_per_trade <= 0.0:
+            self.last_rejection_reason = 'invalid_risk_context'
+            return 0.0
+
+        try:
+            ticker = await self.client.fetch_ticker(self.symbol)
+            last_price = float(ticker.get('last') or 0.0)
+        except Exception:
+            self.last_rejection_reason = 'ticker_unavailable_for_capital_limit'
+            return 0.0
+
+        if last_price <= 0.0:
+            self.last_rejection_reason = 'invalid_price_for_capital_limit'
+            return 0.0
+
+        max_notional = capital_total * risk_per_trade * confidence
+        max_qty = max_notional / last_price
+        self.last_allowed_qty = max(max_qty, 0.0)
+        if max_qty <= 0.0:
+            self.last_rejection_reason = 'capital_limit_zero'
+            return 0.0
+        if amount > max_qty:
+            self.last_capital_limited = True
+            return max_qty
+        return amount
 
     def _persist_execution(self, payload: dict[str, Any]) -> None:
         if not self._redis:
@@ -96,10 +156,12 @@ class ExecutionEngine:
     ) -> dict[str, Any] | None:
         for _ in range(max_retries):
             if self._quant_kernel.should_block_trading():
+                self.last_rejection_reason = 'blocked_by_quant_kernel'
                 return None
             try:
                 allowed = await asyncio.wait_for(self._evaluate_firewall(side, amount), timeout=timeout_seconds)
             except asyncio.TimeoutError:
+                self.last_rejection_reason = 'firewall_timeout'
                 continue
             if not allowed:
                 return None
@@ -118,17 +180,24 @@ class ExecutionEngine:
                     timeout=timeout_seconds,
                 )
             except asyncio.TimeoutError:
+                self.last_rejection_reason = 'order_timeout'
                 continue
+            except Exception:
+                self.last_rejection_reason = 'order_rejected_by_exchange_rules'
+                return None
             await self.db.record_order(order)
             order_id = str(order.get('id', ''))
             if not order_id:
+                self.last_rejection_reason = 'empty_order_id'
                 return None
 
             try:
                 fill = await asyncio.wait_for(self.client.wait_for_fill(self.symbol, order_id), timeout=timeout_seconds)
             except asyncio.TimeoutError:
+                self.last_rejection_reason = 'fill_timeout'
                 continue
             if not fill:
+                self.last_rejection_reason = 'fill_not_received'
                 continue
 
             await self.db.record_fill(fill)
@@ -156,6 +225,7 @@ class ExecutionEngine:
                     'timestamp': datetime.now(timezone.utc).isoformat(),
                 }
             )
+            self.last_rejection_reason = ''
             return fill
         return None
 
@@ -170,10 +240,13 @@ class ExecutionEngine:
         side = str(side).upper()
         if not self._validate_order(side, amount) or not self._validate_microstructure(microstructure):
             return None
+        constrained_amount = await self._apply_capital_limit(side=side, amount=amount)
+        if constrained_amount <= 0.0:
+            return None
         timeout = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
         return await self._execute_child_order(
             side=side,
-            amount=amount,
+            amount=constrained_amount,
             timeout_seconds=timeout,
             max_retries=max_retries,
             reference_price=None,
@@ -228,6 +301,7 @@ class ExecutionEngine:
     async def execute(self, side: str, amount: float) -> dict[str, Any] | None:
         side = str(side).upper()
         if self._quant_kernel.should_block_trading():
+            self.last_rejection_reason = 'blocked_by_quant_kernel'
             return None
         if amount >= self.institutional_order_threshold:
             return await self._execute_institutional_order(side=side, amount=amount)
