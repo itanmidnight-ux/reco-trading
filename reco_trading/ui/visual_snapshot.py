@@ -1,47 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(slots=True)
 class VisualSnapshot:
-    capital: float
-    balance: float
-    pnl_total: float
-    pnl_diario: float
-    drawdown: float
-    riesgo_activo: float
-    exposicion: float
-    trades: int
-    win_rate: float
-    expectancy: float
-    sharpe_rolling: float
-    regimen: str
-    senal: str
-    latencia_ms: float
-    ultimo_precio: float
-    estado_binance: str
-    estado_sistema: str
-    actividad: str
-    motivo_bloqueo: str
-
-    confidence: float = 0.0
-    scores: dict[str, float] | None = None
-    decision: str = 'HOLD'
+    price: float
+    equity: float
+    pnl: float
+    decision: str
+    confidence: float
+    scores: dict[str, float] = field(default_factory=dict)
+    regime: str = 'UNKNOWN'
+    risk_state: str = 'OK'
+    execution_state: str = 'IDLE'
     reason: str = ''
-    pnl: float = 0.0
-    system_state: str = ''
-    confianza: float = 0.0
-    tiempo_en_posicion_s: float = 0.0
-    cooldown_restante_s: float = 0.0
-    score_momentum: float = 0.5
-    score_reversion: float = 0.5
-    score_regime: float = 0.5
-    learning_remaining_seconds: float = 0.0
-    spread_bps: float = 0.0
-    slippage_bps: float = 0.0
-    estimated_fees: float = 0.0
-    execution_status: str = 'IDLE'
 
 
 __all__ = ['VisualSnapshot']
