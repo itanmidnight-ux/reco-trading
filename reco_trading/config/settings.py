@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     environment: str = Field(default='production')
     runtime_profile: str = Field(default='production')
     symbol: str = Field(default='BTC/USDT', validation_alias='BASE_SYMBOL')
-    timeframe: str = Field(default='5m', validation_alias='TIMEFRAME')
+    timeframe: str = Field(default='1m', validation_alias='TIMEFRAME')
 
     binance_api_key: SecretStr = Field(validation_alias='BINANCE_API_KEY')
     binance_api_secret: SecretStr = Field(validation_alias='BINANCE_API_SECRET')
