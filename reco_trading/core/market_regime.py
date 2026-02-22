@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover
 class MarketRegimeDetector:
     def __init__(self, n_states: int = 3):
         self.hmm = GaussianHMM(n_components=n_states, covariance_type='full', n_iter=200) if GaussianHMM else None
-        self.gmm = GaussianMixture(n_components=n_states)
+        self.gmm = GaussianMixture(n_components=n_states, random_state=42)
         self.fitted = False
 
     @staticmethod
@@ -26,7 +26,12 @@ class MarketRegimeDetector:
     def fit(self, returns: np.ndarray) -> None:
         x = self._as_2d(returns)
         if self.hmm is not None:
-            self.hmm.fit(x)
+            try:
+                self.hmm.fit(x)
+            except (FloatingPointError, ValueError):
+                # Fallback deterministico: ante inestabilidad numérica del HMM
+                # seguimos con GMM para no romper el contrato de inferencia.
+                self.hmm = None
         self.gmm.fit(x)
         self.fitted = True
 
@@ -55,10 +60,14 @@ class MarketRegimeDetector:
             self.fit(x)
 
         if self.hmm is not None:
-            hidden_states = self.hmm.predict(x)
-            current_state = int(hidden_states[-1])
-            confidence = float(np.max(self.hmm.predict_proba(x)[-1]))
-        else:
+            try:
+                hidden_states = self.hmm.predict(x)
+                current_state = int(hidden_states[-1])
+                confidence = float(np.max(self.hmm.predict_proba(x)[-1]))
+            except (FloatingPointError, ValueError):
+                self.hmm = None
+
+        if self.hmm is None:
             probs = self.gmm.predict_proba(x)
             current_state = int(np.argmax(probs[-1]))
             confidence = float(np.max(probs[-1]))
