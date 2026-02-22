@@ -218,3 +218,17 @@ def test_execution_engine_blocks_when_quant_kernel_kill_switch_active():
 
     asyncio.run(_run())
     assert len(db.orders) == 0
+
+
+def test_execution_engine_accepts_lowercase_side_input():
+    db = _FakeDB()
+    firewall = _AllowFirewall()
+    engine = ExecutionEngine(_FakeClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0', firewall=firewall)
+
+    async def _run():
+        out = await engine.execute_market_order('buy', 0.1)
+        assert out is not None
+
+    asyncio.run(_run())
+    assert len(db.orders) == 1
+    assert firewall.registered == 1

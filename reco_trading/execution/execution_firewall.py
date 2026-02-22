@@ -72,6 +72,22 @@ class ExecutionFirewall:
             return 0.0
         return float(amount_limit)
 
+
+    @staticmethod
+    def _extract_free_balance(balance: dict[str, Any], asset: str) -> float:
+        if not isinstance(balance, dict):
+            return 0.0
+        # Formato CCXT recomendado: balance["free"]["ASSET"]
+        free_bucket = balance.get('free')
+        if isinstance(free_bucket, dict) and free_bucket.get(asset) is not None:
+            return float(free_bucket.get(asset) or 0.0)
+
+        # Compatibilidad con variantes: balance["ASSET"]["free"]
+        asset_bucket = balance.get(asset)
+        if isinstance(asset_bucket, dict) and asset_bucket.get('free') is not None:
+            return float(asset_bucket.get('free') or 0.0)
+        return 0.0
+
     async def evaluate(self, *, client: Any, symbol: str, side: str, amount: float) -> FirewallDecision:
         self._roll_day_if_needed()
         side = side.upper()
@@ -98,8 +114,8 @@ class ExecutionFirewall:
         proj_daily = self._daily_notional + notional
 
         balance = await client.fetch_balance()
-        usdt = float(balance.get('USDT', {}).get('free', 0.0))
-        base_free = float(balance.get(base_asset, {}).get('free', 0.0))
+        usdt = self._extract_free_balance(balance, 'USDT')
+        base_free = self._extract_free_balance(balance, base_asset)
 
         recommended = min(amount, max(depth / max(self.min_liquidity_coverage, 1e-9), 0.0))
         snap = {

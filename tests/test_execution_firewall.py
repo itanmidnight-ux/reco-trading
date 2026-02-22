@@ -52,3 +52,17 @@ def test_execution_firewall_rejects_slippage_limit():
         assert decision.reason == 'slippage_limit'
 
     asyncio.run(_run())
+
+
+def test_execution_firewall_supports_ccxt_free_balance_bucket():
+    fw = ExecutionFirewall(max_slippage_bps=200.0, min_liquidity_coverage=1.0)
+
+    class _ClientCCXT(_Client):
+        async def fetch_balance(self):
+            return {'free': {'USDT': self.usdt, 'BTC': self.btc}}
+
+    async def _run():
+        decision = await fw.evaluate(client=_ClientCCXT(usdt=1000.0, btc=0.5), symbol='BTC/USDT', side='SELL', amount=0.1)
+        assert decision.allowed
+
+    asyncio.run(_run())
