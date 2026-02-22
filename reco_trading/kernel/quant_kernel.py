@@ -16,7 +16,6 @@ from loguru import logger
 from reco_trading.config.settings import get_settings
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
-from reco_trading.core.institutional_risk import InstitutionalRiskManager, RiskConfig
 from reco_trading.core.market_data import MarketDataService
 from reco_trading.core.market_regime import MarketRegimeDetector
 from reco_trading.core.mean_reversion_model import MeanReversionModel
@@ -28,18 +27,10 @@ from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
 from reco_trading.ui.terminal_dashboard import TerminalDashboard, VisualSnapshot
 
 
-# ============================================================
-# POSITION STATE
-# ============================================================
-
 class PositionState(Enum):
-    FLAT = "flat"
-    LONG = "long"
+    FLAT = 'flat'
+    LONG = 'long'
 
-
-# ============================================================
-# RUNTIME STATE
-# ============================================================
 
 @dataclass(slots=True)
 class RuntimeState:
@@ -49,15 +40,14 @@ class RuntimeState:
     trades: int = 0
     winning_trades: int = 0
     rolling_returns: list[float] = field(default_factory=list)
+    consecutive_cycle_errors: int = 0
+    last_block_reason: str = 'booting'
 
     position_state: PositionState = PositionState.FLAT
     position_qty: float = 0.0
     entry_price: float = 0.0
+    position_opened_at: datetime | None = None
 
-
-# ============================================================
-# SIGNAL ENGINE
-# ============================================================
 
 class SignalEngine:
     def __init__(self) -> None:
@@ -68,27 +58,19 @@ class SignalEngine:
     def generate(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
         feats = self.feature_engine.build(ohlcv)
         if feats.empty:
-            raise ValueError("Features vacías")
+            raise ValueError('Features vacías')
 
         momentum = float(np.clip(self.momentum.predict_proba_up(feats), 0.0, 1.0))
         mean_rev = float(np.clip(1.0 - self.reversion.predict_reversion(feats), 0.0, 1.0))
-
-        returns = feats["return"].tail(300).to_numpy(dtype=float)
+        returns = feats['return'].tail(300).to_numpy(dtype=float)
 
         return {
-            "model_scores": {
-                "momentum": momentum,
-                "mean_reversion": mean_rev,
-            },
-            "atr": float(feats.iloc[-1]["atr14"]),
-            "returns": returns,
-            "prices": feats["close"].tail(300),
+            'model_scores': {'momentum': momentum, 'mean_reversion': mean_rev},
+            'atr': float(feats.iloc[-1]['atr14']),
+            'returns': returns,
+            'prices': feats['close'].tail(300),
         }
 
-
-# ============================================================
-# DECISION ENGINE
-# ============================================================
 
 class DecisionEngine:
     def __init__(self) -> None:
@@ -97,43 +79,37 @@ class DecisionEngine:
         self.min_edge = 0.15
 
     def decide(self, scores: dict[str, float], regime: str) -> tuple[str, float]:
-        mom = scores["momentum"]
-        rev = scores["mean_reversion"]
-
-        score = 0.7 * mom + 0.3 * rev if regime == "trend" else 0.5 * mom + 0.5 * rev
+        mom = scores['momentum']
+        rev = scores['mean_reversion']
+        score = 0.7 * mom + 0.3 * rev if regime == 'trend' else 0.5 * mom + 0.5 * rev
         edge = score - 0.5
 
         if score >= self.buy_threshold and edge >= self.min_edge:
-            return "BUY", score
-
+            return 'BUY', score
         if score <= self.sell_threshold and abs(edge) >= self.min_edge:
-            return "SELL", score
+            return 'SELL', score
+        return 'HOLD', score
 
-        return "HOLD", score
-
-
-# ============================================================
-# QUANT KERNEL
-# ============================================================
 
 class QuantKernel:
-    MIN_SECONDS_BETWEEN_TRADES = 180  # 3 minutos
+    MIN_SECONDS_BETWEEN_TRADES = 10
+    TARGET_SCALP_SECONDS = 15
+    MAX_POSITION_SECONDS = 20
+    MAX_CONSECUTIVE_CYCLE_ERRORS = 5
 
     def __init__(self) -> None:
         self.s = get_settings()
         self.state = RuntimeState()
         self.last_trade_ts: float | None = None
+        self.initial_equity = 0.0
+        self._shutdown_reason = 'running'
 
         self.metrics = TradingMetrics()
-        self.metrics_exporter = MetricsExporter(
-            port=self.s.monitoring_metrics_port,
-            addr=self.s.monitoring_metrics_host,
-        )
-
+        self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
         self.dashboard = TerminalDashboard()
         self.shutdown_event = asyncio.Event()
-
-    # --------------------------------------------------------
+        self.system_state = 'WAITING_FOR_DATA'
+        self.activity_text = 'Inicializando kernel'
 
     async def initialize(self) -> None:
         self.client = BinanceClient(
@@ -142,10 +118,8 @@ class QuantKernel:
             testnet=self.s.binance_testnet,
             confirm_mainnet=self.s.confirm_mainnet,
         )
-
         self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
-
         self.signal_engine = SignalEngine()
         self.decision_engine = DecisionEngine()
         self.regime_detector = MarketRegimeDetector(n_states=3)
@@ -166,14 +140,156 @@ class QuantKernel:
         )
 
         await self.client.ping()
+        ok, free_usdt, reason = await self._fetch_account_balance()
+        if not ok:
+            raise RuntimeError(f'Balance inicial inválido: {reason}')
+        self.state.equity = free_usdt
+        self.initial_equity = free_usdt
+        self.state.last_block_reason = 'none'
+        logger.info(f'Balance REAL sincronizado: {free_usdt:.2f} USDT')
 
-        balance = await self.client.fetch_balance()
-        usdt = float((balance.get("USDT") or {}).get("free") or 0.0)
-        self.state.equity = usdt
+    async def _fetch_account_balance(self) -> tuple[bool, float, str]:
+        try:
+            balance = await self.client.fetch_balance()
+        except Exception as exc:
+            return False, 0.0, f'binance_balance_error:{exc}'
+        usdt = float((balance.get('USDT') or {}).get('free') or 0.0)
+        if not np.isfinite(usdt) or usdt <= 0.0:
+            return False, 0.0, 'invalid_usdt_balance'
+        return True, usdt, 'ok'
 
-        logger.info(f"Balance REAL sincronizado: {usdt:.2f} USDT")
+    def _analyze_market(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
+        close = ohlcv['close'].tail(20).astype(float)
+        open_ = ohlcv['open'].tail(20).astype(float)
+        if len(close) < 8:
+            return {'advantage': False, 'signal': 'HOLD', 'confidence': 0.0, 'reason': 'insufficient_ohlcv'}
 
-    # --------------------------------------------------------
+        momentum = float((close.iloc[-1] - close.iloc[-6]) / max(close.iloc[-6], 1e-9))
+        returns = close.pct_change().dropna()
+        volatility = float(returns.tail(12).std() or 0.0)
+        candle_direction = float(np.sign(close.iloc[-1] - open_.iloc[-1]))
+
+        long_edge = momentum > 0.0004 and candle_direction > 0 and volatility < 0.02
+        short_edge = momentum < -0.0004 and candle_direction < 0 and volatility < 0.02
+
+        strength = min(abs(momentum) / 0.002, 1.0)
+        vol_penalty = min(volatility / 0.02, 1.0)
+        confidence = float(np.clip(0.15 + (strength * (1.0 - vol_penalty)), 0.1, 1.0))
+
+        if long_edge:
+            return {
+                'advantage': True,
+                'signal': 'BUY',
+                'confidence': confidence,
+                'reason': f'edge_long momentum={momentum:.5f} vol={volatility:.5f} candle=up',
+            }
+        if short_edge:
+            return {
+                'advantage': True,
+                'signal': 'SELL',
+                'confidence': confidence,
+                'reason': f'edge_short momentum={momentum:.5f} vol={volatility:.5f} candle=down',
+            }
+        return {
+            'advantage': False,
+            'signal': 'HOLD',
+            'confidence': 0.0,
+            'reason': f'no_statistical_edge momentum={momentum:.5f} vol={volatility:.5f} candle={candle_direction:.0f}',
+        }
+
+    def should_block_trading(self) -> bool:
+        if self.shutdown_event.is_set():
+            return True
+        if self.initial_equity <= 0:
+            return False
+        current_equity = self.state.equity + self.state.unrealized_pnl
+        drawdown = 1.0 - (current_equity / max(self.initial_equity, 1e-9))
+        if drawdown >= self.s.max_global_drawdown:
+            self.state.last_block_reason = 'excessive_drawdown'
+            self.system_state = 'BLOCKED_BY_RISK'
+            return True
+        return False
+
+    def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
+        self.state.last_block_reason = f'firewall:{reason}'
+        self.system_state = 'BLOCKED_BY_RISK'
+        logger.warning('Execution blocked by firewall', reason=reason, risk_snapshot=risk_snapshot)
+
+    async def _execute_order(self, side: str, qty: float) -> dict[str, Any] | None:
+        if qty <= 0.0:
+            self.state.last_block_reason = 'invalid_qty'
+            return None
+        fill = await self.execution_engine.execute(side, qty)
+        if not fill:
+            self.state.last_block_reason = self.execution_engine.last_rejection_reason or 'execution_returned_none'
+            return None
+        if fill.get('status') == 'institutional_completed':
+            fills = fill.get('fills') or []
+            if not fills:
+                self.state.last_block_reason = 'institutional_no_fills'
+                return None
+            fill = fills[-1]
+
+        executed_qty = float(fill.get('filled') or fill.get('amount') or 0.0)
+        if executed_qty <= 0:
+            self.state.last_block_reason = 'execution_unfilled'
+            return None
+
+        return {
+            'id': str(fill.get('id') or ''),
+            'symbol': str(fill.get('symbol') or self.s.symbol),
+            'side': str(fill.get('side') or side).upper(),
+            'qty': executed_qty,
+            'price': float(fill.get('average') or fill.get('price') or 0.0),
+            'status': str(fill.get('status') or 'closed').lower(),
+            'pnl': 0.0,
+        }
+
+    def _handle_cycle_exception(self, exc: Exception) -> bool:
+        self.state.consecutive_cycle_errors += 1
+        self.activity_text = f'Error de ciclo: {exc}'
+        self.system_state = 'BLOCKED_BY_RISK'
+        if hasattr(self, 'monitoring') and self.monitoring is not None:
+            self.monitoring.set_system_degraded(str(exc))
+        self._publish_dashboard(
+            decision='HOLD',
+            score=0.0,
+            regime='error',
+            last_price=0.0,
+            binance_state='ERROR',
+        )
+        if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
+            self._shutdown_reason = 'max_consecutive_cycle_errors'
+            self.shutdown_event.set()
+            return True
+        return False
+
+    def _publish_dashboard(self, decision: str, score: float, regime: str, last_price: float, binance_state: str) -> None:
+        total_equity = self.state.equity + self.state.unrealized_pnl
+        drawdown = 0.0 if self.initial_equity <= 0 else max(0.0, 1.0 - (total_equity / max(self.initial_equity, 1e-9)))
+        self.dashboard.update(
+            VisualSnapshot(
+                capital=total_equity,
+                balance=self.state.equity,
+                pnl_total=self.state.daily_pnl + self.state.unrealized_pnl,
+                pnl_diario=self.state.daily_pnl,
+                drawdown=drawdown,
+                riesgo_activo=float(np.clip(self.s.risk_per_trade, 0.0, 1.0)),
+                exposicion=max(self.state.position_qty * max(last_price, 0.0), 0.0),
+                trades=self.state.trades,
+                win_rate=(self.state.winning_trades / self.state.trades if self.state.trades else 0.0),
+                expectancy=score - 0.5,
+                sharpe_rolling=0.0,
+                regimen=regime,
+                senal=decision,
+                latencia_ms=0.0,
+                ultimo_precio=max(last_price, 0.0),
+                estado_binance=binance_state,
+                estado_sistema=self.system_state,
+                actividad=self.activity_text,
+                motivo_bloqueo=self.state.last_block_reason,
+            )
+        )
 
     async def run(self) -> None:
         await self.initialize()
@@ -184,102 +300,139 @@ class QuantKernel:
 
         while not self.shutdown_event.is_set():
             try:
+                self.system_state = 'WAITING_FOR_DATA'
+                self.activity_text = 'Esperando OHLCV desde Binance'
                 now = datetime.now(timezone.utc)
                 ohlcv = await self.market_data.latest_ohlcv(limit=300)
+                self.system_state = 'ANALYZING_MARKET'
+
+                ok_balance, free_usdt, reason = await self._fetch_account_balance()
+                if not ok_balance:
+                    self.system_state = 'BLOCKED_BY_RISK'
+                    self.activity_text = f'Sin operación: balance inválido ({reason})'
+                    self.state.last_block_reason = reason
+                    self._publish_dashboard('HOLD', 0.0, 'unknown', float(ohlcv["close"].iloc[-1]), 'ERROR')
+                    await asyncio.sleep(self.s.loop_interval_seconds)
+                    continue
+
+                self.state.equity = free_usdt + max(self.state.daily_pnl, 0.0)
                 sig = self.signal_engine.generate(ohlcv)
+                last_price = float(sig['prices'].iloc[-1])
 
-                last_price = float(sig["prices"].iloc[-1])
-
-                # ---- PnL flotante
                 if self.state.position_state == PositionState.LONG:
-                    self.state.unrealized_pnl = (
-                        last_price - self.state.entry_price
-                    ) * self.state.position_qty
+                    self.state.unrealized_pnl = (last_price - self.state.entry_price) * self.state.position_qty
                 else:
                     self.state.unrealized_pnl = 0.0
 
-                regime = self.regime_detector.predict(
-                    sig["returns"], sig["prices"]
-                ).get("regime", "range")
+                if self.should_block_trading():
+                    self.activity_text = f'Trading bloqueado por riesgo: {self.state.last_block_reason}'
+                    self._publish_dashboard('HOLD', 0.0, 'risk', last_price, 'OK')
+                    await asyncio.sleep(self.s.loop_interval_seconds)
+                    continue
 
-                decision, score = self.decision_engine.decide(
-                    sig["model_scores"], regime
-                )
+                regime = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
+                model_decision, model_score = self.decision_engine.decide(sig['model_scores'], regime)
+                market_analysis = self._analyze_market(ohlcv)
 
-                # ---- Bloqueos
-                if self.state.position_state == PositionState.LONG and decision == "BUY":
-                    decision = "HOLD"
+                decision = 'HOLD'
+                confidence = float(market_analysis.get('confidence') or 0.0)
+                self.state.last_block_reason = 'none'
 
-                if self.state.position_state == PositionState.FLAT and decision == "SELL":
-                    decision = "HOLD"
+                if not market_analysis['advantage']:
+                    self.activity_text = f'No opera: {market_analysis["reason"]}'
+                    decision = 'HOLD'
+                elif model_decision != market_analysis['signal']:
+                    self.activity_text = f'Señales no alineadas model={model_decision} market={market_analysis["signal"]}'
+                    decision = 'HOLD'
+                elif confidence < 0.1:
+                    self.activity_text = 'Confianza insuficiente para operar'
+                    self.state.last_block_reason = 'confidence_below_minimum'
+                    decision = 'HOLD'
+                else:
+                    decision = model_decision
+                    self.activity_text = f'Edge validado ({market_analysis["reason"]})'
 
                 if self.last_trade_ts and (now.timestamp() - self.last_trade_ts) < self.MIN_SECONDS_BETWEEN_TRADES:
-                    decision = "HOLD"
+                    decision = 'HOLD'
+                    self.activity_text = 'Cooldown activo entre operaciones'
+                    self.state.last_block_reason = 'cooldown_active'
 
-                # ---- Ejecución
-                if decision == "BUY":
-                    risk = self.state.equity * 0.005
-                    qty = risk / last_price
+                if self.state.position_state == PositionState.FLAT and decision == 'SELL':
+                    decision = 'HOLD'
+                    self.activity_text = 'Sin posición abierta para cerrar SELL'
+                    self.state.last_block_reason = 'no_position_to_sell'
 
-                    fill = await self.execution_engine.execute("BUY", qty)
-                    if fill:
+                if self.state.position_state == PositionState.LONG:
+                    elapsed = (now - (self.state.position_opened_at or now)).total_seconds()
+                    if elapsed >= self.TARGET_SCALP_SECONDS:
+                        decision = 'SELL'
+                        confidence = 1.0
+                        self.activity_text = f'Cierre por scalping ({elapsed:.1f}s en posición)'
+                    if elapsed >= self.MAX_POSITION_SECONDS:
+                        decision = 'SELL'
+                        confidence = 1.0
+                        self.activity_text = f'Cierre forzado anti-overhold ({elapsed:.1f}s)'
+
+                order_qty = 0.0
+                if decision == 'BUY':
+                    requested_notional = self.state.equity * self.s.risk_per_trade * confidence
+                    order_qty = requested_notional / max(last_price, 1e-9)
+                elif decision == 'SELL':
+                    order_qty = self.state.position_qty
+
+                if decision in {'BUY', 'SELL'}:
+                    self.execution_engine.set_risk_context(
+                        capital_total=self.state.equity,
+                        risk_per_trade=self.s.risk_per_trade,
+                        signal_confidence=confidence,
+                    )
+                    self.system_state = 'SENDING_ORDER'
+                    fill = await self._execute_order(decision, order_qty)
+
+                    if fill and decision == 'BUY':
                         self.state.position_state = PositionState.LONG
-                        self.state.position_qty = qty
-                        self.state.entry_price = last_price
+                        self.state.position_qty = float(fill['qty'])
+                        self.state.entry_price = float(fill['price'] or last_price)
+                        self.state.position_opened_at = now
                         self.last_trade_ts = now.timestamp()
                         self.state.trades += 1
-
-                elif decision == "SELL":
-                    qty = self.state.position_qty
-                    fill = await self.execution_engine.execute("SELL", qty)
-                    if fill:
+                        self.system_state = 'IN_POSITION'
+                        self.activity_text = f'BUY ejecutado qty={self.state.position_qty:.6f}'
+                    elif fill and decision == 'SELL':
                         pnl = self.state.unrealized_pnl
                         self.state.daily_pnl += pnl
                         self.state.equity += pnl
-
                         if pnl > 0:
                             self.state.winning_trades += 1
-
                         self.state.position_state = PositionState.FLAT
                         self.state.position_qty = 0.0
                         self.state.entry_price = 0.0
+                        self.state.position_opened_at = None
                         self.state.unrealized_pnl = 0.0
                         self.last_trade_ts = now.timestamp()
+                        self.system_state = 'WAITING_FOR_DATA'
+                        self.activity_text = f'SELL ejecutado, PnL={pnl:+.2f} USDT'
+                    else:
+                        self.system_state = 'BLOCKED_BY_RISK'
+                        reason = self.state.last_block_reason or 'order_rejected'
+                        if self.execution_engine.last_capital_limited:
+                            self.activity_text = f'Orden limitada por capital (qty_max={self.execution_engine.last_allowed_qty:.6f})'
+                        else:
+                            self.activity_text = f'Orden rechazada: {reason}'
 
-                # ---- Dashboard
-                self.dashboard.update(
-                    VisualSnapshot(
-                        capital=self.state.equity + self.state.unrealized_pnl,
-                        balance=self.state.equity,
-                        pnl_total=self.state.daily_pnl + self.state.unrealized_pnl,
-                        pnl_diario=self.state.daily_pnl,
-                        drawdown=0.0,
-                        riesgo_activo=0.5,
-                        exposicion=self.state.position_qty * last_price,
-                        trades=self.state.trades,
-                        win_rate=(
-                            self.state.winning_trades / self.state.trades * 100
-                            if self.state.trades else 0.0
-                        ),
-                        expectancy=0.0,
-                        sharpe_rolling=0.0,
-                        regimen=regime,
-                        senal=decision,
-                        latencia_ms=0.0,
-                        ultimo_precio=last_price,
-                        estado_binance="OK",
-                        estado_sistema="OK",
-                    )
-                )
-
+                self.state.consecutive_cycle_errors = 0
+                if self.system_state not in {'SENDING_ORDER', 'IN_POSITION'}:
+                    self.system_state = 'WAITING_FOR_DATA' if self.state.position_state == PositionState.FLAT else 'IN_POSITION'
+                self._publish_dashboard(decision, model_score, regime, last_price, 'OK')
                 await asyncio.sleep(self.s.loop_interval_seconds)
 
             except Exception as e:
-                logger.error("kernel_error", error=str(e))
+                logger.error('kernel_error', error=str(e))
                 traceback.print_exc()
+                should_stop = self._handle_cycle_exception(e)
+                if should_stop:
+                    break
                 await asyncio.sleep(1)
-
-    # --------------------------------------------------------
 
     def _install_signal_handlers(self) -> None:
         loop = asyncio.get_running_loop()
