@@ -9,6 +9,7 @@ from rich.table import Table
 from rich.text import Text
 
 
+from reco_trading.ui.visual_snapshot import VisualSnapshot
 @dataclass(slots=True)
 class VisualSnapshot:
     capital: float
@@ -106,6 +107,7 @@ class TerminalDashboard:
         table.add_row('Señal Final', f'[{self._signal_style(snapshot.senal)}]{snapshot.senal}[/]')
         table.add_row('Binance', f'[{self._status_style(snapshot.estado_binance)}]{snapshot.estado_binance}[/]')
         table.add_row('Sistema', f'[{self._status_style(snapshot.estado_sistema)}]{snapshot.estado_sistema}[/]')
+        table.add_row('Exec', snapshot.execution_status)
         table.add_row('Confianza', f'{snapshot.confianza:.2%}')
         table.add_row('Scores', f'M={snapshot.score_momentum:.2f} R={snapshot.score_reversion:.2f} G={snapshot.score_regime:.2f}')
         return Panel(table, title='[bold]Estado de Decisión[/bold]', border_style='yellow')
@@ -130,6 +132,9 @@ class TerminalDashboard:
         activity = Text(f'Actividad: {snapshot.actividad}', style='bold white')
         pos_time = Text(f'Tiempo en posición: {snapshot.tiempo_en_posicion_s:.1f}s', style='bold cyan')
         cooldown = Text(f'Cooldown restante: {snapshot.cooldown_restante_s:.1f}s', style='bold yellow')
+        learning = Text(f'Tiempo aprendizaje restante: {snapshot.learning_remaining_seconds:.1f}s', style='bold magenta')
+        blocked = Text(f'Motivo bloqueo: {snapshot.motivo_bloqueo}', style='bold red' if snapshot.motivo_bloqueo != 'none' else 'bold green')
+        return Panel(Group(risk_progress, dd_progress, activity, pos_time, cooldown, learning, blocked), title='[bold]Riesgo y Actividad[/bold]', border_style='red')
         blocked = Text(f'Motivo bloqueo: {snapshot.motivo_bloqueo}', style='bold red' if snapshot.motivo_bloqueo != 'none' else 'bold green')
         return Panel(Group(risk_progress, dd_progress, activity, pos_time, cooldown, blocked), title='[bold]Riesgo y Actividad[/bold]', border_style='red')
 

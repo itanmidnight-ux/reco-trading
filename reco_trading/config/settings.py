@@ -85,6 +85,14 @@ class Settings(BaseSettings):
     target_scalp_seconds: int = Field(default=20, ge=5, le=120)
     max_position_seconds: int = Field(default=30, ge=10, le=300)
 
+    market_max_spread_bps: float = Field(default=15.0, ge=0.1, le=500.0)
+    market_max_realized_volatility: float = Field(default=0.05, ge=0.001, le=1.0)
+    market_min_avg_volume: float = Field(default=1.0, ge=0.0, le=1_000_000_000.0)
+    market_max_gap_ratio: float = Field(default=0.20, ge=0.0, le=1.0)
+
+    kill_switch_max_rejections: int = Field(default=5, ge=1, le=100)
+    kill_switch_max_latency_ms: float = Field(default=2500.0, ge=10.0, le=60000.0)
+
     loop_interval_seconds: int = Field(default=5, ge=1, le=60)
 
     monitoring_metrics_enabled: bool = Field(default=True)

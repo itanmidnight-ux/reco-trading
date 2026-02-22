@@ -187,6 +187,10 @@ class SignalCombiner:
         regime_key = str(regime).upper()
         if regime_key == 'TREND':
             w1, w2, w3 = 0.55, 0.20, 0.25
+        elif regime_key == 'RANGE':
+            w1, w2, w3 = 0.25, 0.50, 0.25
+        elif regime_key == 'HIGH_VOL':
+            w1, w2, w3 = 0.30, 0.25, 0.45
         elif regime_key == 'LOW_VOL':
             w1, w2, w3 = 0.30, 0.45, 0.25
         else:
