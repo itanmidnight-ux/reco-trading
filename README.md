@@ -141,7 +141,7 @@ Ver guía completa en `deploy/README.md`.
 
 El sistema arranca con validaciones estrictas para evitar estados degradados silenciosos:
 
-- `symbol` obligatorio: `BTC/USDT`.
+- `symbol` obligatorio en formato `BASE/QUOTE` (ej: `BTC/USDT`).
 - En mainnet (`BINANCE_TESTNET=false`) exige `CONFIRM_MAINNET=true`.
 - `BinanceClient.ping()` valida conexión real con `load_markets()` + `fetch_ticker('BTC/USDT')`.
 - Si el precio inicial `last <= 0`, el kernel aborta.
@@ -149,26 +149,3 @@ El sistema arranca con validaciones estrictas para evitar estados degradados sil
 - En órdenes de mercado usa métodos explícitos de CCXT:
   - `create_market_buy_order('BTC/USDT', amount)`
   - `create_market_sell_order('BTC/USDT', amount)`
-
-## Dashboard web local (métricas operativas)
-
-La vista web local muestra en vivo:
-
-- Capital
-- Balance real Binance
-- PnL diario
-- Win rate
-- Trades del día
-- Operaciones ganadas
-- Operaciones perdidas
-- Drawdown
-- Sharpe
-- Última señal
-- Operación actual/última
-
-Ejecución:
-
-```bash
-AUTO_START_WEB=true bash run.sh
-# Dashboard: http://127.0.0.1:9000
-```
