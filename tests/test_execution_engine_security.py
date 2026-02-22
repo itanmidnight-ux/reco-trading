@@ -8,12 +8,20 @@ from reco_trading.core.microstructure import MicrostructureSnapshot
 class _FakeClient:
     def __init__(self):
         self.last_amount = None
+        self.sanitize_calls = []
 
     async def fetch_balance(self):
         return {'USDT': {'free': 1000}, 'BTC': {'free': 2}}
 
     async def fetch_order_book(self, symbol, limit=10):
         return {'bids': [[100.0, 5.0], [99.9, 4.0]], 'asks': [[100.2, 5.0], [100.3, 4.0]]}
+
+    async def fetch_ticker(self, symbol):
+        return {'last': 100.0}
+
+    async def sanitize_order_quantity(self, symbol, amount, reference_price):
+        self.sanitize_calls.append((symbol, amount, reference_price))
+        return round(amount, 4)
 
     async def create_market_order(self, symbol, side, amount, **kwargs):
         self.last_amount = amount
@@ -24,6 +32,13 @@ class _FakeClient:
 
 
 class _CreateTimeoutClient(_FakeClient):
+    async def fetch_ticker(self, symbol):
+        return {'last': 100.0}
+
+    async def sanitize_order_quantity(self, symbol, amount, reference_price):
+        self.sanitize_calls.append((symbol, amount, reference_price))
+        return round(amount, 4)
+
     async def create_market_order(self, symbol, side, amount, **kwargs):
         await asyncio.sleep(0.2)
         return await super().create_market_order(symbol, side, amount)
@@ -114,6 +129,7 @@ def test_execution_engine_executes_market_order_without_microstructure():
     assert len(db.fills) == 1
     assert len(db.executions) == 1
     assert firewall.registered == 1
+    assert engine.client.sanitize_calls
 
 
 def test_execution_engine_executes_market_order_with_microstructure():
