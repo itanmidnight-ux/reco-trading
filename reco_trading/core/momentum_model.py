@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pandas as pd
+
+from reco_trading.core.data_buffer import MarketSnapshot
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -32,3 +34,11 @@ class MomentumModel:
         if not self._fitted:
             return 0.5
         return float(self.model.predict_proba(frame[self.FEATURES].tail(1))[0, 1])
+
+
+    def predict_from_snapshot(self, snapshot: MarketSnapshot) -> float:
+        if snapshot.returns.size < 8:
+            return 0.5
+        signal = float(snapshot.returns[-5:].mean() / max(snapshot.volatility, 1e-9))
+        centered = max(min(signal, 6.0), -6.0)
+        return float(1.0 / (1.0 + pow(2.718281828, -centered)))

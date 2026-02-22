@@ -32,6 +32,18 @@ class MarketDataService:
             raise ValueError('Order book no disponible')
         return book
 
+    async def latest_spread_bps(self, limit: int = 10) -> float:
+        book = await self.latest_order_book(limit=limit)
+        bids = book.get('bids') or []
+        asks = book.get('asks') or []
+        if not bids or not asks:
+            return 0.0
+        bid = float(bids[0][0])
+        ask = float(asks[0][0])
+        if bid <= 0.0 or ask <= 0.0 or ask < bid:
+            return 0.0
+        return ((ask - bid) / bid) * 10_000.0
+
     async def live_preview(self, symbol_rest: str):
         async for event in self.client.stream_klines(symbol_rest, self.timeframe):
             kline = event.get('k', {})

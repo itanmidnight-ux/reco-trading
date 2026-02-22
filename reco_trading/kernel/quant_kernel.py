@@ -14,10 +14,13 @@ import pandas as pd
 from loguru import logger
 
 from reco_trading.config.settings import get_settings
+from reco_trading.core.data_buffer import DataBuffer
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
 from reco_trading.core.market_data import MarketDataService
 from reco_trading.core.market_regime import MarketRegimeDetector
+from reco_trading.core.signal_fusion import SignalCombiner
+from reco_trading.core.system_state import SystemState
 from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.momentum_model import MomentumModel
 from reco_trading.execution.execution_firewall import ExecutionFirewall
@@ -55,46 +58,39 @@ class SignalEngine:
         self.momentum = MomentumModel()
         self.reversion = MeanReversionModel()
 
-    def generate(self, ohlcv: pd.DataFrame) -> dict[str, Any]:
+    def generate(self, ohlcv: pd.DataFrame, spread_bps: float) -> dict[str, Any]:
         feats = self.feature_engine.build(ohlcv)
         if feats.empty:
             raise ValueError('Features vacías')
 
-        momentum = float(np.clip(self.momentum.predict_proba_up(feats), 0.0, 1.0))
-        mean_rev = float(np.clip(1.0 - self.reversion.predict_reversion(feats), 0.0, 1.0))
-        returns = feats['return'].tail(300).to_numpy(dtype=float)
+        snapshot = self.feature_engine.market_snapshot(ohlcv, spread=spread_bps)
+        momentum = float(np.clip(self.momentum.predict_from_snapshot(snapshot), 0.0, 1.0))
+        mean_rev = float(np.clip(self.reversion.predict_from_snapshot(snapshot), 0.0, 1.0))
 
         return {
+            'snapshot': snapshot,
             'model_scores': {'momentum': momentum, 'mean_reversion': mean_rev},
-            'atr': float(feats.iloc[-1]['atr14']),
-            'returns': returns,
+            'atr': snapshot.atr,
+            'returns': snapshot.returns,
             'prices': feats['close'].tail(300),
         }
 
 
 class DecisionEngine:
     def __init__(self) -> None:
-        self.buy_threshold = 0.75
-        self.sell_threshold = 0.25
-        self.min_edge = 0.15
+        self.buy_threshold = 0.70
+        self.sell_threshold = 0.30
 
-    def decide(self, scores: dict[str, float], regime: str) -> tuple[str, float]:
-        mom = scores['momentum']
-        rev = scores['mean_reversion']
-        score = 0.7 * mom + 0.3 * rev if regime == 'trend' else 0.5 * mom + 0.5 * rev
-        edge = score - 0.5
-
-        if score >= self.buy_threshold and edge >= self.min_edge:
-            return 'BUY', score
-        if score <= self.sell_threshold and abs(edge) >= self.min_edge:
-            return 'SELL', score
-        return 'HOLD', score
+    def decide(self, probability: float) -> str:
+        if probability >= self.buy_threshold:
+            return 'BUY'
+        if probability <= self.sell_threshold:
+            return 'SELL'
+        return 'HOLD'
 
 
 class QuantKernel:
     MIN_SECONDS_BETWEEN_TRADES = 10
-    TARGET_SCALP_SECONDS = 15
-    MAX_POSITION_SECONDS = 20
     MAX_CONSECUTIVE_CYCLE_ERRORS = 5
 
     def __init__(self) -> None:
@@ -108,8 +104,9 @@ class QuantKernel:
         self.metrics_exporter = MetricsExporter(port=self.s.monitoring_metrics_port, addr=self.s.monitoring_metrics_host)
         self.dashboard = TerminalDashboard()
         self.shutdown_event = asyncio.Event()
-        self.system_state = 'WAITING_FOR_DATA'
+        self.system_state = SystemState.WAITING_FOR_DATA.value
         self.activity_text = 'Inicializando kernel'
+        self.learning_started_at_ms: int | None = None
 
     async def initialize(self) -> None:
         self.client = BinanceClient(
@@ -121,6 +118,8 @@ class QuantKernel:
         self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
         self.signal_engine = SignalEngine()
+        self.data_buffer = DataBuffer(window_seconds=self.s.learning_phase_seconds)
+        self.signal_combiner = SignalCombiner()
         self.decision_engine = DecisionEngine()
         self.regime_detector = MarketRegimeDetector(n_states=3)
 
@@ -248,25 +247,37 @@ class QuantKernel:
     def _handle_cycle_exception(self, exc: Exception) -> bool:
         self.state.consecutive_cycle_errors += 1
         self.activity_text = f'Error de ciclo: {exc}'
-        self.system_state = 'BLOCKED_BY_RISK'
-        if hasattr(self, 'monitoring') and self.monitoring is not None:
-            self.monitoring.set_system_degraded(str(exc))
-        self._publish_dashboard(
-            decision='HOLD',
-            score=0.0,
-            regime='error',
-            last_price=0.0,
-            binance_state='ERROR',
-        )
+        self.system_state = SystemState.ERROR.value
+        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'error', 0.0, 'ERROR')
         if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
             self._shutdown_reason = 'max_consecutive_cycle_errors'
             self.shutdown_event.set()
             return True
         return False
 
-    def _publish_dashboard(self, decision: str, score: float, regime: str, last_price: float, binance_state: str) -> None:
+    def _confidence_to_risk_fraction(self, confidence: float) -> float:
+        c = float(confidence)
+        s = self.s
+        if c < s.confidence_hold_threshold:
+            return 0.0
+        if c >= s.confidence_tier_4:
+            return min(s.confidence_alloc_tier_4, s.max_confidence_allocation)
+        if c >= s.confidence_tier_3:
+            return min(s.confidence_alloc_tier_3, s.max_confidence_allocation)
+        if c >= s.confidence_tier_2:
+            return min(s.confidence_alloc_tier_2, s.max_confidence_allocation)
+        if c >= s.confidence_tier_1:
+            return min(s.confidence_alloc_tier_1, s.max_confidence_allocation)
+        return 0.0
+
+    def _publish_dashboard(self, decision: str, confidence: float, mom: float, rev: float, reg_prob: float, regime: str, last_price: float, binance_state: str) -> None:
         total_equity = self.state.equity + self.state.unrealized_pnl
         drawdown = 0.0 if self.initial_equity <= 0 else max(0.0, 1.0 - (total_equity / max(self.initial_equity, 1e-9)))
+        now = datetime.now(timezone.utc)
+        position_time = (now - self.state.position_opened_at).total_seconds() if self.state.position_opened_at else 0.0
+        cooldown = 0.0
+        if self.last_trade_ts:
+            cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0)
         self.dashboard.update(
             VisualSnapshot(
                 capital=total_equity,
@@ -278,7 +289,7 @@ class QuantKernel:
                 exposicion=max(self.state.position_qty * max(last_price, 0.0), 0.0),
                 trades=self.state.trades,
                 win_rate=(self.state.winning_trades / self.state.trades if self.state.trades else 0.0),
-                expectancy=score - 0.5,
+                expectancy=confidence - 0.5,
                 sharpe_rolling=0.0,
                 regimen=regime,
                 senal=decision,
@@ -288,6 +299,12 @@ class QuantKernel:
                 estado_sistema=self.system_state,
                 actividad=self.activity_text,
                 motivo_bloqueo=self.state.last_block_reason,
+                confianza=confidence,
+                tiempo_en_posicion_s=position_time,
+                cooldown_restante_s=cooldown,
+                score_momentum=mom,
+                score_reversion=rev,
+                score_regime=reg_prob,
             )
         )
 
@@ -300,23 +317,37 @@ class QuantKernel:
 
         while not self.shutdown_event.is_set():
             try:
-                self.system_state = 'WAITING_FOR_DATA'
+                self.system_state = SystemState.WAITING_FOR_DATA.value
                 self.activity_text = 'Esperando OHLCV desde Binance'
                 now = datetime.now(timezone.utc)
                 ohlcv = await self.market_data.latest_ohlcv(limit=300)
-                self.system_state = 'ANALYZING_MARKET'
+                if self.learning_started_at_ms is None:
+                    self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
 
+                spread_bps = await self.market_data.latest_spread_bps()
+                self.data_buffer.record_spread(spread_bps)
+
+                if self.data_buffer.in_learning_phase(self.learning_started_at_ms, now.timestamp()):
+                    self.system_state = SystemState.LEARNING_MARKET.value
+                    stats = self.data_buffer.learning_stats(ohlcv)
+                    self.activity_text = f'Aprendizaje 5m: vol={stats.rolling_volatility:.5f} atr={stats.atr:.2f} spread={stats.average_spread:.2f}bps'
+                    self.state.last_block_reason = 'learning_phase_active'
+                    self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, stats.dominant_regime, float(ohlcv['close'].iloc[-1]), 'OK')
+                    await asyncio.sleep(self.s.loop_interval_seconds)
+                    continue
+
+                self.system_state = SystemState.ANALYZING_MARKET.value
                 ok_balance, free_usdt, reason = await self._fetch_account_balance()
                 if not ok_balance:
-                    self.system_state = 'BLOCKED_BY_RISK'
+                    self.system_state = SystemState.BLOCKED_BY_RISK.value
                     self.activity_text = f'Sin operación: balance inválido ({reason})'
                     self.state.last_block_reason = reason
-                    self._publish_dashboard('HOLD', 0.0, 'unknown', float(ohlcv["close"].iloc[-1]), 'ERROR')
+                    self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'unknown', float(ohlcv['close'].iloc[-1]), 'ERROR')
                     await asyncio.sleep(self.s.loop_interval_seconds)
                     continue
 
                 self.state.equity = free_usdt + max(self.state.daily_pnl, 0.0)
-                sig = self.signal_engine.generate(ohlcv)
+                sig = self.signal_engine.generate(ohlcv, spread_bps=spread_bps)
                 last_price = float(sig['prices'].iloc[-1])
 
                 if self.state.position_state == PositionState.LONG:
@@ -324,33 +355,12 @@ class QuantKernel:
                 else:
                     self.state.unrealized_pnl = 0.0
 
-                if self.should_block_trading():
-                    self.activity_text = f'Trading bloqueado por riesgo: {self.state.last_block_reason}'
-                    self._publish_dashboard('HOLD', 0.0, 'risk', last_price, 'OK')
-                    await asyncio.sleep(self.s.loop_interval_seconds)
-                    continue
-
-                regime = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
-                model_decision, model_score = self.decision_engine.decide(sig['model_scores'], regime)
-                market_analysis = self._analyze_market(ohlcv)
-
-                decision = 'HOLD'
-                confidence = float(market_analysis.get('confidence') or 0.0)
+                regime = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'CHOPPY')
+                reg_prob = 0.75 if str(regime).lower() == 'trend' else (0.55 if str(regime).lower() == 'range' else 0.5)
+                breakdown = self.signal_combiner.combine(sig['model_scores']['momentum'], sig['model_scores']['mean_reversion'], reg_prob, str(regime).upper())
+                confidence = breakdown.combined
+                decision = self.decision_engine.decide(confidence)
                 self.state.last_block_reason = 'none'
-
-                if not market_analysis['advantage']:
-                    self.activity_text = f'No opera: {market_analysis["reason"]}'
-                    decision = 'HOLD'
-                elif model_decision != market_analysis['signal']:
-                    self.activity_text = f'Señales no alineadas model={model_decision} market={market_analysis["signal"]}'
-                    decision = 'HOLD'
-                elif confidence < 0.1:
-                    self.activity_text = 'Confianza insuficiente para operar'
-                    self.state.last_block_reason = 'confidence_below_minimum'
-                    decision = 'HOLD'
-                else:
-                    decision = model_decision
-                    self.activity_text = f'Edge validado ({market_analysis["reason"]})'
 
                 if self.last_trade_ts and (now.timestamp() - self.last_trade_ts) < self.MIN_SECONDS_BETWEEN_TRADES:
                     decision = 'HOLD'
@@ -364,29 +374,31 @@ class QuantKernel:
 
                 if self.state.position_state == PositionState.LONG:
                     elapsed = (now - (self.state.position_opened_at or now)).total_seconds()
-                    if elapsed >= self.TARGET_SCALP_SECONDS:
+                    if elapsed >= self.s.target_scalp_seconds:
                         decision = 'SELL'
                         confidence = 1.0
-                        self.activity_text = f'Cierre por scalping ({elapsed:.1f}s en posición)'
-                    if elapsed >= self.MAX_POSITION_SECONDS:
+                        self.activity_text = f'Cierre por scalping ({elapsed:.1f}s)'
+                    if elapsed >= self.s.max_position_seconds:
                         decision = 'SELL'
                         confidence = 1.0
-                        self.activity_text = f'Cierre forzado anti-overhold ({elapsed:.1f}s)'
+                        self.activity_text = f'Cierre forzado por tiempo ({elapsed:.1f}s)'
 
+                risk_fraction = self._confidence_to_risk_fraction(confidence)
                 order_qty = 0.0
                 if decision == 'BUY':
-                    requested_notional = self.state.equity * self.s.risk_per_trade * confidence
-                    order_qty = requested_notional / max(last_price, 1e-9)
+                    if risk_fraction <= 0:
+                        decision = 'HOLD'
+                        self.state.last_block_reason = 'confidence_below_threshold'
+                        self.activity_text = 'HOLD por confianza insuficiente para sizing'
+                    else:
+                        requested_notional = self.state.equity * risk_fraction
+                        order_qty = requested_notional / max(last_price, 1e-9)
                 elif decision == 'SELL':
                     order_qty = self.state.position_qty
 
-                if decision in {'BUY', 'SELL'}:
-                    self.execution_engine.set_risk_context(
-                        capital_total=self.state.equity,
-                        risk_per_trade=self.s.risk_per_trade,
-                        signal_confidence=confidence,
-                    )
-                    self.system_state = 'SENDING_ORDER'
+                if decision in {'BUY', 'SELL'} and order_qty > 0:
+                    self.execution_engine.set_risk_context(capital_total=self.state.equity, risk_per_trade=risk_fraction, signal_confidence=confidence)
+                    self.system_state = SystemState.SENDING_ORDER.value
                     fill = await self._execute_order(decision, order_qty)
 
                     if fill and decision == 'BUY':
@@ -396,7 +408,7 @@ class QuantKernel:
                         self.state.position_opened_at = now
                         self.last_trade_ts = now.timestamp()
                         self.state.trades += 1
-                        self.system_state = 'IN_POSITION'
+                        self.system_state = SystemState.IN_POSITION.value
                         self.activity_text = f'BUY ejecutado qty={self.state.position_qty:.6f}'
                     elif fill and decision == 'SELL':
                         pnl = self.state.unrealized_pnl
@@ -410,20 +422,18 @@ class QuantKernel:
                         self.state.position_opened_at = None
                         self.state.unrealized_pnl = 0.0
                         self.last_trade_ts = now.timestamp()
-                        self.system_state = 'WAITING_FOR_DATA'
+                        self.system_state = SystemState.WAITING_FOR_DATA.value
                         self.activity_text = f'SELL ejecutado, PnL={pnl:+.2f} USDT'
                     else:
-                        self.system_state = 'BLOCKED_BY_RISK'
-                        reason = self.state.last_block_reason or 'order_rejected'
-                        if self.execution_engine.last_capital_limited:
-                            self.activity_text = f'Orden limitada por capital (qty_max={self.execution_engine.last_allowed_qty:.6f})'
-                        else:
-                            self.activity_text = f'Orden rechazada: {reason}'
+                        self.system_state = SystemState.BLOCKED_BY_RISK.value
+                        self.activity_text = f'Orden rechazada: {self.state.last_block_reason}'
+                elif decision == 'HOLD' and self.state.last_block_reason == 'none':
+                    self.activity_text = 'HOLD: sin ventaja probabilística suficiente'
 
                 self.state.consecutive_cycle_errors = 0
-                if self.system_state not in {'SENDING_ORDER', 'IN_POSITION'}:
-                    self.system_state = 'WAITING_FOR_DATA' if self.state.position_state == PositionState.FLAT else 'IN_POSITION'
-                self._publish_dashboard(decision, model_score, regime, last_price, 'OK')
+                if self.system_state not in {SystemState.SENDING_ORDER.value, SystemState.IN_POSITION.value}:
+                    self.system_state = SystemState.WAITING_FOR_DATA.value if self.state.position_state == PositionState.FLAT else SystemState.IN_POSITION.value
+                self._publish_dashboard(decision, confidence, breakdown.momentum, breakdown.mean_reversion, breakdown.regime, str(regime), last_price, 'OK')
                 await asyncio.sleep(self.s.loop_interval_seconds)
 
             except Exception as e:
