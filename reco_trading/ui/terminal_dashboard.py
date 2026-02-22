@@ -75,13 +75,21 @@ class TerminalDashboard:
         table = Table.grid(padding=(0, 1))
         table.add_column(justify='left', style='yellow')
         table.add_column(justify='right')
+        decision = snapshot.decision or snapshot.senal
         table.add_row('Régimen', snapshot.regimen)
-        table.add_row('Señal Final', f'[{self._signal_style(snapshot.senal)}]{snapshot.senal}[/]')
+        table.add_row('Señal Final', f'[{self._signal_style(decision)}]{decision}[/]')
         table.add_row('Binance', f'[{self._status_style(snapshot.estado_binance)}]{snapshot.estado_binance}[/]')
-        table.add_row('Sistema', f'[{self._status_style(snapshot.estado_sistema)}]{snapshot.estado_sistema}[/]')
+        system_state = snapshot.system_state or snapshot.estado_sistema
+        table.add_row('Sistema', f'[{self._status_style(system_state)}]{system_state}[/]')
         table.add_row('Exec', snapshot.execution_status)
-        table.add_row('Confianza', f'{snapshot.confianza:.2%}')
-        table.add_row('Scores', f'M={snapshot.score_momentum:.2f} R={snapshot.score_reversion:.2f} G={snapshot.score_regime:.2f}')
+        confidence = snapshot.confidence if snapshot.scores is not None else snapshot.confianza
+        scores = snapshot.scores or {
+            'momentum': snapshot.score_momentum,
+            'reversion': snapshot.score_reversion,
+            'global': snapshot.score_regime,
+        }
+        table.add_row('Confianza', f'{confidence:.2%}')
+        table.add_row('Scores', f"M={scores.get('momentum', 0.0):.2f} R={scores.get('reversion', 0.0):.2f} G={scores.get('global', 0.0):.2f}")
         return Panel(table, title='[bold]Estado de Decisión[/bold]', border_style='yellow')
 
     def _render_risk_progress(self, snapshot: VisualSnapshot) -> Panel:
@@ -101,7 +109,7 @@ class TerminalDashboard:
         )
         dd_progress.add_task('drawdown', total=100.0, completed=max(0.0, min(snapshot.drawdown * 100.0, 100.0)))
 
-        activity = Text(f'Actividad: {snapshot.actividad}', style='bold white')
+        activity = Text(f'Actividad: {snapshot.reason or snapshot.actividad}', style='bold white')
         pos_time = Text(f'Tiempo en posición: {snapshot.tiempo_en_posicion_s:.1f}s', style='bold cyan')
         cooldown = Text(f'Cooldown restante: {snapshot.cooldown_restante_s:.1f}s', style='bold yellow')
         learning = Text(f'Tiempo aprendizaje restante: {snapshot.learning_remaining_seconds:.1f}s', style='bold magenta')
