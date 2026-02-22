@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 class BinanceClient:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True, confirm_mainnet: bool = False) -> None:
+        if not api_key.strip() or not api_secret.strip():
+            raise ValueError('api_key y api_secret de Binance son obligatorias y no pueden estar vacías.')
         if not testnet and not confirm_mainnet:
             raise ValueError('Mainnet requiere confirm_mainnet=true explícito por seguridad institucional.')
 
@@ -83,12 +85,15 @@ class BinanceClient:
         raise RuntimeError('Retry loop finalizó sin resultado')
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 500) -> Any:
+        await self.initialize()
         return await self._retry(self.exchange.fetch_ohlcv, symbol=symbol, timeframe=timeframe, limit=limit)
 
     async def fetch_order_book(self, symbol: str, limit: int = 20) -> Any:
+        await self.initialize()
         return await self._retry(self.exchange.fetch_order_book, symbol=symbol, limit=limit)
 
     async def fetch_balance(self) -> Any:
+        await self.initialize()
         return await self._retry(self.exchange.fetch_balance)
 
     async def ping(self) -> Any:
@@ -115,6 +120,7 @@ class BinanceClient:
     ) -> Any:
         if not firewall_checked:
             raise PermissionError('create_market_order requiere validación previa del ExecutionFirewall')
+        await self.initialize()
         if side.upper() == 'BUY':
             return await self._retry(self.exchange.create_market_buy_order, symbol, amount)
         if side.upper() == 'SELL':
@@ -122,6 +128,7 @@ class BinanceClient:
         raise ValueError(f'Lado de orden inválido: {side}')
 
     async def fetch_order(self, symbol: str, order_id: str) -> Any:
+        await self.initialize()
         return await self._retry(self.exchange.fetch_order, order_id, symbol)
 
     async def wait_for_fill(self, symbol: str, order_id: str, timeout: int = 45) -> Any:

@@ -84,19 +84,44 @@ class SignalEngine:
         feats = self.feature_engine.build(ohlcv)
         if feats.empty:
             raise ValueError('features vacías: OHLCV insuficiente o corrupto para generar señal')
-        mom = self.momentum.predict_proba_up(feats)
-        rev = self.reversion.predict_reversion(feats)
-        signal_score = 0.65 * mom + 0.35 * (1.0 - rev)
-        side = 'BUY' if signal_score >= 0.55 else 'SELL' if signal_score <= 0.45 else 'HOLD'
+        mom = float(self.momentum.predict_proba_up(feats))
+        rev = float(self.reversion.predict_reversion(feats))
         return {
             'frame': feats,
-            'side': side,
-            'signal_score': float(signal_score),
+            'model_scores': {
+                'momentum': float(np.clip(mom, 0.0, 1.0)),
+                'mean_reversion': float(np.clip(1.0 - rev, 0.0, 1.0)),
+            },
             'atr': float(feats.iloc[-1]['atr14']),
             'returns': feats['return'].tail(300).to_numpy(dtype=float),
             'returns_df': pd.DataFrame({'BTCUSDT': feats['return'].tail(300).to_numpy(dtype=float)}),
             'prices': feats['close'].tail(300),
         }
+
+
+class DecisionEngine:
+    def __init__(self, buy_threshold: float = 0.56, sell_threshold: float = 0.44, min_edge: float = 0.02) -> None:
+        self.buy_threshold = float(buy_threshold)
+        self.sell_threshold = float(sell_threshold)
+        self.min_edge = float(min_edge)
+
+    def decide(self, model_scores: dict[str, float], regime: str) -> tuple[str, float]:
+        momentum = float(np.clip(model_scores.get('momentum', 0.5), 0.0, 1.0))
+        mean_rev = float(np.clip(model_scores.get('mean_reversion', 0.5), 0.0, 1.0))
+
+        if regime == 'high_volatility':
+            weight_mom, weight_rev = 0.45, 0.55
+        elif regime == 'trend':
+            weight_mom, weight_rev = 0.70, 0.30
+        else:
+            weight_mom, weight_rev = 0.55, 0.45
+
+        score = float(np.clip(weight_mom * momentum + weight_rev * mean_rev, 0.0, 1.0))
+        if score >= self.buy_threshold and (score - 0.5) >= self.min_edge:
+            return 'BUY', score
+        if score <= self.sell_threshold and (0.5 - score) >= self.min_edge:
+            return 'SELL', score
+        return 'HOLD', score
 
 
 class QuantKernel:
@@ -146,6 +171,7 @@ class QuantKernel:
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
         self.signal_engine = SignalEngine()
         self.regime_detector = MarketRegimeDetector(n_states=3)
+        self.decision_engine = DecisionEngine()
         self.risk_manager = InstitutionalRiskManager(
             RiskConfig(
                 risk_per_trade=min(self.s.risk_per_trade, 0.005),
@@ -213,14 +239,16 @@ class QuantKernel:
                     ohlcv = await self.market_data.latest_ohlcv(limit=300)
                     sig = self.signal_engine.generate(ohlcv)
                     regime = self.regime_detector.predict(sig['returns'], sig['prices'])
+                    regime_name = str(regime.get('regime', 'range'))
+                    decision, decision_score = self.decision_engine.decide(sig['model_scores'], regime_name)
                     await self.db.persist_trade_signal(
                         {
                             'ts': int(datetime.now(timezone.utc).timestamp() * 1000),
                             'symbol': self.s.symbol,
-                            'signal': sig['side'],
-                            'score': float(np.clip(sig['signal_score'], 0.0, 1.0)),
-                            'expected_value': float(sig['signal_score']),
-                            'reason': f"regime={regime}",
+                            'signal': decision,
+                            'score': float(np.clip(decision_score, 0.0, 1.0)),
+                            'expected_value': float(decision_score),
+                            'reason': f"regime={regime_name};scores={sig['model_scores']}",
                         }
                     )
                     last_price = float(sig['prices'].iloc[-1])
@@ -237,7 +265,7 @@ class QuantKernel:
                         self.dashboard.update(
                             self._build_dashboard_snapshot(
                                 regime=regime,
-                                signal=sig['side'],
+                                signal=decision,
                                 last_price=last_price,
                                 latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
                                 binance_status='OK',
@@ -247,11 +275,11 @@ class QuantKernel:
                         self.request_shutdown('risk_kill_switch')
                         continue
 
-                    if sig['side'] == 'HOLD':
+                    if decision == 'HOLD':
                         self.dashboard.update(
                             self._build_dashboard_snapshot(
                                 regime=regime,
-                                signal=sig['side'],
+                                signal=decision,
                                 last_price=last_price,
                                 latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
                                 binance_status='OK',
@@ -298,7 +326,7 @@ class QuantKernel:
                         self.dashboard.update(
                             self._build_dashboard_snapshot(
                                 regime=regime,
-                                signal=sig['side'],
+                                signal=decision,
                                 last_price=last_price,
                                 latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
                                 binance_status='OK',
@@ -320,7 +348,7 @@ class QuantKernel:
                         self.dashboard.update(
                             self._build_dashboard_snapshot(
                                 regime=regime,
-                                signal=sig['side'],
+                                signal=decision,
                                 last_price=last_price,
                                 latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
                                 binance_status='RISK',
@@ -334,14 +362,14 @@ class QuantKernel:
                     alloc_weight = float(alloc.weights.get('BTCUSDT', 1.0))
                     qty = float(position_size * alloc_weight)
                     notional = float(qty * last_price)
-                    fill = await self._execute_order(sig['side'], qty)
+                    fill = await self._execute_order(decision, qty)
                     if fill is None:
                         status = 'RISK'
-                        logger.warning('execution_rejected_or_unfilled', side=sig['side'], qty=qty, notional=notional)
+                        logger.warning('execution_rejected_or_unfilled', side=decision, qty=qty, notional=notional)
                         self.dashboard.update(
                             self._build_dashboard_snapshot(
                                 regime=regime,
-                                signal=sig['side'],
+                                signal=decision,
                                 last_price=last_price,
                                 latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
                                 binance_status='RISK',
@@ -365,9 +393,9 @@ class QuantKernel:
                     logger.info(
                         'trade_executed',
                         trade_num=self.state.trades,
-                        signal=sig['side'],
+                        signal=decision,
                         regime=regime,
-                        signal_score=sig['signal_score'],
+                        signal_score=decision_score,
                         position_size=qty,
                         notional=notional,
                         risk_per_trade=self.risk_manager.config.risk_per_trade,
@@ -379,7 +407,7 @@ class QuantKernel:
                     self.dashboard.update(
                         self._build_dashboard_snapshot(
                             regime=regime,
-                            signal=sig['side'],
+                            signal=decision,
                             last_price=last_price,
                             latency_ms=(datetime.now(timezone.utc) - cycle_started).total_seconds() * 1000.0,
                             binance_status='OK',
