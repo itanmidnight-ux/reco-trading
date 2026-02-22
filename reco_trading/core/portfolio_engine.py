@@ -1,21 +1,33 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 
 @dataclass
 class PortfolioState:
-    equity: float = 1000.0
+    equity: float
     daily_pnl: float = 0.0
     consecutive_losses: int = 0
-    last_signal: str = 'HOLD'
+    max_consecutive_losses: int = 3
+    trading_blocked: bool = False
 
 
 class PortfolioEngine:
-    def __init__(self, state: PortfolioState | None = None) -> None:
-        self.state = state or PortfolioState()
+    def __init__(self, state: PortfolioState) -> None:
+        self.state = state
 
     def register_trade_result(self, pnl: float) -> None:
+        if self.state.trading_blocked:
+            return
+
         self.state.daily_pnl += pnl
         self.state.equity += pnl
-        self.state.consecutive_losses = self.state.consecutive_losses + 1 if pnl < 0 else 0
+
+        if pnl < 0:
+            self.state.consecutive_losses += 1
+        else:
+            self.state.consecutive_losses = 0
+
+        if self.state.consecutive_losses >= self.state.max_consecutive_losses:
+            self.state.trading_blocked = True
+
+    def can_trade(self) -> bool:
+        return not self.state.trading_blocked
