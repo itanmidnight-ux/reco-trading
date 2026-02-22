@@ -85,7 +85,14 @@ class ExecutionEngine:
         except Exception:
             logger.warning('redis write failed')
 
-    async def _execute_child_order(self, side: str, amount: float, timeout_seconds: float, max_retries: int) -> dict[str, Any] | None:
+    async def _execute_child_order(
+        self,
+        side: str,
+        amount: float,
+        timeout_seconds: float,
+        max_retries: int,
+        reference_price: float | None = None,
+    ) -> dict[str, Any] | None:
         for _ in range(max_retries):
             if self._quant_kernel.should_block_trading():
                 return None
@@ -97,8 +104,16 @@ class ExecutionEngine:
                 return None
 
             try:
+                if reference_price is None or reference_price <= 0:
+                    ticker = await self.client.fetch_ticker(self.symbol)
+                    reference_price = float(ticker.get('last') or 0.0)
+                sanitized_amount = await self.client.sanitize_order_quantity(
+                    self.symbol,
+                    amount,
+                    reference_price=reference_price,
+                )
                 order = await asyncio.wait_for(
-                    self.client.create_market_order(self.symbol, side, amount, firewall_checked=True),
+                    self.client.create_market_order(self.symbol, side, sanitized_amount, firewall_checked=True),
                     timeout=timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -122,20 +137,20 @@ class ExecutionEngine:
                     'ts': int(datetime.now(timezone.utc).timestamp() * 1000),
                     'symbol': str(fill.get('symbol') or self.symbol),
                     'side': str(fill.get('side') or side).upper(),
-                    'qty': float(fill.get('filled') or fill.get('amount') or amount),
+                    'qty': float(fill.get('filled') or fill.get('amount') or sanitized_amount),
                     'price': fill_price,
                     'status': str(fill.get('status') or 'closed'),
                     'pnl': 0.0,
                 }
             )
-            self._firewall.register_fill(symbol=self.symbol, notional=max(fill_price, 0.0) * amount)
+            self._firewall.register_fill(symbol=self.symbol, notional=max(fill_price, 0.0) * sanitized_amount)
             if self._capital_governor:
-                self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * amount)
+                self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * sanitized_amount)
             self._persist_execution(
                 {
                     'symbol': self.symbol,
                     'side': side,
-                    'amount': amount,
+                    'amount': sanitized_amount,
                     'order_id': order_id,
                     'timestamp': datetime.now(timezone.utc).isoformat(),
                 }
@@ -154,7 +169,13 @@ class ExecutionEngine:
         if not self._validate_order(side, amount) or not self._validate_microstructure(microstructure):
             return None
         timeout = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
-        return await self._execute_child_order(side=side, amount=amount, timeout_seconds=timeout, max_retries=max_retries)
+        return await self._execute_child_order(
+            side=side,
+            amount=amount,
+            timeout_seconds=timeout,
+            max_retries=max_retries,
+            reference_price=None,
+        )
 
     async def _execute_institutional_order(self, side: str, amount: float) -> dict[str, Any] | None:
         book = await self.client.fetch_order_book(self.symbol, limit=10)
@@ -189,7 +210,13 @@ class ExecutionEngine:
         )
         fills: list[dict[str, Any]] = []
         for child in route:
-            fill = await self._execute_child_order(side=side, amount=float(child['amount']), timeout_seconds=self.order_timeout_seconds, max_retries=3)
+            fill = await self._execute_child_order(
+                side=side,
+                amount=float(child['amount']),
+                timeout_seconds=self.order_timeout_seconds,
+                max_retries=3,
+                reference_price=(bid + ask) / 2 if bid > 0 and ask > 0 else None,
+            )
             if fill:
                 fills.append(fill)
         if not fills:
