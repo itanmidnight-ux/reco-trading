@@ -379,44 +379,19 @@ class QuantKernel:
         if self.last_trade_ts:
             cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0)
 
+        risk_state = 'BLOCKED' if self.should_block_trading() else 'OK'
         self.dashboard.update(
             VisualSnapshot(
-                capital=total_equity,
-                balance=self.state.equity,
-                pnl_total=self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid,
-                pnl_diario=self.state.realized_pnl,
-                drawdown=drawdown,
-                riesgo_activo=float(np.clip(self.s.risk_per_trade, 0.0, 1.0)),
-                exposicion=self.state.capital_in_position,
-                trades=self.state.trades,
-                win_rate=(self.state.winning_trades / self.state.trades if self.state.trades else 0.0),
-                expectancy=expected_edge,
-                sharpe_rolling=0.0,
-                regimen=regime,
-                senal=decision,
-                latencia_ms=self.state.avg_latency_ms,
-                ultimo_precio=max(last_price, 0.0),
-                estado_binance=binance_state,
-                estado_sistema=self.system_state,
-                actividad=self.activity_text,
-                motivo_bloqueo=self.state.last_block_reason,
+                price=max(last_price, 0.0),
+                equity=total_equity,
+                pnl=self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid,
+                decision=decision,
                 confidence=self.decision_engine.last_confidence,
                 scores=dict(self.decision_engine.last_scores),
-                decision=decision,
+                regime=regime,
+                risk_state=risk_state,
+                execution_state=self.execution_status,
                 reason=self.decision_engine.last_reason,
-                pnl=self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid,
-                system_state=self.system_state,
-                confianza=self.decision_engine.last_confidence,
-                tiempo_en_posicion_s=position_time,
-                cooldown_restante_s=cooldown,
-                score_momentum=mom,
-                score_reversion=rev,
-                score_regime=reg_prob,
-                learning_remaining_seconds=learning_remaining_seconds,
-                spread_bps=self._last_market_quality.spread_bps,
-                slippage_bps=float(self.s.slippage_bps),
-                estimated_fees=self.state.fees_paid,
-                execution_status=self.execution_status,
             )
         )
 
