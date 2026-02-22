@@ -38,17 +38,18 @@ class PositionState(Enum):
 
 
 # ============================================================
-# RUNTIME STATE (REAL – NO CAPITAL HARDCODEADO)
+# RUNTIME STATE
 # ============================================================
 
 @dataclass(slots=True)
 class RuntimeState:
     equity: float = 0.0
     daily_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
     trades: int = 0
     winning_trades: int = 0
     rolling_returns: list[float] = field(default_factory=list)
-    consecutive_cycle_errors: int = 0
+
     position_state: PositionState = PositionState.FLAT
     position_qty: float = 0.0
     entry_price: float = 0.0
@@ -86,28 +87,25 @@ class SignalEngine:
 
 
 # ============================================================
-# DECISION ENGINE (HOLD DEFAULT)
+# DECISION ENGINE
 # ============================================================
 
 class DecisionEngine:
     def __init__(self) -> None:
-        self.buy_threshold = 0.80
-        self.sell_threshold = 0.20
+        self.buy_threshold = 0.75
+        self.sell_threshold = 0.25
         self.min_edge = 0.15
 
     def decide(self, scores: dict[str, float], regime: str) -> tuple[str, float]:
         mom = scores["momentum"]
         rev = scores["mean_reversion"]
 
-        if regime == "trend":
-            score = 0.7 * mom + 0.3 * rev
-        else:
-            score = 0.5 * mom + 0.5 * rev
-
+        score = 0.7 * mom + 0.3 * rev if regime == "trend" else 0.5 * mom + 0.5 * rev
         edge = score - 0.5
 
         if score >= self.buy_threshold and edge >= self.min_edge:
             return "BUY", score
+
         if score <= self.sell_threshold and abs(edge) >= self.min_edge:
             return "SELL", score
 
@@ -115,12 +113,11 @@ class DecisionEngine:
 
 
 # ============================================================
-# QUANT KERNEL (CORE)
+# QUANT KERNEL
 # ============================================================
 
 class QuantKernel:
-    MAX_CONSECUTIVE_CYCLE_ERRORS = 5
-    MIN_SECONDS_BETWEEN_TRADES = 300  # 5 minutos
+    MIN_SECONDS_BETWEEN_TRADES = 180  # 3 minutos
 
     def __init__(self) -> None:
         self.s = get_settings()
@@ -135,7 +132,6 @@ class QuantKernel:
 
         self.dashboard = TerminalDashboard()
         self.shutdown_event = asyncio.Event()
-        self._shutdown_reason = "running"
 
     # --------------------------------------------------------
 
@@ -148,26 +144,11 @@ class QuantKernel:
         )
 
         self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
-
-        self.market_data = MarketDataService(
-            self.client, self.s.symbol, self.s.timeframe
-        )
+        self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
 
         self.signal_engine = SignalEngine()
         self.decision_engine = DecisionEngine()
         self.regime_detector = MarketRegimeDetector(n_states=3)
-
-        self.risk_manager = InstitutionalRiskManager(
-            RiskConfig(
-                risk_per_trade=0.005,
-                max_daily_loss=0.03,
-                max_drawdown=0.2,
-                max_exposure=0.1,
-                max_correlation=0.7,
-                kelly_fraction=0.5,
-                max_consecutive_losses=5,
-            )
-        )
 
         self.execution_engine = ExecutionEngine(
             self.client,
@@ -188,8 +169,8 @@ class QuantKernel:
 
         balance = await self.client.fetch_balance()
         usdt = float((balance.get("USDT") or {}).get("free") or 0.0)
-
         self.state.equity = usdt
+
         logger.info(f"Balance REAL sincronizado: {usdt:.2f} USDT")
 
     # --------------------------------------------------------
@@ -207,6 +188,16 @@ class QuantKernel:
                 ohlcv = await self.market_data.latest_ohlcv(limit=300)
                 sig = self.signal_engine.generate(ohlcv)
 
+                last_price = float(sig["prices"].iloc[-1])
+
+                # ---- PnL flotante
+                if self.state.position_state == PositionState.LONG:
+                    self.state.unrealized_pnl = (
+                        last_price - self.state.entry_price
+                    ) * self.state.position_qty
+                else:
+                    self.state.unrealized_pnl = 0.0
+
                 regime = self.regime_detector.predict(
                     sig["returns"], sig["prices"]
                 ).get("regime", "range")
@@ -215,27 +206,20 @@ class QuantKernel:
                     sig["model_scores"], regime
                 )
 
-                # ------------------------------------------
-                # BLOQUEOS CRÍTICOS
-                # ------------------------------------------
-
+                # ---- Bloqueos
                 if self.state.position_state == PositionState.LONG and decision == "BUY":
                     decision = "HOLD"
 
                 if self.state.position_state == PositionState.FLAT and decision == "SELL":
                     decision = "HOLD"
 
-                if self.last_trade_ts:
-                    if (now.timestamp() - self.last_trade_ts) < self.MIN_SECONDS_BETWEEN_TRADES:
-                        decision = "HOLD"
+                if self.last_trade_ts and (now.timestamp() - self.last_trade_ts) < self.MIN_SECONDS_BETWEEN_TRADES:
+                    decision = "HOLD"
 
-                # ------------------------------------------
-
-                last_price = float(sig["prices"].iloc[-1])
-
+                # ---- Ejecución
                 if decision == "BUY":
-                    risk_amount = self.state.equity * 0.005
-                    qty = risk_amount / last_price
+                    risk = self.state.equity * 0.005
+                    qty = risk / last_price
 
                     fill = await self.execution_engine.execute("BUY", qty)
                     if fill:
@@ -243,30 +227,40 @@ class QuantKernel:
                         self.state.position_qty = qty
                         self.state.entry_price = last_price
                         self.last_trade_ts = now.timestamp()
+                        self.state.trades += 1
 
                 elif decision == "SELL":
                     qty = self.state.position_qty
                     fill = await self.execution_engine.execute("SELL", qty)
                     if fill:
-                        pnl = (last_price - self.state.entry_price) * qty
+                        pnl = self.state.unrealized_pnl
                         self.state.daily_pnl += pnl
                         self.state.equity += pnl
+
+                        if pnl > 0:
+                            self.state.winning_trades += 1
+
                         self.state.position_state = PositionState.FLAT
                         self.state.position_qty = 0.0
                         self.state.entry_price = 0.0
+                        self.state.unrealized_pnl = 0.0
                         self.last_trade_ts = now.timestamp()
 
+                # ---- Dashboard
                 self.dashboard.update(
                     VisualSnapshot(
-                        capital=self.state.equity,
+                        capital=self.state.equity + self.state.unrealized_pnl,
                         balance=self.state.equity,
-                        pnl_total=self.state.daily_pnl,
+                        pnl_total=self.state.daily_pnl + self.state.unrealized_pnl,
                         pnl_diario=self.state.daily_pnl,
                         drawdown=0.0,
                         riesgo_activo=0.5,
                         exposicion=self.state.position_qty * last_price,
                         trades=self.state.trades,
-                        win_rate=0.0,
+                        win_rate=(
+                            self.state.winning_trades / self.state.trades * 100
+                            if self.state.trades else 0.0
+                        ),
                         expectancy=0.0,
                         sharpe_rolling=0.0,
                         regimen=regime,
