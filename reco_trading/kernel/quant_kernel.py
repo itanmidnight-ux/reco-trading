@@ -701,6 +701,7 @@ class QuantKernel:
                                         expected_edge *= 0.5
 
                                     friction_cost = self._conservative_friction_cost(self._last_market_quality.spread_bps, float(sig['volatility']))
+                                    friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
                                     effective_min_edge, confidence_threshold, regime_uncertain = self._dynamic_thresholds(
                                         volatility=float(sig['volatility']),
                                         spread_bps=self._last_market_quality.spread_bps,
@@ -726,6 +727,7 @@ class QuantKernel:
                                     self.activity_text = self.decision_engine.last_reason
 
                                     cooldown = max(self._cooldown_seconds() - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
+                                    cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
                                     if cooldown > 0 and executable_decision in {'BUY', 'SELL'}:
                                         executable_decision = 'HOLD'
                                         policy_block_reasons.append(f'COOLDOWN_ACTIVE ({cooldown:.1f}s)')
@@ -798,6 +800,7 @@ class QuantKernel:
                                                     f'MINIMAL_ECONOMIC_NOTIONAL ({requested_notional:.4f} < {self.s.minimal_economic_notional:.4f})'
                                                 )
                                             elif requested_notional <= 0:
+                                            if requested_notional <= 0:
                                                 decision = 'HOLD'
                                                 self.system_state = SystemState.WAITING_EDGE.value
                                                 self.state.last_block_reason = 'minimal_notional_zero'
