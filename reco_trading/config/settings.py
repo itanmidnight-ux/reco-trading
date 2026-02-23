@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     environment: str = Field(default='production')
     runtime_profile: str = Field(default='production')
     symbol: str = Field(default='BTC/USDT', validation_alias='BASE_SYMBOL')
-    timeframe: str = Field(default='1m', validation_alias='TIMEFRAME')
+    timeframe: str = Field(default='5m', validation_alias='TIMEFRAME')
+    operating_mode: str = Field(default='MINIMAL', validation_alias='OPERATING_MODE')
 
     binance_api_key: SecretStr = Field(validation_alias='BINANCE_API_KEY')
     binance_api_secret: SecretStr = Field(validation_alias='BINANCE_API_SECRET')
@@ -82,6 +83,11 @@ class Settings(BaseSettings):
     confidence_alloc_tier_3: float = Field(default=0.0100, ge=0.0, le=0.05)
     confidence_alloc_tier_4: float = Field(default=0.0200, ge=0.0, le=0.05)
     max_confidence_allocation: float = Field(default=0.02, ge=0.001, le=0.05)
+    minimal_fixed_position_notional: float = Field(default=25.0, ge=5.0, le=500.0)
+    minimal_absolute_risk_usdt: float = Field(default=10.0, ge=1.0, le=200.0)
+    minimal_mode_min_edge_floor: float = Field(default=0.00015, ge=0.00001, le=0.01)
+    minimal_mode_regime_uncertain_floor: float = Field(default=0.58, ge=0.50, le=0.95)
+    decision_audit_history_size: int = Field(default=100, ge=10, le=500)
     target_scalp_seconds: int = Field(default=20, ge=5, le=120)
     max_position_seconds: int = Field(default=30, ge=10, le=300)
 
@@ -139,6 +145,14 @@ class Settings(BaseSettings):
         allowed = {'1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'}
         if normalized not in allowed:
             raise ValueError(f'timeframe inválido: {normalized}.')
+        return normalized
+
+    @field_validator('operating_mode')
+    @classmethod
+    def validate_operating_mode(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if normalized not in {'MINIMAL', 'NORMAL', 'INSTITUTIONAL'}:
+            raise ValueError('operating_mode debe ser MINIMAL, NORMAL o INSTITUTIONAL.')
         return normalized
 
     @model_validator(mode='after')
