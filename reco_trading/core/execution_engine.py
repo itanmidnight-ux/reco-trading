@@ -55,6 +55,7 @@ class ExecutionEngine:
         self.last_rejection_reason = ''
         self.last_capital_limited = False
         self.last_allowed_qty = 0.0
+        self._symbol_limits_cache: dict[str, float] = {}
         try:
             self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
             self._redis.ping()
@@ -86,6 +87,40 @@ class ExecutionEngine:
             return False
         return 0.0 <= microstructure.vpin <= 1.0
 
+
+    async def get_symbol_min_notional(self, reference_price: float | None = None) -> float:
+        cached = self._symbol_limits_cache.get(self.symbol)
+        if cached is not None:
+            return float(max(cached, 0.0))
+
+        markets = getattr(self.client.exchange, 'markets', None) if hasattr(self.client, 'exchange') else None
+        if not markets:
+            load = getattr(self.client.exchange, 'load_markets', None) if hasattr(self.client, 'exchange') else None
+            if load:
+                await load()
+                markets = getattr(self.client.exchange, 'markets', None)
+
+        min_notional = 0.0
+        if markets and self.symbol in markets:
+            limits = markets[self.symbol].get('limits', {})
+            min_cost = limits.get('cost', {}).get('min')
+            if min_cost is not None:
+                min_notional = float(min_cost)
+            elif limits.get('amount', {}).get('min') is not None:
+                min_qty = float(limits.get('amount', {}).get('min') or 0.0)
+                price = float(reference_price or 0.0)
+                if price <= 0.0:
+                    try:
+                        ticker = await self.client.fetch_ticker(self.symbol)
+                        price = float(ticker.get('last') or 0.0)
+                    except Exception:
+                        price = 0.0
+                if price > 0.0:
+                    min_notional = min_qty * price
+
+        self._symbol_limits_cache[self.symbol] = float(max(min_notional, 0.0))
+        return self._symbol_limits_cache[self.symbol]
+
     async def _evaluate_firewall(self, side: str, amount: float) -> bool:
         decision = await self._firewall.evaluate(client=self.client, symbol=self.symbol, side=side, amount=amount)
         if decision.allowed:
@@ -97,6 +132,7 @@ class ExecutionEngine:
     async def _apply_capital_limit(self, side: str, amount: float) -> float:
         self.last_capital_limited = False
         self.last_allowed_qty = 0.0
+        self._symbol_limits_cache: dict[str, float] = {}
 
         if side != 'BUY':
             return amount
