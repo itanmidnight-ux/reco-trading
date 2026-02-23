@@ -109,3 +109,25 @@ def test_quant_kernel_requires_time_and_bars_for_warmup() -> None:
     ready, reason = QuantKernel._is_warmup_complete(kernel, now_ts=301.0)
     assert ready is True
     assert reason == 'warmup_complete'
+
+
+def test_quant_kernel_backfills_missing_runtime_state_fields() -> None:
+    pytest.importorskip('pydantic_settings')
+    from reco_trading.kernel.quant_kernel import QuantKernel
+
+    kernel = QuantKernel.__new__(QuantKernel)
+
+    class LegacyState:
+        __slots__ = ('equity',)
+
+        def __init__(self) -> None:
+            self.equity = 123.0
+
+    kernel.state = LegacyState()
+
+    QuantKernel._ensure_runtime_state_fields(kernel)
+
+    assert kernel.state.equity == 123.0
+    assert kernel.state.negative_edge_streak == 0
+    assert kernel.state.binance_min_notional == 0.0
+    assert kernel.state.final_order_notional == 0.0
