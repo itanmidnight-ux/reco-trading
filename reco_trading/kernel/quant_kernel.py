@@ -73,6 +73,19 @@ class SignalEngine:
         self.momentum = MomentumModel()
         self.reversion = MeanReversionModel()
         self._normal = NormalDist(mu=0.0, sigma=1.0)
+        self._zscore_cache: dict[str, float] = {}
+        self._confidence_history: deque[float] = deque(maxlen=240)
+        self._edge_history: deque[float] = deque(maxlen=240)
+
+    def _dynamic_zscore(self, value: float, series: pd.Series, key: str, clip: float = 6.0) -> float:
+        arr = pd.Series(series).dropna().astype(float)
+        if arr.empty:
+            return float(np.clip(value, -clip, clip))
+        mu = float(arr.ewm(span=min(max(len(arr), 6), 80), adjust=False).mean().iloc[-1])
+        sigma = float(arr.ewm(span=min(max(len(arr), 6), 80), adjust=False).std().iloc[-1] or 1e-9)
+        z_value = float(np.clip((value - mu) / max(sigma, 1e-9), -clip, clip))
+        self._zscore_cache[key] = z_value
+        return z_value
 
     def generate(self, ohlcv: pd.DataFrame, spread_bps: float) -> dict[str, Any]:
         feats = self.feature_engine.build(ohlcv)
@@ -91,17 +104,25 @@ class SignalEngine:
         skew = float(returns.skew() or 0.0)
         kurtosis = float(returns.kurtosis() or 0.0)
 
-        # estadística real: t-score del drift de retornos log
-        edge_z = float(np.clip((mu / max(sigma / np.sqrt(n), 1e-9)), -8.0, 8.0))
+        # normalización dinámica por z-score con reescalado por volatilidad
+        edge_z = self._dynamic_zscore(mu, returns, key='drift', clip=8.0)
+        edge_z = float(np.clip(edge_z / max(rolling_vol / max(sigma, 1e-9), 0.25), -8.0, 8.0))
         p_drift_up = float(self._normal.cdf(edge_z))
 
         # mean reversion estadístico: distancia a VWAP normalizada por volatilidad
-        reversion_z = float(np.clip((-snapshot.vwap_distance) / max(rolling_vol, 1e-9), -8.0, 8.0))
+        reversion_z = self._dynamic_zscore(-snapshot.vwap_distance, returns.tail(120), key='reversion', clip=8.0)
+        reversion_z = float(np.clip(reversion_z / max(rolling_vol / max(sigma, 1e-9), 0.25), -8.0, 8.0))
         p_reversion_up = float(self._normal.cdf(reversion_z))
 
         # combinación entre señal estadística y modelo entrenado
         momentum_prob = float(np.clip(0.65 * p_drift_up + 0.35 * model_momentum, 0.0, 1.0))
         reversion_prob = float(np.clip(0.65 * p_reversion_up + 0.35 * model_reversion, 0.0, 1.0))
+
+        correlation_penalty = float(np.clip(1.0 - abs(momentum_prob - reversion_prob), 0.0, 1.0))
+        noise_penalty = float(np.clip((abs(skew) / 4.0) + max(kurtosis - 3.0, 0.0) / 12.0, 0.0, 0.55))
+        stability_weight = float(np.clip(1.0 - np.std(returns.tail(20)) / max(np.std(returns.tail(120)), 1e-9), 0.25, 1.0))
+        confidence_score = float(np.clip(((abs(momentum_prob - 0.5) + abs(reversion_prob - 0.5)) * stability_weight) - (0.20 * noise_penalty), 0.0, 1.0))
+        self._confidence_history.append(confidence_score)
 
         return {
             'snapshot': snapshot,
@@ -115,6 +136,15 @@ class SignalEngine:
             'skew': skew,
             'kurtosis': kurtosis,
             'edge_z': edge_z,
+            'signal_vector': {
+                'confidence_score': confidence_score,
+                'stability_weight': stability_weight,
+                'regime_alignment': float(np.clip(1.0 - correlation_penalty, 0.0, 1.0)),
+                'volatility_adjusted_edge': float(np.clip((momentum_prob - reversion_prob) / max(rolling_vol, 1e-6), -1.0, 1.0)),
+                'expected_value_net_costs': 0.0,
+                'noise_penalty': noise_penalty,
+                'correlation_penalty': correlation_penalty,
+            },
         }
 
 
@@ -248,6 +278,22 @@ class QuantKernel:
         self.decision_audit_history: deque[dict[str, Any]] = deque(maxlen=self.s.decision_audit_history_size)
         self._daily_anchor_date = datetime.now(timezone.utc).date()
         self._daily_anchor_equity = 0.0
+        self._trade_returns: deque[float] = deque(maxlen=300)
+        self._trade_pnls: deque[float] = deque(maxlen=300)
+        self._rolling_stats: dict[str, float] = {
+            'expectancy': 0.0,
+            'winrate': 0.0,
+            'profit_factor': 0.0,
+            'sharpe': 0.0,
+            'drawdown_pressure': 0.0,
+        }
+        self._signal_quality: dict[str, float] = {
+            'confidence_score': 0.0,
+            'stability_weight': 0.0,
+            'regime_alignment': 0.0,
+            'volatility_adjusted_edge': 0.0,
+            'expected_value_net_costs': 0.0,
+        }
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -450,7 +496,28 @@ class QuantKernel:
         base = float(np.clip(self.s.risk_per_trade, 0.001, self.s.max_confidence_allocation))
         edge_factor = float(np.clip(abs(expected_edge) / 0.20, 0.10, 2.0))
         vol_factor = float(np.clip(self.s.volatility_target / max(volatility, 1e-6), 0.20, 1.5))
-        return float(np.clip(base * edge_factor * vol_factor, 0.0, self.s.max_confidence_allocation))
+        expectancy_scale = float(np.clip(1.0 + self._rolling_stats['expectancy'] * 8.0, 0.45, 1.25))
+        drawdown_scale = float(np.clip(1.0 - (self._rolling_stats['drawdown_pressure'] * 2.2), 0.30, 1.0))
+        stability_scale = float(np.clip(0.65 + self._signal_quality['stability_weight'], 0.40, 1.40))
+        conservative_mode = 0.75 if self._rolling_stats['expectancy'] < 0.0 else 1.0
+        return float(np.clip(base * edge_factor * vol_factor * expectancy_scale * drawdown_scale * stability_scale * conservative_mode, 0.0, self.s.max_confidence_allocation))
+
+    def _refresh_rolling_stats(self) -> None:
+        if not self._trade_pnls:
+            return
+        arr = np.asarray(self._trade_pnls, dtype=float)
+        wins = arr[arr > 0.0]
+        losses = arr[arr <= 0.0]
+        self._rolling_stats['expectancy'] = float(arr.mean())
+        self._rolling_stats['winrate'] = float(wins.size / max(arr.size, 1))
+        gross_loss = abs(float(losses.sum()))
+        self._rolling_stats['profit_factor'] = float(wins.sum() / max(gross_loss, 1e-9)) if wins.size else 0.0
+        std = float(arr.std() or 0.0)
+        self._rolling_stats['sharpe'] = float((arr.mean() / std) * np.sqrt(min(arr.size, 252))) if std > 0 else 0.0
+        running = np.cumsum(arr)
+        peak = np.maximum.accumulate(running)
+        drawdowns = peak - running
+        self._rolling_stats['drawdown_pressure'] = float(np.clip((drawdowns[-1] / max(np.max(np.abs(peak)), 1e-9)) if drawdowns.size else 0.0, 0.0, 1.0))
 
     def _dynamic_thresholds(
         self,
@@ -643,36 +710,58 @@ class QuantKernel:
         last_price: float,
         binance_state: str,
         learning_remaining_seconds: float = 0.0,
+        critical_error: str = '',
     ) -> None:
         total_equity = self.state.equity + self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid
         drawdown = 0.0 if self.initial_equity <= 0 else max(0.0, 1.0 - (total_equity / max(self.initial_equity, 1e-9)))
         now = datetime.now(timezone.utc)
         position_time = (now - self.state.position_opened_at).total_seconds() if self.state.position_opened_at else 0.0
         cooldown = 0.0
-        if self.last_trade_ts:
-            cooldown = max(self._cooldown_seconds() - (now.timestamp() - self.last_trade_ts), 0.0)
+        last_trade_ts = getattr(self, "last_trade_ts", None)
+        if last_trade_ts:
+            cooldown = max(self._cooldown_seconds() - (now.timestamp() - float(last_trade_ts)), 0.0)
 
-        risk_state = 'BLOCKED' if self.should_block_trading() or self.system_state == SystemState.BLOCKED_BY_RISK.value else 'OK'
+        risk_blocked = bool(self.should_block_trading()) if hasattr(self, 'should_block_trading') and hasattr(self, 's') else False
+        risk_state = 'BLOCKED' if risk_blocked or self.system_state == SystemState.BLOCKED_BY_RISK.value else 'OK'
         self.dashboard.update(
             VisualSnapshot(
                 price=max(last_price, 0.0),
                 equity=total_equity,
                 pnl=self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid,
+                daily_pnl=total_equity - float(getattr(self, '_daily_anchor_equity', total_equity)),
+                drawdown=drawdown,
+                edge=float(expected_edge),
+                expectancy=float(getattr(self, '_rolling_stats', {}).get('expectancy', 0.0)),
+                volatility=float(abs(getattr(self, '_signal_quality', {}).get('volatility_adjusted_edge', 0.0))),
+                system_state=self.system_state,
                 decision=decision,
-                confidence=self.decision_engine.last_confidence,
+                confidence=getattr(getattr(self, 'decision_engine', None), 'last_confidence', 0.0),
                 scores={
-                    **dict(self.decision_engine.last_scores),
-                    'session_allowed': 1.0 if self._is_within_allowed_session(now) else 0.0,
+                    **dict(getattr(getattr(self, 'decision_engine', None), 'last_scores', {})),
+                    'session_allowed': 1.0 if (self._is_within_allowed_session(now) if hasattr(self, 's') else True) else 0.0,
                     'mtf_available': 0.0 if self.state.last_block_reason == 'mtf_insufficient_data' else 1.0,
                     'mtf_conflict': 1.0 if self.state.last_block_reason == 'mtf_conflict' else 0.0,
                     'risk_state_blocked': 1.0 if risk_state == 'BLOCKED' else 0.0,
                     'binance_min_notional': float(self.state.binance_min_notional),
                     'final_order_notional': float(self.state.final_order_notional),
                 },
+                model_diagnostics={
+                    'momentum': {
+                        'weight': float(getattr(getattr(self, 'decision_engine', None), 'last_scores', {}).get('momentum_weight', 0.5)),
+                        'stability': float(getattr(self, '_signal_quality', {}).get('stability_weight', 0.0)),
+                        'ev_net': float(getattr(self, '_signal_quality', {}).get('expected_value_net_costs', 0.0)),
+                    },
+                    'mean_reversion': {
+                        'weight': float(getattr(getattr(self, 'decision_engine', None), 'last_scores', {}).get('reversion_weight', 0.5)),
+                        'stability': float(getattr(self, '_signal_quality', {}).get('stability_weight', 0.0)),
+                        'ev_net': float(getattr(self, '_signal_quality', {}).get('expected_value_net_costs', 0.0)),
+                    },
+                },
                 regime=regime,
                 risk_state=risk_state,
                 execution_state=self.execution_status,
-                reason=self.state.last_block_reason if self.state.last_block_reason != 'none' else self.decision_engine.last_reason,
+                reason=self.state.last_block_reason if self.state.last_block_reason != 'none' else getattr(getattr(self, 'decision_engine', None), 'last_reason', ''),
+                critical_error=critical_error,
             )
         )
 
@@ -681,19 +770,24 @@ class QuantKernel:
         self.activity_text = f'Error de ciclo: {exc}'
         self.execution_status = 'ERROR'
         self.system_state = SystemState.ERROR.value
-        self.decision_engine.update_context(
-            momentum=0.5,
-            reversion=0.5,
-            global_probability=0.0,
-            expected_edge=0.0,
-            friction_cost=0.0,
-            trading_enabled=False,
-            market_operable=False,
-            force_hold=True,
-            reason_prefix='phase=error;',
-        )
-        self.decision_engine.decide()
-        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'ERROR', 0.0, 'ERROR')
+        monitoring = getattr(self, 'monitoring', None)
+        if monitoring is not None and hasattr(monitoring, 'set_system_degraded'):
+            with suppress(Exception):
+                monitoring.set_system_degraded(exc)
+        if hasattr(self, 'decision_engine'):
+            self.decision_engine.update_context(
+                momentum=0.5,
+                reversion=0.5,
+                global_probability=0.0,
+                expected_edge=0.0,
+                friction_cost=0.0,
+                trading_enabled=False,
+                market_operable=False,
+                force_hold=True,
+                reason_prefix='phase=error;',
+            )
+            self.decision_engine.decide()
+        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'ERROR', 0.0, 'ERROR', critical_error=str(exc))
         if self.state.consecutive_cycle_errors >= self.MAX_CONSECUTIVE_CYCLE_ERRORS:
             self._shutdown_reason = 'max_consecutive_cycle_errors'
             self.shutdown_event.set()
@@ -824,11 +918,32 @@ class QuantKernel:
                                         regime,
                                     )
 
-                                    probability = float(breakdown.combined)
-                                    expected_edge = float(probability - 0.5)
-                                    # ajuste por colas pesadas
+                                    signal_vector = dict(sig.get('signal_vector') or {})
+                                    confidence_score = float(np.clip(signal_vector.get('confidence_score', 0.5), 0.0, 1.0))
+                                    stability_weight = float(np.clip(signal_vector.get('stability_weight', 0.5), 0.0, 1.0))
+                                    regime_alignment = float(np.clip(signal_vector.get('regime_alignment', 0.5), 0.0, 1.0))
+                                    noise_penalty = float(np.clip(signal_vector.get('noise_penalty', 0.0), 0.0, 0.7))
+                                    corr_penalty = float(np.clip(signal_vector.get('correlation_penalty', 0.0), 0.0, 0.95))
+                                    vol_adjusted_edge = float(signal_vector.get('volatility_adjusted_edge', 0.0))
+
+                                    momentum_weight = float(np.clip((0.55 if regime == 'TREND' else 0.40) * stability_weight * (1.0 - (corr_penalty * 0.35)), 0.15, 0.75))
+                                    reversion_weight = float(np.clip((0.55 if regime == 'RANGE' else 0.40) * (1.0 - noise_penalty), 0.15, 0.75))
+                                    total_weight = max(momentum_weight + reversion_weight, 1e-9)
+                                    momentum_weight /= total_weight
+                                    reversion_weight /= total_weight
+
+                                    probability = float(np.clip((momentum_weight * breakdown.momentum) + (reversion_weight * breakdown.mean_reversion), 0.0, 1.0))
+                                    raw_edge = float(probability - 0.5)
+                                    expected_edge = raw_edge * (0.55 + (0.45 * regime_alignment))
+                                    expected_edge *= float(np.clip(1.0 - noise_penalty - (0.25 * corr_penalty), 0.25, 1.0))
+                                    expected_edge += 0.15 * vol_adjusted_edge
+
+                                    # ajuste por colas pesadas / chop
                                     if abs(sig['skew']) > 2.0 or sig['kurtosis'] > 8.0:
                                         expected_edge *= 0.5
+                                    range_compression = (float(sig['prices'].tail(30).max()) - float(sig['prices'].tail(30).min())) / max(last_price, 1e-9)
+                                    if range_compression < 0.0015:
+                                        expected_edge *= 0.6
 
                                     if expected_edge < 0.0:
                                         self.state.negative_edge_streak += 1
@@ -836,17 +951,30 @@ class QuantKernel:
                                         self.state.negative_edge_streak = 0
 
                                     friction_cost = self._conservative_friction_cost(self._last_market_quality.spread_bps, float(sig['volatility']))
-                                    friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
+                                    expected_value_net_costs = float(expected_edge - friction_cost)
+                                    self._signal_quality.update(
+                                        {
+                                            'confidence_score': confidence_score,
+                                            'stability_weight': stability_weight,
+                                            'regime_alignment': regime_alignment,
+                                            'volatility_adjusted_edge': vol_adjusted_edge,
+                                            'expected_value_net_costs': expected_value_net_costs,
+                                        }
+                                    )
+
                                     effective_min_edge, confidence_threshold, regime_uncertain = self._dynamic_thresholds(
                                         volatility=float(sig['volatility']),
                                         spread_bps=self._last_market_quality.spread_bps,
                                         regime=regime,
                                     )
+                                    self.decision_engine.last_scores['volatility'] = float(sig['volatility'])
+                                    self.decision_engine.last_scores['momentum_weight'] = momentum_weight
+                                    self.decision_engine.last_scores['reversion_weight'] = reversion_weight
                                     self.decision_engine.update_context(
                                         momentum=float(breakdown.momentum),
                                         reversion=float(breakdown.mean_reversion),
                                         global_probability=probability,
-                                        expected_edge=expected_edge,
+                                        expected_edge=expected_value_net_costs,
                                         friction_cost=friction_cost,
                                         trading_enabled=not self.state.kill_switch,
                                         market_operable=self._last_market_quality.operable,
@@ -855,6 +983,9 @@ class QuantKernel:
                                         regime_uncertain=regime_uncertain,
                                     )
                                     statistical_decision = self.decision_engine.decide()
+                                    self.decision_engine.last_scores['volatility'] = float(sig['volatility'])
+                                    self.decision_engine.last_scores['momentum_weight'] = momentum_weight
+                                    self.decision_engine.last_scores['reversion_weight'] = reversion_weight
                                     executable_decision = statistical_decision
                                     policy_block_reasons: list[str] = []
                                     self.state.pending_action = statistical_decision if statistical_decision in {'BUY', 'SELL'} else None
@@ -956,7 +1087,7 @@ class QuantKernel:
                                     if partial_exit_done:
                                         decision = 'HOLD'
 
-                                    risk_fraction = self._risk_fraction(expected_edge=expected_edge, volatility=volatility)
+                                    risk_fraction = self._risk_fraction(expected_edge=expected_value_net_costs, volatility=volatility)
                                     order_qty = 0.0
                                     self.state.final_order_notional = 0.0
                                     if decision == 'BUY':
@@ -994,9 +1125,9 @@ class QuantKernel:
 
                                     self._record_decision_audit(
                                         decision=decision,
-                                        expected_edge=expected_edge,
+                                        expected_edge=expected_value_net_costs,
                                         effective_min_edge=effective_min_edge,
-                                        confidence=self.decision_engine.last_confidence,
+                                        confidence=getattr(getattr(self, 'decision_engine', None), 'last_confidence', 0.0),
                                         confidence_threshold=confidence_threshold,
                                         friction_cost=friction_cost,
                                         regime_uncertain=regime_uncertain,
@@ -1053,6 +1184,10 @@ class QuantKernel:
                                             self.state.fees_paid += close_fee
                                             net_pnl = gross_pnl - close_fee
                                             self.state.realized_pnl += net_pnl
+                                            self._trade_pnls.append(float(net_pnl))
+                                            entry_notional = max(self.state.entry_price * max(self.state.position_qty, 1e-9), 1e-9)
+                                            self._trade_returns.append(float(net_pnl / entry_notional))
+                                            self._refresh_rolling_stats()
                                             self.state.consecutive_losses = self.state.consecutive_losses + 1 if net_pnl <= 0 else 0
                                             if net_pnl > 0:
                                                 self.state.winning_trades += 1
@@ -1075,7 +1210,7 @@ class QuantKernel:
                                     dashboard_decision = 'BLOCK' if decision == 'HOLD' and self.system_state == SystemState.BLOCKED_BY_RISK.value else decision
                                     self._publish_dashboard(
                                         decision=dashboard_decision,
-                                        expected_edge=expected_edge,
+                                        expected_edge=expected_value_net_costs,
                                         mom=breakdown.momentum,
                                         rev=breakdown.mean_reversion,
                                         reg_prob=breakdown.regime,
