@@ -271,7 +271,7 @@ class QuantKernel:
         self.signal_engine = SignalEngine()
         self.data_buffer = DataBuffer(window_seconds=max(self.s.learning_phase_seconds, warmup_window_seconds))
         self.signal_combiner = SignalCombiner()
-        self.decision_engine = DecisionEngine(min_edge=0.0005)
+        self.decision_engine = DecisionEngine(min_edge=0.0040)
         self.regime_detector = MarketRegimeDetector(n_states=3)
 
         self.execution_engine = ExecutionEngine(
@@ -701,6 +701,7 @@ class QuantKernel:
                                         expected_edge *= 0.5
 
                                     friction_cost = self._conservative_friction_cost(self._last_market_quality.spread_bps, float(sig['volatility']))
+                                    friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
                                     effective_min_edge, confidence_threshold, regime_uncertain = self._dynamic_thresholds(
                                         volatility=float(sig['volatility']),
                                         spread_bps=self._last_market_quality.spread_bps,
@@ -726,6 +727,7 @@ class QuantKernel:
                                     self.activity_text = self.decision_engine.last_reason
 
                                     cooldown = max(self._cooldown_seconds() - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
+                                    cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
                                     if cooldown > 0 and executable_decision in {'BUY', 'SELL'}:
                                         executable_decision = 'HOLD'
                                         policy_block_reasons.append(f'COOLDOWN_ACTIVE ({cooldown:.1f}s)')
@@ -789,13 +791,7 @@ class QuantKernel:
                                             minimal_notional = min(self.s.minimal_fixed_position_notional, max(self.state.equity * 0.25, 0.0))
                                             absolute_risk_cap = max(self.s.minimal_absolute_risk_usdt, 1.0)
                                             requested_notional = max(0.0, min(minimal_notional, absolute_risk_cap))
-                                            if requested_notional <= 0:
-                                                decision = 'HOLD'
-                                                self.system_state = SystemState.WAITING_EDGE.value
-                                                self.state.last_block_reason = 'minimal_notional_zero'
-                                                self.activity_text = 'HOLD por notional mínimo inválido'
-                                                policy_block_reasons.append('MINIMAL_NOTIONAL_ZERO')
-                                            elif requested_notional < self.s.minimal_economic_notional:
+                                            if requested_notional < self.s.minimal_economic_notional:
                                                 decision = 'HOLD'
                                                 self.system_state = SystemState.WAITING_EDGE.value
                                                 self.state.last_block_reason = 'minimal_economic_notional_not_met'
@@ -803,6 +799,13 @@ class QuantKernel:
                                                 policy_block_reasons.append(
                                                     f'MINIMAL_ECONOMIC_NOTIONAL ({requested_notional:.4f} < {self.s.minimal_economic_notional:.4f})'
                                                 )
+                                            elif requested_notional <= 0:
+                                            if requested_notional <= 0:
+                                                decision = 'HOLD'
+                                                self.system_state = SystemState.WAITING_EDGE.value
+                                                self.state.last_block_reason = 'minimal_notional_zero'
+                                                self.activity_text = 'HOLD por notional mínimo inválido'
+                                                policy_block_reasons.append('MINIMAL_NOTIONAL_ZERO')
                                             else:
                                                 order_qty = requested_notional / max(last_price, 1e-9)
                                         elif risk_fraction <= 0:
