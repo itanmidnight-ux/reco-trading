@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "${ROOT_DIR}"
+
+MODE="${RUN_MODE:-testnet}" # testnet|mainnet
+AUTO_INSTALL="${AUTO_INSTALL:-true}" # true|false
+PRECHECK_ONLY="${PRECHECK_ONLY:-false}" # true|false
+PY_BIN="python3"
+
 upsert_env_var() {
   local env_file="$1"
   local key="$2"
@@ -17,102 +25,116 @@ upsert_env_var() {
   fi
 }
 
-sync_mode_to_env() {
-  local mode_option="$1"
-  local env_file=".env"
-
-  if [ ! -f "${env_file}" ]; then
-    touch "${env_file}"
+ensure_venv() {
+  if [ ! -f .venv/bin/activate ]; then
+    echo "[run] Entorno virtual no encontrado. Creando .venv..."
+    ${PY_BIN} -m venv .venv
   fi
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
 
-  if [ "${mode_option}" = "1" ]; then
-    upsert_env_var "${env_file}" "BINANCE_TESTNET" "true"
-    upsert_env_var "${env_file}" "CONFIRM_MAINNET" "false"
-    upsert_env_var "${env_file}" "ENVIRONMENT" "testnet"
-    upsert_env_var "${env_file}" "RUNTIME_PROFILE" "paper"
-  elif [ "${mode_option}" = "2" ]; then
-    upsert_env_var "${env_file}" "BINANCE_TESTNET" "false"
-    upsert_env_var "${env_file}" "CONFIRM_MAINNET" "true"
-    upsert_env_var "${env_file}" "ENVIRONMENT" "production"
-    upsert_env_var "${env_file}" "RUNTIME_PROFILE" "production"
+  if ! python -c 'import fastapi, pydantic, ccxt' >/dev/null 2>&1; then
+    echo "[run] Dependencias incompletas. Instalando requirements.txt..."
+    pip install --upgrade pip >/dev/null
+    pip install -r requirements.txt >/dev/null
   fi
 }
 
-if [ -f .venv/bin/activate ]; then
-  # shellcheck disable=SC1091
-  source .venv/bin/activate
-else
-  echo "Aviso: .venv/bin/activate no existe. Usando Python del sistema."
-fi
-
-if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source .env
-  set +a
-fi
-
-if [ -z "${POSTGRES_DSN:-}" ] && [ -f config/database.env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source config/database.env
-  set +a
-  if [ -n "${DB_USER:-}" ] && [ -n "${DB_PASSWORD:-}" ] && [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ] && [ -n "${DB_NAME:-}" ]; then
-    export POSTGRES_DSN="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-    upsert_env_var .env POSTGRES_DSN "${POSTGRES_DSN}"
+load_env() {
+  if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source .env
+    set +a
   fi
-fi
+}
 
-echo "Seleccione modo de ejecución:"
-echo "1) Binance Testnet (Sandbox - ÓRDENES REALES EN TESTNET)"
-echo "2) Binance Producción Real (Mainnet - Dinero real)"
-read -r -p "Ingrese opción (1 o 2): " MODE_OPTION
+sync_database_dsn() {
+  if [ -z "${POSTGRES_DSN:-}" ] && [ -f config/database.env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source config/database.env
+    set +a
+    if [ -n "${DB_USER:-}" ] && [ -n "${DB_PASSWORD:-}" ] && [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ] && [ -n "${DB_NAME:-}" ]; then
+      export POSTGRES_DSN="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+      upsert_env_var .env POSTGRES_DSN "${POSTGRES_DSN}"
+    fi
+  fi
 
-if [ "$MODE_OPTION" = "1" ]; then
-  export BINANCE_TESTNET=true
-  export CONFIRM_MAINNET=false
-  export ENVIRONMENT=testnet
-  export RUNTIME_PROFILE=paper
-  sync_mode_to_env "$MODE_OPTION"
-  echo "Modo TESTNET activado."
-elif [ "$MODE_OPTION" = "2" ]; then
-  export BINANCE_TESTNET=false
-  read -r -p "⚠️  Está a punto de operar con dinero real. Escriba CONFIRMAR para continuar: " CONFIRM
-  if [ "$CONFIRM" != "CONFIRMAR" ]; then
-    echo "Operación cancelada."
+  if [ -z "${REDIS_URL:-}" ]; then
+    export REDIS_URL="redis://localhost:6379/0"
+    upsert_env_var .env REDIS_URL "${REDIS_URL}"
+  fi
+}
+
+configure_mode() {
+  case "${MODE}" in
+    testnet)
+      export BINANCE_TESTNET=true
+      export CONFIRM_MAINNET=false
+      export ENVIRONMENT=testnet
+      export RUNTIME_PROFILE=paper
+      ;;
+    mainnet)
+      export BINANCE_TESTNET=false
+      export CONFIRM_MAINNET=true
+      export ENVIRONMENT=production
+      export RUNTIME_PROFILE=production
+      ;;
+    *)
+      echo "[run] RUN_MODE inválido: ${MODE}. Use testnet o mainnet."
+      exit 1
+      ;;
+  esac
+
+  upsert_env_var .env BINANCE_TESTNET "${BINANCE_TESTNET}"
+  upsert_env_var .env CONFIRM_MAINNET "${CONFIRM_MAINNET}"
+  upsert_env_var .env ENVIRONMENT "${ENVIRONMENT}"
+  upsert_env_var .env RUNTIME_PROFILE "${RUNTIME_PROFILE}"
+}
+
+validate_keys_not_placeholder() {
+  if [ "${BINANCE_API_KEY:-}" = "CAMBIAR_POR_TU_API_KEY" ] || [ "${BINANCE_API_SECRET:-}" = "CAMBIAR_POR_TU_API_SECRET" ]; then
+    echo "[run] BINANCE_API_KEY/BINANCE_API_SECRET contienen placeholders. Edita .env antes de ejecutar."
     exit 1
   fi
-  if [ -z "${BINANCE_API_KEY:-}" ] || [ -z "${BINANCE_API_SECRET:-}" ]; then
-    echo "Error: BINANCE_API_KEY y BINANCE_API_SECRET son obligatorios para producción real."
-    exit 1
+}
+
+run_preflight() {
+  local mode_arg="testnet"
+  if [ "${MODE}" = "mainnet" ]; then
+    mode_arg="mainnet"
   fi
-  export CONFIRM_MAINNET=true
-  export ENVIRONMENT=production
-  export RUNTIME_PROFILE=production
-  sync_mode_to_env "$MODE_OPTION"
-  echo "Modo PRODUCCIÓN REAL activado."
-else
-  echo "Opción inválida."
-  exit 1
+
+  if ! python -m reco_trading.system.preflight --mode "${mode_arg}"; then
+    if [ "${AUTO_INSTALL}" = "true" ]; then
+      echo "[run] Preflight falló. Intentando reparación automática con ./install.sh ..."
+      ./install.sh
+      load_env
+      sync_database_dsn
+      python -m reco_trading.system.preflight --mode "${mode_arg}"
+    else
+      echo "[run] Preflight falló y AUTO_INSTALL=false."
+      exit 1
+    fi
+  fi
+}
+
+start_runtime() {
+  echo "[run] Iniciando runtime: mode=${MODE}, environment=${ENVIRONMENT}, profile=${RUNTIME_PROFILE}"
+  exec python main.py --env "${MODE}" --mode live
+}
+
+ensure_venv
+load_env
+sync_database_dsn
+configure_mode
+validate_keys_not_placeholder
+run_preflight
+
+if [ "${PRECHECK_ONLY}" = "true" ]; then
+  echo "[run] PRECHECK_ONLY=true, finalizando sin iniciar runtime."
+  exit 0
 fi
 
-missing_vars=()
-for required_var in BINANCE_API_KEY BINANCE_API_SECRET POSTGRES_DSN; do
-  if [ -z "${!required_var:-}" ]; then
-    missing_vars+=("${required_var}")
-  fi
-done
-
-if [ ${#missing_vars[@]} -gt 0 ]; then
-  echo "Error: faltan variables obligatorias: ${missing_vars[*]}"
-  echo "Sugerencia rápida:"
-  echo "  1) Ejecuta ./install.sh para preparar PostgreSQL y sincronizar el DSN."
-  echo "  2) Edita .env con tus credenciales de Binance."
-  echo "     Variables requeridas en .env:"
-  echo "       BINANCE_API_KEY=tu_api_key"
-  echo "       BINANCE_API_SECRET=tu_api_secret"
-  echo "       POSTGRES_DSN=postgresql+asyncpg://trading:***@localhost:5432/reco_trading_prod"
-  exit 1
-fi
-
-python main.py
+start_runtime

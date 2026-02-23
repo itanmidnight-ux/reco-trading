@@ -10,7 +10,7 @@ from reco_trading.kernel.quant_kernel import QuantKernel
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Reco Trading - Runtime institucional')
     parser.add_argument('--mode', choices=['live'], default='live')
-    parser.add_argument('--env', choices=['testnet', 'real'], default='testnet')
+    parser.add_argument('--env', choices=['testnet', 'mainnet', 'real'], default='testnet')
     return parser.parse_args()
 
 
@@ -24,8 +24,9 @@ def _validate_required_env() -> None:
 
 if __name__ == '__main__':
     args = _parse_args()
-    os.environ['BINANCE_TESTNET'] = 'true' if args.env == 'testnet' else 'false'
-    if args.env == 'real':
+    resolved_env = 'mainnet' if args.env in {'mainnet', 'real'} else 'testnet'
+    os.environ['BINANCE_TESTNET'] = 'true' if resolved_env == 'testnet' else 'false'
+    if resolved_env == 'mainnet':
         os.environ.setdefault('CONFIRM_MAINNET', 'true')
     _validate_required_env()
     asyncio.run(QuantKernel().run())

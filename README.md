@@ -66,6 +66,32 @@ Sistema cuantitativo modular para Binance Spot con activo único BTC/USDT en tim
 ```
 
 
+
+## Inicio totalmente automatizado con `run.sh`
+
+`run.sh` ahora ejecuta un flujo no interactivo y autocurable para Debian 13:
+
+- crea/activa `.venv` automáticamente,
+- instala dependencias Python faltantes,
+- sincroniza `POSTGRES_DSN` y `REDIS_URL` hacia `.env`,
+- aplica modo de ejecución por variable `RUN_MODE=testnet|mainnet`,
+- ejecuta preflight (credenciales + conectividad PostgreSQL/Redis),
+- si falla preflight y `AUTO_INSTALL=true`, intenta reparar con `./install.sh`,
+- inicia el runtime con `python main.py`.
+
+Ejemplos:
+
+```bash
+# recomendado para pruebas
+RUN_MODE=testnet ./run.sh
+
+# verificación sin arrancar el kernel
+RUN_MODE=testnet PRECHECK_ONLY=true ./run.sh
+
+# producción real (exige claves reales y confirm_mainnet=true)
+RUN_MODE=mainnet AUTO_INSTALL=false ./run.sh
+```
+
 ## Estrategias permitidas en producción
 
 El kernel valida una lista cerrada de estrategias habilitables por configuración:
