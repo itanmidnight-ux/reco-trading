@@ -62,9 +62,6 @@ class RuntimeState:
     sl_price: float = 0.0
     pending_action: str | None = None
     partial_exits_done: set[int] = field(default_factory=set)
-    negative_edge_streak: int = 0
-    binance_min_notional: float = 0.0
-    final_order_notional: float = 0.0
 
 
 class SignalEngine:
@@ -590,21 +587,6 @@ class QuantKernel:
         raw = target / safe_vol
         return float(np.clip(raw, self.s.vol_min_multiplier, self.s.vol_max_multiplier))
 
-    async def _minimum_order_notional(self, *, last_price: float) -> tuple[float, str]:
-        try:
-            exchange_min_notional = await self.execution_engine.get_symbol_min_notional(reference_price=last_price)
-        except Exception:
-            exchange_min_notional = 0.0
-        self.state.binance_min_notional = float(max(exchange_min_notional, 0.0))
-
-        configured_min_notional = float(max(self.s.minimal_economic_notional, 0.0))
-        target_notional = float(max(self.state.binance_min_notional, configured_min_notional))
-        if target_notional <= 0.0:
-            return 0.0, 'invalid_min_notional'
-        if self.state.equity < target_notional:
-            return target_notional, 'insufficient_equity_for_min_notional'
-        return target_notional, 'ok'
-
     async def _process_partial_exit(self, now: datetime, last_price: float, volatility: float) -> bool:
         if not self.s.enable_partial_exits:
             return False
@@ -1008,11 +990,9 @@ class QuantKernel:
                                             self.activity_text = 'HOLD por riesgo insuficiente para sizing'
                                             policy_block_reasons.append('RISK_FRACTION_ZERO')
                                         else:
-                                            volatility_multiplier = self._volatility_size_multiplier(volatility)
-                                            candidate_notional = min_notional * volatility_multiplier
-                                            final_notional = max(min_notional, min(candidate_notional, min_notional))
-                                            self.state.final_order_notional = float(final_notional)
-                                            order_qty = final_notional / max(last_price, 1e-9)
+                                            requested_notional = self.state.equity * risk_fraction
+                                            base_qty = requested_notional / max(last_price, 1e-9)
+                                            order_qty = base_qty * self._volatility_size_multiplier(volatility)
                                     elif decision == 'SELL':
                                         order_qty = self.state.position_qty
 
