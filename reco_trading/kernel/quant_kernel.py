@@ -790,10 +790,15 @@ class QuantKernel:
                                                     )
                                                     order_qty = exchange_min_qty
                                         self.system_state = SystemState.SENDING_ORDER.value
+                                        signal_confidence = max(self.decision_engine.last_confidence, 0.1)
+                                        risk_context_per_trade = risk_fraction if decision == 'BUY' else self.s.risk_per_trade
+                                        if decision == 'BUY' and self.s.operating_mode == 'MINIMAL':
+                                            required_min_risk = (order_qty * last_price) / max(self.state.equity * signal_confidence, 1e-9)
+                                            risk_context_per_trade = max(risk_context_per_trade, required_min_risk, self.s.risk_per_trade)
                                         self.execution_engine.set_risk_context(
                                             capital_total=self.state.equity,
-                                            risk_per_trade=risk_fraction if decision == 'BUY' else self.s.risk_per_trade,
-                                            signal_confidence=max(self.decision_engine.last_confidence, 0.1),
+                                            risk_per_trade=risk_context_per_trade,
+                                            signal_confidence=signal_confidence,
                                         )
                                         fill = await self._execute_order(decision, order_qty)
                                         if fill and decision == 'BUY':
