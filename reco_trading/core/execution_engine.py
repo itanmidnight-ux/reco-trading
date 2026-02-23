@@ -151,8 +151,8 @@ class ExecutionEngine:
     def compute_dynamic_exit_levels(entry_price: float, atr: float, side: str) -> tuple[float, float]:
         atr_val = max(float(atr), 0.0)
         price = max(float(entry_price), 1e-9)
-        tp_distance = max(atr_val * 1.2, price * 0.0008)
-        sl_distance = max(atr_val * 0.8, price * 0.0006)
+        tp_distance = max(atr_val * 2.4, price * 0.0012)
+        sl_distance = max(atr_val * 1.6, price * 0.0010)
         if str(side).upper() == 'BUY':
             return price + tp_distance, price - sl_distance
         return price - tp_distance, price + sl_distance

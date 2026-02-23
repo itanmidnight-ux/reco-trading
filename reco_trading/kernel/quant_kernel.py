@@ -218,7 +218,7 @@ class DecisionEngine:
 
 
 class QuantKernel:
-    MIN_SECONDS_BETWEEN_TRADES = 10
+    MIN_SECONDS_BETWEEN_TRADES = 120
     MAX_CONSECUTIVE_CYCLE_ERRORS = 5
     MIN_WARMUP_SECONDS = 300
     MIN_WARMUP_BARS = 30
@@ -242,6 +242,8 @@ class QuantKernel:
         self.operating_mode = self.s.operating_mode
         self.blocking_counters: Counter[str] = Counter()
         self.decision_audit_history: deque[dict[str, Any]] = deque(maxlen=self.s.decision_audit_history_size)
+        self._daily_anchor_date = datetime.now(timezone.utc).date()
+        self._daily_anchor_equity = 0.0
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -293,6 +295,8 @@ class QuantKernel:
             raise RuntimeError(f'Balance inicial inválido: {reason}')
         self.state.equity = free_usdt
         self.initial_equity = free_usdt
+        self._daily_anchor_equity = free_usdt
+        self._daily_anchor_date = datetime.now(timezone.utc).date()
         self.state.last_block_reason = 'none'
         logger.info(f'Balance REAL sincronizado: {free_usdt:.2f} USDT')
 
@@ -315,6 +319,20 @@ class QuantKernel:
         if r in {'high_volatility', 'volatile'}:
             return 'HIGH_VOL'
         return 'RANGE'
+
+    def _cooldown_seconds(self) -> float:
+        timeframe_seconds = float(self._timeframe_to_seconds(self.s.timeframe))
+        return max(float(self.MIN_SECONDS_BETWEEN_TRADES), timeframe_seconds)
+
+    def _conservative_friction_cost(self, spread_bps: float, volatility: float) -> float:
+        base_friction = (2.0 * self.s.taker_fee) + (spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0)
+        spread_penalty = max(spread_bps / 10_000.0, 0.0) * 0.5
+        volatility_penalty = min(max(volatility / max(self.s.volatility_target, 1e-9), 0.0), 3.0) * 0.0006
+        return float((base_friction * self.s.friction_safety_multiplier) + spread_penalty + volatility_penalty)
+
+    def _minimum_operational_edge(self, *, effective_min_edge: float, friction_cost: float, regime: str) -> float:
+        regime_buffer = 0.0015 if regime == 'HIGH_VOL' else (0.0008 if regime == 'RANGE' else 0.0004)
+        return float(max(effective_min_edge, self.s.operational_edge_floor, (friction_cost * self.s.friction_safety_multiplier) + regime_buffer))
 
     def _should_activate_kill_switch(self) -> tuple[bool, str]:
         if self.shutdown_event.is_set():
@@ -339,6 +357,16 @@ class QuantKernel:
             if drawdown >= self.s.max_global_drawdown:
                 self.state.kill_switch = True
                 return True, 'drawdown_circuit_breaker'
+            today = datetime.now(timezone.utc).date()
+            if today != self._daily_anchor_date:
+                self._daily_anchor_date = today
+                self._daily_anchor_equity = total_equity
+            if self._daily_anchor_equity <= 0.0:
+                self._daily_anchor_equity = total_equity
+            daily_loss_ratio = (self._daily_anchor_equity - total_equity) / max(self._daily_anchor_equity, 1e-9)
+            if daily_loss_ratio >= self.s.max_daily_loss:
+                self.state.kill_switch = True
+                return True, 'daily_loss_hard_stop'
         return False, 'none'
 
     def _is_warmup_complete(self, now_ts: float) -> tuple[bool, str]:
@@ -500,7 +528,7 @@ class QuantKernel:
         position_time = (now - self.state.position_opened_at).total_seconds() if self.state.position_opened_at else 0.0
         cooldown = 0.0
         if self.last_trade_ts:
-            cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0)
+            cooldown = max(self._cooldown_seconds() - (now.timestamp() - self.last_trade_ts), 0.0)
 
         risk_state = 'BLOCKED' if self.should_block_trading() else 'OK'
         self.dashboard.update(
@@ -672,6 +700,7 @@ class QuantKernel:
                                     if abs(sig['skew']) > 2.0 or sig['kurtosis'] > 8.0:
                                         expected_edge *= 0.5
 
+                                    friction_cost = self._conservative_friction_cost(self._last_market_quality.spread_bps, float(sig['volatility']))
                                     friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
                                     effective_min_edge, confidence_threshold, regime_uncertain = self._dynamic_thresholds(
                                         volatility=float(sig['volatility']),
@@ -697,6 +726,7 @@ class QuantKernel:
                                     self.state.last_block_reason = self.decision_engine.last_reason
                                     self.activity_text = self.decision_engine.last_reason
 
+                                    cooldown = max(self._cooldown_seconds() - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
                                     cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
                                     if cooldown > 0 and executable_decision in {'BUY', 'SELL'}:
                                         executable_decision = 'HOLD'
@@ -716,6 +746,22 @@ class QuantKernel:
                                         executable_decision = 'HOLD'
                                         policy_block_reasons.append('MINIMAL_SINGLE_POSITION_ACTIVE')
 
+                                    operational_edge_floor = self._minimum_operational_edge(
+                                        effective_min_edge=effective_min_edge,
+                                        friction_cost=friction_cost,
+                                        regime=regime,
+                                    )
+                                    if executable_decision in {'BUY', 'SELL'} and abs(expected_edge) < operational_edge_floor:
+                                        executable_decision = 'HOLD'
+                                        policy_block_reasons.append(
+                                            f'OPERATING_EDGE_TOO_LOW ({abs(expected_edge):.6f} < {operational_edge_floor:.6f})'
+                                        )
+                                    if executable_decision in {'BUY', 'SELL'} and self.decision_engine.last_confidence < max(confidence_threshold, 0.62):
+                                        executable_decision = 'HOLD'
+                                        policy_block_reasons.append(
+                                            f'PAYOFF_CONFIDENCE_MISMATCH ({self.decision_engine.last_confidence:.4f} < {max(confidence_threshold, 0.62):.4f})'
+                                        )
+
                                     if executable_decision in {'HOLD', 'DISABLE_TRADING'}:
                                         if self.system_state not in {SystemState.COOLDOWN.value, 'KILL_SWITCH_ACTIVE'}:
                                             self.system_state = SystemState.WAITING_EDGE.value
@@ -730,9 +776,12 @@ class QuantKernel:
                                         elif self.state.sl_price > 0 and last_price <= self.state.sl_price:
                                             decision = 'SELL'
                                             self.activity_text = 'SL alcanzado'
-                                        elif elapsed >= max(float(self.s.target_scalp_seconds), 120.0):
-                                            decision = 'SELL'
-                                            self.activity_text = f'Cierre por tiempo razonable ({elapsed:.0f}s)'
+                                        elif elapsed >= max(float(self.s.target_scalp_seconds), self._cooldown_seconds()):
+                                            open_pnl = (last_price - self.state.entry_price) * self.state.position_qty
+                                            estimated_exit_fee = (self.state.position_qty * last_price) * float(self.s.taker_fee)
+                                            if open_pnl > estimated_exit_fee:
+                                                decision = 'SELL'
+                                                self.activity_text = f'Cierre por tiempo con ganancia ({elapsed:.0f}s)'
 
                                     volatility = max(float(sig['volatility']), 1e-6)
                                     risk_fraction = self._risk_fraction(expected_edge=expected_edge, volatility=volatility)
@@ -742,6 +791,15 @@ class QuantKernel:
                                             minimal_notional = min(self.s.minimal_fixed_position_notional, max(self.state.equity * 0.25, 0.0))
                                             absolute_risk_cap = max(self.s.minimal_absolute_risk_usdt, 1.0)
                                             requested_notional = max(0.0, min(minimal_notional, absolute_risk_cap))
+                                            if requested_notional < self.s.minimal_economic_notional:
+                                                decision = 'HOLD'
+                                                self.system_state = SystemState.WAITING_EDGE.value
+                                                self.state.last_block_reason = 'minimal_economic_notional_not_met'
+                                                self.activity_text = 'HOLD por notional económico insuficiente'
+                                                policy_block_reasons.append(
+                                                    f'MINIMAL_ECONOMIC_NOTIONAL ({requested_notional:.4f} < {self.s.minimal_economic_notional:.4f})'
+                                                )
+                                            elif requested_notional <= 0:
                                             if requested_notional <= 0:
                                                 decision = 'HOLD'
                                                 self.system_state = SystemState.WAITING_EDGE.value
