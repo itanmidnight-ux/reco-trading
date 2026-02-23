@@ -800,7 +800,6 @@ class QuantKernel:
                                                     f'MINIMAL_ECONOMIC_NOTIONAL ({requested_notional:.4f} < {self.s.minimal_economic_notional:.4f})'
                                                 )
                                             elif requested_notional <= 0:
-                                            if requested_notional <= 0:
                                                 decision = 'HOLD'
                                                 self.system_state = SystemState.WAITING_EDGE.value
                                                 self.state.last_block_reason = 'minimal_notional_zero'
