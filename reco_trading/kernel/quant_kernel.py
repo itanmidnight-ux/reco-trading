@@ -649,7 +649,7 @@ class QuantKernel:
         if self.last_trade_ts:
             cooldown = max(self._cooldown_seconds() - (now.timestamp() - self.last_trade_ts), 0.0)
 
-        risk_state = 'BLOCKED' if self.should_block_trading() else 'OK'
+        risk_state = 'BLOCKED' if self.should_block_trading() or self.system_state == SystemState.BLOCKED_BY_RISK.value else 'OK'
         self.dashboard.update(
             VisualSnapshot(
                 price=max(last_price, 0.0),
@@ -657,7 +657,15 @@ class QuantKernel:
                 pnl=self.state.realized_pnl + self.state.unrealized_pnl - self.state.fees_paid,
                 decision=decision,
                 confidence=self.decision_engine.last_confidence,
-                scores=dict(self.decision_engine.last_scores),
+                scores={
+                    **dict(self.decision_engine.last_scores),
+                    'session_allowed': 1.0 if self._is_within_allowed_session(now) else 0.0,
+                    'mtf_available': 0.0 if self.state.last_block_reason == 'mtf_insufficient_data' else 1.0,
+                    'mtf_conflict': 1.0 if self.state.last_block_reason == 'mtf_conflict' else 0.0,
+                    'risk_state_blocked': 1.0 if risk_state == 'BLOCKED' else 0.0,
+                    'binance_min_notional': float(self.state.binance_min_notional),
+                    'final_order_notional': float(self.state.final_order_notional),
+                },
                 regime=regime,
                 risk_state=risk_state,
                 execution_state=self.execution_status,
@@ -819,6 +827,11 @@ class QuantKernel:
                                     if abs(sig['skew']) > 2.0 or sig['kurtosis'] > 8.0:
                                         expected_edge *= 0.5
 
+                                    if expected_edge < 0.0:
+                                        self.state.negative_edge_streak += 1
+                                    else:
+                                        self.state.negative_edge_streak = 0
+
                                     friction_cost = self._conservative_friction_cost(self._last_market_quality.spread_bps, float(sig['volatility']))
                                     friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
                                     effective_min_edge, confidence_threshold, regime_uncertain = self._dynamic_thresholds(
@@ -844,6 +857,19 @@ class QuantKernel:
                                     self.state.pending_action = statistical_decision if statistical_decision in {'BUY', 'SELL'} else None
                                     self.state.last_block_reason = self.decision_engine.last_reason
                                     self.activity_text = self.decision_engine.last_reason
+
+                                    if self.state.position_state == PositionState.LONG and (self.state.position_qty <= 0.0 or self.state.entry_price <= 0.0):
+                                        executable_decision = 'HOLD'
+                                        policy_block_reasons.append('STATE_INCONSISTENT')
+                                        self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                        self.state.last_block_reason = 'state_inconsistent'
+                                        self.activity_text = 'BLOCK por estado inconsistente de posición'
+                                    if self.state.negative_edge_streak >= 8 and self.state.position_state == PositionState.FLAT:
+                                        executable_decision = 'HOLD'
+                                        policy_block_reasons.append('PERSISTENT_NEGATIVE_EDGE')
+                                        self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                        self.state.last_block_reason = 'persistent_negative_edge'
+                                        self.activity_text = 'BLOCK por edge negativo persistente'
 
                                     cooldown = max(self._cooldown_seconds() - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
                                     if cooldown > 0 and executable_decision in {'BUY', 'SELL'}:
@@ -929,27 +955,21 @@ class QuantKernel:
 
                                     risk_fraction = self._risk_fraction(expected_edge=expected_edge, volatility=volatility)
                                     order_qty = 0.0
+                                    self.state.final_order_notional = 0.0
                                     if decision == 'BUY':
-                                        if self.operating_mode == 'MINIMAL':
-                                            minimal_notional = min(self.s.minimal_fixed_position_notional, max(self.state.equity * 0.25, 0.0))
-                                            absolute_risk_cap = max(self.s.minimal_absolute_risk_usdt, 1.0)
-                                            requested_notional = max(0.0, min(minimal_notional, absolute_risk_cap))
-                                            if requested_notional < self.s.minimal_economic_notional:
-                                                decision = 'HOLD'
-                                                self.system_state = SystemState.WAITING_EDGE.value
-                                                self.state.last_block_reason = 'minimal_economic_notional_not_met'
-                                                self.activity_text = 'HOLD por notional económico insuficiente'
-                                                policy_block_reasons.append(
-                                                    f'MINIMAL_ECONOMIC_NOTIONAL ({requested_notional:.4f} < {self.s.minimal_economic_notional:.4f})'
-                                                )
-                                            elif requested_notional <= 0:
-                                                decision = 'HOLD'
-                                                self.system_state = SystemState.WAITING_EDGE.value
-                                                self.state.last_block_reason = 'minimal_notional_zero'
-                                                self.activity_text = 'HOLD por notional mínimo inválido'
-                                                policy_block_reasons.append('MINIMAL_NOTIONAL_ZERO')
-                                            else:
-                                                order_qty = requested_notional / max(last_price, 1e-9)
+                                        min_notional, min_notional_reason = await self._minimum_order_notional(last_price=last_price)
+                                        if min_notional_reason == 'insufficient_equity_for_min_notional':
+                                            decision = 'HOLD'
+                                            self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                            self.state.last_block_reason = 'insufficient_equity_for_min_notional'
+                                            self.activity_text = 'BLOCK por equity insuficiente para mínimo notional'
+                                            policy_block_reasons.append('INSUFFICIENT_EQUITY_FOR_MIN_NOTIONAL')
+                                        elif min_notional <= 0.0:
+                                            decision = 'HOLD'
+                                            self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                            self.state.last_block_reason = 'invalid_min_notional'
+                                            self.activity_text = 'BLOCK por mínimo notional inválido'
+                                            policy_block_reasons.append('INVALID_MIN_NOTIONAL')
                                         elif risk_fraction <= 0:
                                             decision = 'HOLD'
                                             self.system_state = SystemState.WAITING_EDGE.value
@@ -965,6 +985,8 @@ class QuantKernel:
 
                                     if decision in {'BUY', 'SELL'} and order_qty <= 0.0:
                                         policy_block_reasons.append('ORDER_QTY_ZERO_POLICY')
+                                        if self.system_state == SystemState.BLOCKED_BY_RISK.value:
+                                            self.state.last_block_reason = self.state.last_block_reason or 'blocked'
                                         decision = 'HOLD'
 
                                     self._record_decision_audit(
@@ -979,6 +1001,8 @@ class QuantKernel:
                                     )
 
                                     if decision in {'BUY', 'SELL'} and order_qty > 0.0:
+                                        if decision == 'SELL':
+                                            self.state.final_order_notional = float(max(order_qty * last_price, 0.0))
                                         # --- MINIMAL MODE: enforce exchange minimums ---
                                         if decision == 'BUY':
                                             exchange_min_qty = await self.execution_engine._firewall._min_size(self.client, self.s.symbol)
@@ -1045,8 +1069,9 @@ class QuantKernel:
                                             self.system_state = SystemState.BLOCKED_BY_RISK.value
 
                                     self.state.consecutive_cycle_errors = 0
+                                    dashboard_decision = 'BLOCK' if decision == 'HOLD' and self.system_state == SystemState.BLOCKED_BY_RISK.value else decision
                                     self._publish_dashboard(
-                                        decision=decision,
+                                        decision=dashboard_decision,
                                         expected_edge=expected_edge,
                                         mom=breakdown.momentum,
                                         rev=breakdown.mean_reversion,
