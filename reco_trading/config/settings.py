@@ -104,6 +104,22 @@ class Settings(BaseSettings):
 
     loop_interval_seconds: int = Field(default=5, ge=1, le=60)
 
+    enable_mtf_confirmation: bool = Field(default=False)
+    mtf_timeframe: str = Field(default='15m')
+    mtf_confirmation_mode: str = Field(default='confirm')
+
+    enable_volatility_sizing: bool = Field(default=False)
+    vol_target_risk: float = Field(default=0.20, ge=0.0001, le=5.0)
+    vol_max_multiplier: float = Field(default=1.50, ge=0.10, le=10.0)
+    vol_min_multiplier: float = Field(default=0.25, ge=0.01, le=10.0)
+
+    enable_partial_exits: bool = Field(default=False)
+    partial_exit_levels: list[float] = Field(default_factory=lambda: [0.5, 1.0])
+    partial_exit_fractions: list[float] = Field(default_factory=lambda: [0.3, 0.3])
+
+    enable_session_filter: bool = Field(default=False)
+    allowed_sessions_utc: list[tuple[int, int]] = Field(default_factory=list)
+
     monitoring_metrics_enabled: bool = Field(default=True)
     monitoring_metrics_host: str = Field(default='0.0.0.0')
     monitoring_metrics_port: int = Field(default=8001, ge=1, le=65535)
@@ -158,6 +174,23 @@ class Settings(BaseSettings):
             raise ValueError('operating_mode debe ser MINIMAL, NORMAL o INSTITUTIONAL.')
         return normalized
 
+    @field_validator('mtf_confirmation_mode')
+    @classmethod
+    def validate_mtf_confirmation_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {'confirm', 'veto'}:
+            raise ValueError('mtf_confirmation_mode debe ser "confirm" o "veto".')
+        return normalized
+
+    @field_validator('mtf_timeframe')
+    @classmethod
+    def validate_mtf_timeframe(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        allowed = {'1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'}
+        if normalized not in allowed:
+            raise ValueError(f'mtf_timeframe inválido: {normalized}.')
+        return normalized
+
     @model_validator(mode='after')
     def validate_mainnet_guardrail(self) -> 'Settings':
         if not self.binance_testnet and not self.confirm_mainnet:
@@ -168,6 +201,30 @@ class Settings(BaseSettings):
     def validate_strategy_toggles(self) -> 'Settings':
         if not self.enabled_strategies:
             raise ValueError('Debe existir al menos una estrategia habilitada en el kernel.')
+        return self
+
+    @model_validator(mode='after')
+    def validate_quant_enhancement_guards(self) -> 'Settings':
+        if self.vol_min_multiplier > self.vol_max_multiplier:
+            raise ValueError('vol_min_multiplier no puede ser mayor a vol_max_multiplier.')
+
+        if len(self.partial_exit_levels) != len(self.partial_exit_fractions):
+            raise ValueError('partial_exit_levels y partial_exit_fractions deben tener el mismo tamaño.')
+        if any(level <= 0.0 for level in self.partial_exit_levels):
+            raise ValueError('partial_exit_levels debe contener valores positivos.')
+        if any(fraction <= 0.0 or fraction >= 1.0 for fraction in self.partial_exit_fractions):
+            raise ValueError('partial_exit_fractions debe contener fracciones en (0, 1).')
+        if sum(self.partial_exit_fractions) >= 1.0:
+            raise ValueError('La suma de partial_exit_fractions debe ser menor a 1.0.')
+
+        for session in self.allowed_sessions_utc:
+            if len(session) != 2:
+                raise ValueError('Cada sesión UTC debe tener formato (inicio, fin).')
+            start, end = int(session[0]), int(session[1])
+            if start < 0 or start > 23 or end < 0 or end > 24:
+                raise ValueError('Las sesiones UTC deben estar en rango horario [0, 24].')
+            if start >= end:
+                raise ValueError('Cada sesión UTC debe cumplir inicio < fin.')
         return self
 
     @computed_field
