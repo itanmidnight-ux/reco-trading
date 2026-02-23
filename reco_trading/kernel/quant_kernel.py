@@ -227,6 +227,7 @@ class QuantKernel:
     def __init__(self) -> None:
         self.s = get_settings()
         self.state = RuntimeState()
+        self._ensure_runtime_state_fields()
         self.last_trade_ts: float | None = None
         self.initial_equity = 0.0
         self._shutdown_reason = 'running'
@@ -245,6 +246,17 @@ class QuantKernel:
         self.decision_audit_history: deque[dict[str, Any]] = deque(maxlen=self.s.decision_audit_history_size)
         self._daily_anchor_date = datetime.now(timezone.utc).date()
         self._daily_anchor_equity = 0.0
+
+
+    def _ensure_runtime_state_fields(self) -> None:
+        defaults: dict[str, float | int] = {
+            'negative_edge_streak': 0,
+            'binance_min_notional': 0.0,
+            'final_order_notional': 0.0,
+        }
+        for field_name, default_value in defaults.items():
+            if not hasattr(self.state, field_name):
+                setattr(self.state, field_name, default_value)
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -707,6 +719,7 @@ class QuantKernel:
 
             while not self.shutdown_event.is_set():
                 try:
+                                    self._ensure_runtime_state_fields()
                                     self.system_state = SystemState.WAITING_FOR_DATA.value
                                     self.execution_status = 'IDLE'
                                     self.activity_text = 'Esperando OHLCV desde Binance'
