@@ -271,7 +271,7 @@ class QuantKernel:
         self.signal_engine = SignalEngine()
         self.data_buffer = DataBuffer(window_seconds=max(self.s.learning_phase_seconds, warmup_window_seconds))
         self.signal_combiner = SignalCombiner()
-        self.decision_engine = DecisionEngine(min_edge=0.0005)
+        self.decision_engine = DecisionEngine(min_edge=0.0040)
         self.regime_detector = MarketRegimeDetector(n_states=3)
 
         self.execution_engine = ExecutionEngine(
