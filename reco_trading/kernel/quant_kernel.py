@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
+from collections import Counter, deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -59,6 +60,7 @@ class RuntimeState:
     position_opened_at: datetime | None = None
     tp_price: float = 0.0
     sl_price: float = 0.0
+    pending_action: str | None = None
 
 
 class SignalEngine:
@@ -128,6 +130,9 @@ class DecisionEngine:
             'market_operable': True,
             'force_hold': False,
             'reason_prefix': '',
+            'effective_min_edge': self.min_edge,
+            'confidence_threshold': 0.0,
+            'regime_uncertain': False,
         }
 
     def update_context(
@@ -142,6 +147,9 @@ class DecisionEngine:
         market_operable: bool,
         force_hold: bool = False,
         reason_prefix: str = '',
+        effective_min_edge: float | None = None,
+        confidence_threshold: float = 0.0,
+        regime_uncertain: bool = False,
     ) -> None:
         self._context = {
             'momentum': float(np.clip(momentum, 0.0, 1.0)),
@@ -153,6 +161,9 @@ class DecisionEngine:
             'market_operable': bool(market_operable),
             'force_hold': bool(force_hold),
             'reason_prefix': str(reason_prefix),
+            'effective_min_edge': float(max(effective_min_edge if effective_min_edge is not None else self.min_edge, 0.0)),
+            'confidence_threshold': float(np.clip(confidence_threshold, 0.0, 1.0)),
+            'regime_uncertain': bool(regime_uncertain),
         }
 
     def decide(self) -> str:
@@ -165,11 +176,16 @@ class DecisionEngine:
         market_operable = bool(self._context['market_operable'])
         force_hold = bool(self._context['force_hold'])
         reason_prefix = str(self._context['reason_prefix'])
+        effective_min_edge = float(self._context['effective_min_edge'])
+        confidence_threshold = float(self._context['confidence_threshold'])
+        regime_uncertain = bool(self._context['regime_uncertain'])
 
         self.last_scores = {
             'momentum': momentum,
             'reversion': reversion,
             'global': p,
+            'effective_min_edge': effective_min_edge,
+            'confidence_threshold': confidence_threshold,
         }
         self.last_confidence = p
 
@@ -182,11 +198,17 @@ class DecisionEngine:
         if not market_operable:
             self.last_reason = f'{reason_prefix}market_not_operable'
             return 'HOLD'
+        if regime_uncertain:
+            self.last_reason = f'{reason_prefix}regime_uncertain'
+            return 'HOLD'
+        if p < confidence_threshold:
+            self.last_reason = f'{reason_prefix}confidence_below_threshold p={p:.4f} min={confidence_threshold:.4f}'
+            return 'HOLD'
         if expected_edge <= friction_cost:
             self.last_reason = f'{reason_prefix}edge_below_friction edge={expected_edge:.6f} friction={friction_cost:.6f}'
             return 'HOLD'
-        if abs(expected_edge) < self.min_edge:
-            self.last_reason = f'{reason_prefix}insufficient_edge edge={expected_edge:+.6f}'
+        if abs(expected_edge) < effective_min_edge:
+            self.last_reason = f'{reason_prefix}insufficient_edge edge={expected_edge:+.6f} min={effective_min_edge:.6f}'
             return 'HOLD'
         if expected_edge > 0:
             self.last_reason = f'{reason_prefix}positive_edge edge={expected_edge:+.6f}'
@@ -217,6 +239,9 @@ class QuantKernel:
         self.activity_text = 'Inicializando kernel'
         self.learning_started_at_ms: int | None = None
         self.execution_status = 'IDLE'
+        self.operating_mode = self.s.operating_mode
+        self.blocking_counters: Counter[str] = Counter()
+        self.decision_audit_history: deque[dict[str, Any]] = deque(maxlen=self.s.decision_audit_history_size)
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -340,7 +365,11 @@ class QuantKernel:
         self.state.rejection_count += 1
         self.state.last_block_reason = f'firewall:{reason}'
         self.system_state = SystemState.BLOCKED_BY_RISK.value
-        logger.warning('Execution blocked by firewall: reason={} risk_snapshot={}', reason, risk_snapshot)
+        logger.warning(
+            "Execution blocked by firewall: reason=%s risk_snapshot=%s",
+            reason,
+            risk_snapshot
+        )
 
     async def _execute_order(self, side: str, qty: float) -> dict[str, Any] | None:
         if qty <= 0.0:
@@ -387,6 +416,71 @@ class QuantKernel:
         edge_factor = float(np.clip(abs(expected_edge) / 0.20, 0.10, 2.0))
         vol_factor = float(np.clip(self.s.volatility_target / max(volatility, 1e-6), 0.20, 1.5))
         return float(np.clip(base * edge_factor * vol_factor, 0.0, self.s.max_confidence_allocation))
+
+    def _dynamic_thresholds(
+        self,
+        *,
+        volatility: float,
+        spread_bps: float,
+        regime: str,
+    ) -> tuple[float, float, bool]:
+        timeframe_seconds = self._timeframe_to_seconds(self.s.timeframe)
+        timeframe_factor = float(np.clip(timeframe_seconds / 300.0, 0.7, 1.4))
+        vol_ratio = float(np.clip(volatility / max(self.s.volatility_target, 1e-6), 0.2, 3.0))
+        spread_ratio = float(np.clip(spread_bps / max(self.s.market_max_spread_bps, 1e-6), 0.1, 2.0))
+
+        edge_modifier = float(np.clip((1.1 - (0.25 * vol_ratio) - (0.10 * spread_ratio)) * timeframe_factor, 0.35, 1.4))
+        confidence_modifier = float(np.clip(0.85 + (0.20 * vol_ratio) + (0.08 * spread_ratio), 0.75, 1.4))
+
+        base_edge = self.decision_engine.min_edge
+        confidence_base = self.s.confidence_hold_threshold
+        effective_min_edge = float(max(base_edge * edge_modifier, self.s.minimal_mode_min_edge_floor))
+        confidence_threshold = float(np.clip(confidence_base * confidence_modifier, 0.50, 0.95))
+
+        regime_uncertain = regime == 'HIGH_VOL' and self.operating_mode != 'MINIMAL'
+        if regime == 'HIGH_VOL' and self.operating_mode == 'MINIMAL':
+            confidence_threshold = float(max(confidence_threshold, self.s.minimal_mode_regime_uncertain_floor))
+
+        return effective_min_edge, confidence_threshold, regime_uncertain
+
+    def _record_decision_audit(
+        self,
+        *,
+        decision: str,
+        expected_edge: float,
+        effective_min_edge: float,
+        confidence: float,
+        confidence_threshold: float,
+        friction_cost: float,
+        regime_uncertain: bool,
+        policy_block_reasons: list[str],
+    ) -> None:
+        blockers: list[str] = []
+        if expected_edge <= friction_cost:
+            blockers.append(f'EDGE_BELOW_FRICTION ({expected_edge:.6f} <= {friction_cost:.6f})')
+        if abs(expected_edge) < effective_min_edge:
+            blockers.append(f'EDGE_BELOW_THRESHOLD ({abs(expected_edge):.6f} < {effective_min_edge:.6f})')
+        if confidence < confidence_threshold:
+            blockers.append(f'CONFIDENCE_TOO_LOW ({confidence:.4f} < {confidence_threshold:.4f})')
+        if regime_uncertain:
+            blockers.append('REGIME_UNCERTAIN')
+        blockers.extend(policy_block_reasons)
+
+        final_decision = decision if decision in {'BUY', 'SELL'} else 'HOLD'
+        payload = {
+            'ts': datetime.now(timezone.utc).isoformat(),
+            'decision': final_decision,
+            'blocked_by': blockers,
+        }
+        self.decision_audit_history.append(payload)
+        for blocker in blockers:
+            key = blocker.split(' ', 1)[0]
+            self.blocking_counters[key] += 1
+
+        if blockers:
+            logger.info('Decision: {} | Blocked by: {}', final_decision, blockers)
+        else:
+            logger.info('Decision: {} | Blocked by: none', final_decision)
 
     def _publish_dashboard(
         self,
@@ -579,6 +673,11 @@ class QuantKernel:
                                         expected_edge *= 0.5
 
                                     friction_cost = float((2.0 * self.s.taker_fee) + (self._last_market_quality.spread_bps / 10_000.0) + (self.s.slippage_bps / 10_000.0))
+                                    effective_min_edge, confidence_threshold, regime_uncertain = self._dynamic_thresholds(
+                                        volatility=float(sig['volatility']),
+                                        spread_bps=self._last_market_quality.spread_bps,
+                                        regime=regime,
+                                    )
                                     self.decision_engine.update_context(
                                         momentum=float(breakdown.momentum),
                                         reversion=float(breakdown.mean_reversion),
@@ -587,27 +686,41 @@ class QuantKernel:
                                         friction_cost=friction_cost,
                                         trading_enabled=not self.state.kill_switch,
                                         market_operable=self._last_market_quality.operable,
+                                        effective_min_edge=effective_min_edge,
+                                        confidence_threshold=confidence_threshold,
+                                        regime_uncertain=regime_uncertain,
                                     )
-                                    decision = self.decision_engine.decide()
+                                    statistical_decision = self.decision_engine.decide()
+                                    executable_decision = statistical_decision
+                                    policy_block_reasons: list[str] = []
+                                    self.state.pending_action = statistical_decision if statistical_decision in {'BUY', 'SELL'} else None
                                     self.state.last_block_reason = self.decision_engine.last_reason
                                     self.activity_text = self.decision_engine.last_reason
 
                                     cooldown = max(self.MIN_SECONDS_BETWEEN_TRADES - (now.timestamp() - self.last_trade_ts), 0.0) if self.last_trade_ts else 0.0
-                                    if cooldown > 0 and decision in {'BUY', 'SELL'}:
-                                        decision = 'HOLD'
+                                    if cooldown > 0 and executable_decision in {'BUY', 'SELL'}:
+                                        executable_decision = 'HOLD'
+                                        policy_block_reasons.append(f'COOLDOWN_ACTIVE ({cooldown:.1f}s)')
                                         self.system_state = SystemState.COOLDOWN.value
                                         self.state.last_block_reason = 'cooldown_active'
                                         self.activity_text = f'COOLDOWN activo ({cooldown:.1f}s)'
 
-                                    if decision in {'HOLD', 'DISABLE_TRADING'}:
-                                        if self.system_state not in {SystemState.COOLDOWN.value, 'KILL_SWITCH_ACTIVE'}:
-                                            self.system_state = SystemState.WAITING_EDGE.value
-
-                                    if self.state.position_state == PositionState.FLAT and decision == 'SELL':
-                                        decision = 'HOLD'
+                                    if self.state.position_state == PositionState.FLAT and executable_decision == 'SELL':
+                                        executable_decision = 'HOLD'
+                                        policy_block_reasons.append('NO_POSITION_TO_SELL')
                                         self.system_state = SystemState.WAITING_EDGE.value
                                         self.state.last_block_reason = 'no_position_to_sell'
                                         self.activity_text = 'No hay posición para cerrar'
+
+                                    if self.operating_mode == 'MINIMAL' and self.state.position_state == PositionState.LONG and executable_decision == 'BUY':
+                                        executable_decision = 'HOLD'
+                                        policy_block_reasons.append('MINIMAL_SINGLE_POSITION_ACTIVE')
+
+                                    if executable_decision in {'HOLD', 'DISABLE_TRADING'}:
+                                        if self.system_state not in {SystemState.COOLDOWN.value, 'KILL_SWITCH_ACTIVE'}:
+                                            self.system_state = SystemState.WAITING_EDGE.value
+
+                                    decision = executable_decision
 
                                     if self.state.position_state == PositionState.LONG:
                                         elapsed = (now - (self.state.position_opened_at or now)).total_seconds()
@@ -625,23 +738,67 @@ class QuantKernel:
                                     risk_fraction = self._risk_fraction(expected_edge=expected_edge, volatility=volatility)
                                     order_qty = 0.0
                                     if decision == 'BUY':
-                                        if risk_fraction <= 0:
+                                        if self.operating_mode == 'MINIMAL':
+                                            minimal_notional = min(self.s.minimal_fixed_position_notional, max(self.state.equity * 0.25, 0.0))
+                                            absolute_risk_cap = max(self.s.minimal_absolute_risk_usdt, 1.0)
+                                            requested_notional = max(0.0, min(minimal_notional, absolute_risk_cap))
+                                            if requested_notional <= 0:
+                                                decision = 'HOLD'
+                                                self.system_state = SystemState.WAITING_EDGE.value
+                                                self.state.last_block_reason = 'minimal_notional_zero'
+                                                self.activity_text = 'HOLD por notional mínimo inválido'
+                                                policy_block_reasons.append('MINIMAL_NOTIONAL_ZERO')
+                                            else:
+                                                order_qty = requested_notional / max(last_price, 1e-9)
+                                        elif risk_fraction <= 0:
                                             decision = 'HOLD'
                                             self.system_state = SystemState.WAITING_EDGE.value
                                             self.state.last_block_reason = 'risk_fraction_zero'
                                             self.activity_text = 'HOLD por riesgo insuficiente para sizing'
+                                            policy_block_reasons.append('RISK_FRACTION_ZERO')
                                         else:
                                             requested_notional = self.state.equity * risk_fraction
                                             order_qty = requested_notional / max(last_price, 1e-9)
                                     elif decision == 'SELL':
                                         order_qty = self.state.position_qty
 
+                                    if decision in {'BUY', 'SELL'} and order_qty <= 0.0:
+                                        policy_block_reasons.append('ORDER_QTY_ZERO_POLICY')
+                                        decision = 'HOLD'
+
+                                    self._record_decision_audit(
+                                        decision=decision,
+                                        expected_edge=expected_edge,
+                                        effective_min_edge=effective_min_edge,
+                                        confidence=self.decision_engine.last_confidence,
+                                        confidence_threshold=confidence_threshold,
+                                        friction_cost=friction_cost,
+                                        regime_uncertain=regime_uncertain,
+                                        policy_block_reasons=policy_block_reasons,
+                                    )
+
                                     if decision in {'BUY', 'SELL'} and order_qty > 0.0:
+                                        # --- MINIMAL MODE: enforce exchange minimums ---
+                                        if self.s.operating_mode == 'MINIMAL':
+                                            exchange_min_qty = await self.execution_engine._firewall._min_size(self.client, self.s.symbol)
+                                            if exchange_min_qty is not None:
+                                                if order_qty < exchange_min_qty:
+                                                    logger.info(
+                                                        "MINIMAL MODE: order_qty %.10f < exchange_min_qty %.10f, adjusting to minimum",
+                                                        order_qty,
+                                                        exchange_min_qty
+                                                    )
+                                                    order_qty = exchange_min_qty
                                         self.system_state = SystemState.SENDING_ORDER.value
+                                        signal_confidence = max(self.decision_engine.last_confidence, 0.1)
+                                        risk_context_per_trade = risk_fraction if decision == 'BUY' else self.s.risk_per_trade
+                                        if decision == 'BUY' and self.s.operating_mode == 'MINIMAL':
+                                            required_min_risk = (order_qty * last_price) / max(self.state.equity * signal_confidence, 1e-9)
+                                            risk_context_per_trade = max(risk_context_per_trade, required_min_risk, self.s.risk_per_trade)
                                         self.execution_engine.set_risk_context(
                                             capital_total=self.state.equity,
-                                            risk_per_trade=risk_fraction if decision == 'BUY' else self.s.risk_per_trade,
-                                            signal_confidence=max(self.decision_engine.last_confidence, 0.1),
+                                            risk_per_trade=risk_context_per_trade,
+                                            signal_confidence=signal_confidence,
                                         )
                                         fill = await self._execute_order(decision, order_qty)
                                         if fill and decision == 'BUY':
