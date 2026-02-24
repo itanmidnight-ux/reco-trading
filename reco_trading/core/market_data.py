@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -10,6 +11,15 @@ from reco_trading.infra.binance_client import BinanceClient
 
 @dataclass(frozen=True, slots=True)
 class MarketQuality:
+    operable: bool
+    reason: str
+    spread_bps: float
+    realized_volatility: float
+    avg_volume: float
+    gap_ratio: float
+
+
+class MarketQualityContract(Protocol):
     operable: bool
     reason: str
     spread_bps: float

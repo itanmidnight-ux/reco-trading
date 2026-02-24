@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     operational_edge_floor: float = Field(default=0.0035, ge=0.0005, le=0.05)
     friction_safety_multiplier: float = Field(default=2.2, ge=1.0, le=6.0)
     decision_audit_history_size: int = Field(default=100, ge=10, le=500)
+    edge_monitor_window: int = Field(default=120, ge=20, le=1000)
+    conditional_performance_window: int = Field(default=180, ge=20, le=1000)
+    edge_confidence_threshold: float = Field(default=0.45, ge=0.05, le=0.95)
+    regime_stability_threshold: float = Field(default=0.40, ge=0.05, le=0.95)
+    risk_of_ruin_threshold: float = Field(default=0.30, ge=0.01, le=0.99)
     target_scalp_seconds: int = Field(default=20, ge=5, le=120)
     max_position_seconds: int = Field(default=30, ge=10, le=300)
 
