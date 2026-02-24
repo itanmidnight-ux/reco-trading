@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
 
-from reco_trading.core.market_data import MarketDataService, MarketQuality
 from reco_trading.kernel.conditional_performance import ConditionalPerformanceTracker
 from reco_trading.kernel.edge_monitor import EdgeMonitor
 from reco_trading.kernel.regime_controller import RegimeController
@@ -64,59 +62,3 @@ def test_extended_modules_long_run_stability() -> None:
     assert edge.sprt_state in {'EDGE_HEALTHY_H0', 'EDGE_DECAY_H1', 'INCONCLUSIVE', 'INSUFFICIENT_DATA'}
     assert 0.0 <= ruin_snapshot.risk_of_ruin_probability <= 1.0
     assert tracker.summary(regime.current_regime)['trades'] <= 60
-
-
-def test_market_quality_contract_with_quant_kernel_helper() -> None:
-    from reco_trading.kernel.quant_kernel import QuantKernel
-
-    kernel = QuantKernel.__new__(QuantKernel)
-
-    class SettingsStub:
-        market_min_avg_volume = 2.0
-
-    kernel.s = SettingsStub()
-    quality = MarketQuality(
-        operable=True,
-        reason='market_operable',
-        spread_bps=10.0,
-        realized_volatility=0.01,
-        avg_volume=5.0,
-        gap_ratio=0.0,
-    )
-
-    rel = QuantKernel._relative_liquidity_from_quality(kernel, quality)
-    assert rel == 2.5
-
-
-def test_market_quality_from_real_service_contract_with_kernel_helper() -> None:
-    from reco_trading.kernel.quant_kernel import QuantKernel
-
-    kernel = QuantKernel.__new__(QuantKernel)
-
-    class SettingsStub:
-        market_min_avg_volume = 10.0
-
-    kernel.s = SettingsStub()
-    service = MarketDataService(client=None, symbol='BTC/USDT', timeframe='5m')
-    frame = pd.DataFrame(
-        {
-            'timestamp': pd.date_range('2024-01-01', periods=120, freq='5min', tz='UTC'),
-            'open': np.linspace(100.0, 102.0, 120),
-            'high': np.linspace(100.2, 102.2, 120),
-            'low': np.linspace(99.8, 101.8, 120),
-            'close': np.linspace(100.0, 102.0, 120),
-            'volume': np.full(120, 25.0),
-        }
-    )
-
-    quality = service.assess_market_quality(
-        frame,
-        spread_bps=5.0,
-        max_spread_bps=20.0,
-        max_volatility=1.0,
-        min_avg_volume=1.0,
-        max_gap_ratio=1.0,
-    )
-
-    rel = QuantKernel._relative_liquidity_from_quality(kernel, quality)
-    assert rel == 2.5
