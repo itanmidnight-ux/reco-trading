@@ -19,7 +19,7 @@ from reco_trading.config.settings import get_settings
 from reco_trading.core.data_buffer import DataBuffer
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
-from reco_trading.core.market_data import MarketDataService, MarketQuality
+from reco_trading.core.market_data import MarketDataService, MarketQuality, MarketQualityContract
 from reco_trading.core.market_regime import MarketRegimeDetector
 from reco_trading.core.signal_fusion import SignalCombiner
 from reco_trading.core.system_state import SystemState
@@ -382,6 +382,14 @@ class QuantKernel:
         if r in {'high_volatility', 'volatile'}:
             return 'HIGH_VOL'
         return 'RANGE'
+
+    def _relative_liquidity_from_quality(self, market_quality: MarketQualityContract) -> float:
+        avg_volume = float(market_quality.avg_volume)
+        if not np.isfinite(avg_volume) or avg_volume < 0.0:
+            logger.warning('market_quality_avg_volume_invalid avg_volume=%s; using liquidity stress floor', avg_volume)
+            return 0.01
+        baseline = max(float(self.s.market_min_avg_volume), 1e-9)
+        return float(np.clip(avg_volume / baseline, 0.01, 5.0))
 
     def _cooldown_seconds(self) -> float:
         timeframe_seconds = float(self._timeframe_to_seconds(self.s.timeframe))
