@@ -28,14 +28,6 @@ class MarketQualityContract(Protocol):
     gap_ratio: float
 
 
-def validate_market_quality_contract(market_quality: MarketQualityContract) -> None:
-    required_attrs = ('operable', 'reason', 'spread_bps', 'realized_volatility', 'avg_volume', 'gap_ratio')
-    missing = [attr for attr in required_attrs if not hasattr(market_quality, attr)]
-    if missing:
-        missing_text = ', '.join(missing)
-        raise RuntimeError(f'MarketQuality contract mismatch, missing attributes: {missing_text}')
-
-
 class MarketDataService:
     def __init__(self, client: BinanceClient, symbol: str, timeframe: str) -> None:
         self.client = client

@@ -19,12 +19,7 @@ from reco_trading.config.settings import get_settings
 from reco_trading.core.data_buffer import DataBuffer
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
-from reco_trading.core.market_data import (
-    MarketDataService,
-    MarketQuality,
-    MarketQualityContract,
-    validate_market_quality_contract,
-)
+from reco_trading.core.market_data import MarketDataService, MarketQuality, MarketQualityContract
 from reco_trading.core.market_regime import MarketRegimeDetector
 from reco_trading.core.signal_fusion import SignalCombiner
 from reco_trading.core.system_state import SystemState
@@ -873,7 +868,7 @@ class QuantKernel:
                                         min_avg_volume=self.s.market_min_avg_volume,
                                         max_gap_ratio=self.s.market_max_gap_ratio,
                                     )
-                                    validate_market_quality_contract(self._last_market_quality)
+                                    self._validate_market_quality_contract(self._last_market_quality)
 
                                     progress, remaining = self.data_buffer.learning_progress(self.learning_started_at_ms, now.timestamp())
                                     if remaining > 0.0:
@@ -958,7 +953,7 @@ class QuantKernel:
                                     regime = self._map_regime(regime_raw)
                                     returns_series = pd.Series(sig['returns'], dtype=float)
                                     autocorr = float(returns_series.tail(80).autocorr(lag=1) or 0.0)
-                                    rel_liquidity = self._relative_liquidity_from_quality(self._last_market_quality)
+                                    rel_liquidity = float(np.clip(self._last_market_quality.volume / max(self.s.market_min_avg_volume, 1e-9), 0.01, 5.0))
                                     regime_snapshot = self.regime_controller.update(
                                         volatility=float(sig['volatility']),
                                         autocorr=autocorr,
