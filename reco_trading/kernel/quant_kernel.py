@@ -383,6 +383,27 @@ class QuantKernel:
             return 'HIGH_VOL'
         return 'RANGE'
 
+    def _validate_market_quality_contract(self, market_quality: MarketQualityContract) -> None:
+        if market_quality is None:
+            raise ValueError('market_quality is required')
+
+        try:
+            operable = market_quality.operable
+            reason = market_quality.reason
+            spread_bps = market_quality.spread_bps
+            avg_volume = market_quality.avg_volume
+        except AttributeError as exc:
+            raise ValueError(f'market_quality missing required attribute: {exc}') from exc
+
+        if not isinstance(operable, bool):
+            raise ValueError('market_quality.operable must be bool')
+        if not isinstance(reason, str) or not reason:
+            raise ValueError('market_quality.reason must be non-empty str')
+        if not np.isfinite(float(spread_bps)):
+            raise ValueError('market_quality.spread_bps must be finite')
+        if not np.isfinite(float(avg_volume)):
+            raise ValueError('market_quality.avg_volume must be finite')
+
     def _relative_liquidity_from_quality(self, market_quality: MarketQualityContract) -> float:
         avg_volume = float(market_quality.avg_volume)
         if not np.isfinite(avg_volume) or avg_volume < 0.0:
@@ -576,6 +597,21 @@ class QuantKernel:
             confidence_threshold = float(max(confidence_threshold, self.s.minimal_mode_regime_uncertain_floor))
 
         return effective_min_edge, confidence_threshold, regime_uncertain
+
+    async def _minimum_order_notional(self, *, last_price: float) -> tuple[float, str]:
+        exchange_min_notional = float(await self.execution_engine.get_symbol_min_notional(reference_price=last_price))
+        configured_floor = float(max(
+            self.s.minimal_fixed_position_notional,
+            self.s.minimal_economic_notional,
+        ))
+        min_notional = float(max(exchange_min_notional, configured_floor))
+        self.state.binance_min_notional = exchange_min_notional
+
+        if min_notional <= 0.0 or not np.isfinite(min_notional):
+            return 0.0, 'invalid_min_notional'
+        if self.state.equity < min_notional:
+            return min_notional, 'insufficient_equity_for_min_notional'
+        return min_notional, 'ok'
 
     def _record_decision_audit(
         self,
@@ -953,7 +989,7 @@ class QuantKernel:
                                     regime = self._map_regime(regime_raw)
                                     returns_series = pd.Series(sig['returns'], dtype=float)
                                     autocorr = float(returns_series.tail(80).autocorr(lag=1) or 0.0)
-                                    rel_liquidity = float(np.clip(self._last_market_quality.volume / max(self.s.market_min_avg_volume, 1e-9), 0.01, 5.0))
+                                    rel_liquidity = self._relative_liquidity_from_quality(self._last_market_quality)
                                     regime_snapshot = self.regime_controller.update(
                                         volatility=float(sig['volatility']),
                                         autocorr=autocorr,
