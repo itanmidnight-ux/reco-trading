@@ -19,8 +19,15 @@ class VisualSnapshot:
     daily_pnl: float = 0.0
     drawdown: float = 0.0
     expectancy: float = 0.0
+    regime_expectancy: float = 0.0
     volatility: float = 0.0
     edge: float = 0.0
+    edge_confidence_score: float = 0.0
+    edge_t_stat: float = 0.0
+    edge_bayesian_prob: float = 0.0
+    edge_sprt_state: str = 'INCONCLUSIVE'
+    risk_of_ruin_probability: float = 1.0
+    regime_stability_score: float = 0.0
     model_diagnostics: dict[str, dict[str, float]] = field(default_factory=dict)
     critical_error: str = ''
 

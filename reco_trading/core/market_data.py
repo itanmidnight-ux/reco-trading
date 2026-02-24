@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,23 @@ class MarketQuality:
     realized_volatility: float
     avg_volume: float
     gap_ratio: float
+
+
+class MarketQualityContract(Protocol):
+    operable: bool
+    reason: str
+    spread_bps: float
+    realized_volatility: float
+    avg_volume: float
+    gap_ratio: float
+
+
+def validate_market_quality_contract(market_quality: MarketQualityContract) -> None:
+    required_attrs = ('operable', 'reason', 'spread_bps', 'realized_volatility', 'avg_volume', 'gap_ratio')
+    missing = [attr for attr in required_attrs if not hasattr(market_quality, attr)]
+    if missing:
+        missing_text = ', '.join(missing)
+        raise RuntimeError(f'MarketQuality contract mismatch, missing attributes: {missing_text}')
 
 
 class MarketDataService:
