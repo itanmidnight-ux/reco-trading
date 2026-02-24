@@ -952,7 +952,7 @@ class QuantKernel:
                                     regime = self._map_regime(regime_raw)
                                     returns_series = pd.Series(sig['returns'], dtype=float)
                                     autocorr = float(returns_series.tail(80).autocorr(lag=1) or 0.0)
-                                    rel_liquidity = self._relative_liquidity_from_quality(self._last_market_quality)
+                                    rel_liquidity = float(np.clip(self._last_market_quality.volume / max(self.s.market_min_avg_volume, 1e-9), 0.01, 5.0))
                                     regime_snapshot = self.regime_controller.update(
                                         volatility=float(sig['volatility']),
                                         autocorr=autocorr,

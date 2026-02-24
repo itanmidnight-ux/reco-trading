@@ -82,6 +82,9 @@ ${SUDO} systemctl enable postgresql || true
 ${SUDO} systemctl start postgresql || true
 ${SUDO} systemctl enable redis-server || true
 ${SUDO} systemctl start redis-server || true
+${SUDO} timedatectl set-ntp true
+${SUDO} systemctl restart systemd-timesyncd
+${SUDO} timedatectl status
 
 echo 'Detectando cluster PostgreSQL activo...'
 
@@ -163,3 +166,4 @@ ensure_env_file
 echo 'PostgreSQL sincronizado y validado correctamente.'
 echo "Archivo .env sincronizado (actualiza manualmente BINANCE_API_KEY y BINANCE_API_SECRET)."
 echo 'Instalación completada con éxito.'
+                                       
