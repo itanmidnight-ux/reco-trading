@@ -19,13 +19,17 @@ from reco_trading.config.settings import get_settings
 from reco_trading.core.data_buffer import DataBuffer
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
-from reco_trading.core.market_data import MarketDataService, MarketQuality
+from reco_trading.core.market_data import MarketDataService, MarketQuality, MarketQualityContract
 from reco_trading.core.market_regime import MarketRegimeDetector
 from reco_trading.core.signal_fusion import SignalCombiner
 from reco_trading.core.system_state import SystemState
 from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.momentum_model import MomentumModel
 from reco_trading.execution.execution_firewall import ExecutionFirewall
+from reco_trading.kernel.conditional_performance import ConditionalPerformanceTracker
+from reco_trading.kernel.edge_monitor import EdgeMonitor, EdgeSnapshot
+from reco_trading.kernel.regime_controller import RegimeController
+from reco_trading.kernel.risk_of_ruin import RiskOfRuinEstimator, RiskOfRuinSnapshot
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
@@ -294,6 +298,10 @@ class QuantKernel:
             'volatility_adjusted_edge': 0.0,
             'expected_value_net_costs': 0.0,
         }
+        self._latest_edge_snapshot = EdgeSnapshot(0.5, 0.0, 1.0, 0.5, 'INSUFFICIENT_DATA', 0.0, 0.0)
+        self._latest_ruin_snapshot = RiskOfRuinSnapshot(1.0, 0.15)
+        self._latest_regime_snapshot = {'current_regime': 'LOW_VOL_REGIME', 'regime_stability_score': 0.0}
+        self._current_extended_regime = 'LOW_VOL_REGIME'
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -324,6 +332,10 @@ class QuantKernel:
         self.signal_combiner = SignalCombiner()
         self.decision_engine = DecisionEngine(min_edge=0.0040)
         self.regime_detector = MarketRegimeDetector(n_states=3)
+        self.edge_monitor = EdgeMonitor(window=self.s.edge_monitor_window)
+        self.regime_controller = RegimeController(window=self.s.edge_monitor_window)
+        self.risk_of_ruin = RiskOfRuinEstimator()
+        self.conditional_performance = ConditionalPerformanceTracker(window=self.s.conditional_performance_window)
 
         self.execution_engine = ExecutionEngine(
             self.client,
@@ -370,6 +382,22 @@ class QuantKernel:
         if r in {'high_volatility', 'volatile'}:
             return 'HIGH_VOL'
         return 'RANGE'
+
+    @staticmethod
+    def _validate_market_quality_contract(market_quality: MarketQualityContract) -> None:
+        required_attrs = ('operable', 'reason', 'spread_bps', 'realized_volatility', 'avg_volume', 'gap_ratio')
+        missing = [attr for attr in required_attrs if not hasattr(market_quality, attr)]
+        if missing:
+            missing_text = ', '.join(missing)
+            raise RuntimeError(f'MarketQuality contract mismatch, missing attributes: {missing_text}')
+
+    def _relative_liquidity_from_quality(self, market_quality: MarketQualityContract) -> float:
+        avg_volume = float(market_quality.avg_volume)
+        if not np.isfinite(avg_volume) or avg_volume < 0.0:
+            logger.warning('market_quality_avg_volume_invalid avg_volume=%s; using liquidity stress floor', avg_volume)
+            return 0.01
+        baseline = max(float(self.s.market_min_avg_volume), 1e-9)
+        return float(np.clip(avg_volume / baseline, 0.01, 5.0))
 
     def _cooldown_seconds(self) -> float:
         timeframe_seconds = float(self._timeframe_to_seconds(self.s.timeframe))
@@ -494,13 +522,25 @@ class QuantKernel:
 
     def _risk_fraction(self, expected_edge: float, volatility: float) -> float:
         base = float(np.clip(self.s.risk_per_trade, 0.001, self.s.max_confidence_allocation))
-        edge_factor = float(np.clip(abs(expected_edge) / 0.20, 0.10, 2.0))
-        vol_factor = float(np.clip(self.s.volatility_target / max(volatility, 1e-6), 0.20, 1.5))
-        expectancy_scale = float(np.clip(1.0 + self._rolling_stats['expectancy'] * 8.0, 0.45, 1.25))
-        drawdown_scale = float(np.clip(1.0 - (self._rolling_stats['drawdown_pressure'] * 2.2), 0.30, 1.0))
-        stability_scale = float(np.clip(0.65 + self._signal_quality['stability_weight'], 0.40, 1.40))
-        conservative_mode = 0.75 if self._rolling_stats['expectancy'] < 0.0 else 1.0
-        return float(np.clip(base * edge_factor * vol_factor * expectancy_scale * drawdown_scale * stability_scale * conservative_mode, 0.0, self.s.max_confidence_allocation))
+        edge_factor = float(np.clip(abs(expected_edge) / 0.20, 0.10, 1.4))
+        vol_factor = float(np.clip(self.s.volatility_target / max(volatility, 1e-6), 0.20, 1.2))
+        expectancy_scale = float(np.clip(1.0 + self._rolling_stats['expectancy'] * 8.0, 0.40, 1.15))
+        drawdown_scale = float(np.clip(1.0 - (self._rolling_stats['drawdown_pressure'] * 2.2), 0.20, 1.0))
+        stability_scale = float(np.clip(0.60 + self._signal_quality['stability_weight'], 0.30, 1.20))
+
+        edge_conf = float(np.clip(getattr(self._latest_edge_snapshot, 'edge_confidence_score', 0.5), 0.0, 1.0))
+        regime_stability = float(np.clip(self._latest_regime_snapshot.get('regime_stability_score', 0.0), 0.0, 1.0))
+        ruin_prob = float(np.clip(getattr(self._latest_ruin_snapshot, 'risk_of_ruin_probability', 1.0), 0.0, 1.0))
+
+        edge_scale = float(np.clip(edge_conf / max(self.s.edge_confidence_threshold, 1e-6), 0.10, 1.0))
+        regime_scale = float(np.clip(regime_stability / max(self.s.regime_stability_threshold, 1e-6), 0.10, 1.0))
+        ruin_scale = float(np.clip(1.0 - (ruin_prob / max(self.s.risk_of_ruin_threshold, 1e-6)), 0.05, 1.0))
+        risk_multiplier = float(np.clip(getattr(self._latest_ruin_snapshot, 'recommended_risk_multiplier', 0.15), 0.05, 1.0))
+
+        conservative_mode = 0.65 if self._rolling_stats['expectancy'] < 0.0 else 1.0
+        scaled = base * edge_factor * vol_factor * expectancy_scale * drawdown_scale * stability_scale
+        scaled *= edge_scale * regime_scale * ruin_scale * risk_multiplier * conservative_mode
+        return float(np.clip(scaled, 0.0, self.s.max_confidence_allocation))
 
     def _refresh_rolling_stats(self) -> None:
         if not self._trade_pnls:
@@ -723,6 +763,7 @@ class QuantKernel:
 
         risk_blocked = bool(self.should_block_trading()) if hasattr(self, 'should_block_trading') and hasattr(self, 's') else False
         risk_state = 'BLOCKED' if risk_blocked or self.system_state == SystemState.BLOCKED_BY_RISK.value else 'OK'
+        current_regime_perf = self.conditional_performance.summary(getattr(self, '_current_extended_regime', 'UNKNOWN')) if hasattr(self, 'conditional_performance') else {'expectancy': 0.0}
         self.dashboard.update(
             VisualSnapshot(
                 price=max(last_price, 0.0),
@@ -731,7 +772,14 @@ class QuantKernel:
                 daily_pnl=total_equity - float(getattr(self, '_daily_anchor_equity', total_equity)),
                 drawdown=drawdown,
                 edge=float(expected_edge),
+                edge_confidence_score=float(getattr(self._latest_edge_snapshot, 'edge_confidence_score', 0.5)),
+                edge_t_stat=float(getattr(self._latest_edge_snapshot, 't_stat', 0.0)),
+                edge_bayesian_prob=float(getattr(self._latest_edge_snapshot, 'bayesian_prob_edge_positive', 0.5)),
+                edge_sprt_state=str(getattr(self._latest_edge_snapshot, 'sprt_state', 'INCONCLUSIVE')),
+                risk_of_ruin_probability=float(getattr(self._latest_ruin_snapshot, 'risk_of_ruin_probability', 1.0)),
+                regime_stability_score=float(getattr(self, '_latest_regime_snapshot', {}).get('regime_stability_score', 0.0)),
                 expectancy=float(getattr(self, '_rolling_stats', {}).get('expectancy', 0.0)),
+                regime_expectancy=float(current_regime_perf.get('expectancy', 0.0)),
                 volatility=float(abs(getattr(self, '_signal_quality', {}).get('volatility_adjusted_edge', 0.0))),
                 system_state=self.system_state,
                 decision=decision,
@@ -828,6 +876,7 @@ class QuantKernel:
                                         min_avg_volume=self.s.market_min_avg_volume,
                                         max_gap_ratio=self.s.market_max_gap_ratio,
                                     )
+                                    self._validate_market_quality_contract(self._last_market_quality)
 
                                     progress, remaining = self.data_buffer.learning_progress(self.learning_started_at_ms, now.timestamp())
                                     if remaining > 0.0:
@@ -910,6 +959,21 @@ class QuantKernel:
 
                                     regime_raw = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
                                     regime = self._map_regime(regime_raw)
+                                    returns_series = pd.Series(sig['returns'], dtype=float)
+                                    autocorr = float(returns_series.tail(80).autocorr(lag=1) or 0.0)
+                                    rel_liquidity = self._relative_liquidity_from_quality(self._last_market_quality)
+                                    regime_snapshot = self.regime_controller.update(
+                                        volatility=float(sig['volatility']),
+                                        autocorr=autocorr,
+                                        avg_spread_bps=float(self._last_market_quality.spread_bps),
+                                        relative_liquidity=rel_liquidity,
+                                    )
+                                    self._latest_regime_snapshot = {
+                                        'current_regime': regime_snapshot.current_regime,
+                                        'regime_stability_score': regime_snapshot.regime_stability_score,
+                                    }
+                                    self._current_extended_regime = regime_snapshot.current_regime
+
                                     regime_prob = 0.78 if regime == 'TREND' else (0.62 if regime == 'RANGE' else 0.55)
                                     breakdown = self.signal_combiner.combine(
                                         sig['model_scores']['momentum'],
@@ -1087,6 +1151,14 @@ class QuantKernel:
                                     if partial_exit_done:
                                         decision = 'HOLD'
 
+                                    variance_now = float(np.var(np.asarray(self._trade_returns, dtype=float))) if self._trade_returns else float(max(volatility * volatility, 1e-8))
+                                    preview_fraction = float(np.clip(self.s.risk_per_trade, 0.0, self.s.max_confidence_allocation))
+                                    self._latest_ruin_snapshot = self.risk_of_ruin.estimate(
+                                        edge=expected_value_net_costs,
+                                        variance=variance_now,
+                                        position_fraction=preview_fraction,
+                                        capital=self.state.equity,
+                                    )
                                     risk_fraction = self._risk_fraction(expected_edge=expected_value_net_costs, volatility=volatility)
                                     order_qty = 0.0
                                     self.state.final_order_notional = 0.0
@@ -1186,7 +1258,10 @@ class QuantKernel:
                                             self.state.realized_pnl += net_pnl
                                             self._trade_pnls.append(float(net_pnl))
                                             entry_notional = max(self.state.entry_price * max(self.state.position_qty, 1e-9), 1e-9)
-                                            self._trade_returns.append(float(net_pnl / entry_notional))
+                                            realized_return = float(net_pnl / entry_notional)
+                                            self._trade_returns.append(realized_return)
+                                            self.conditional_performance.record_trade(self._current_extended_regime, float(net_pnl), realized_return)
+                                            self._latest_edge_snapshot = self.edge_monitor.update(realized_return)
                                             self._refresh_rolling_stats()
                                             self.state.consecutive_losses = self.state.consecutive_losses + 1 if net_pnl <= 0 else 0
                                             if net_pnl > 0:
