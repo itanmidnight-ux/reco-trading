@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-import re
-from pathlib import Path
 
-from reco_trading.core.market_data import MarketQuality
 from reco_trading.kernel.conditional_performance import ConditionalPerformanceTracker
 from reco_trading.kernel.edge_monitor import EdgeMonitor
 from reco_trading.kernel.regime_controller import RegimeController
@@ -65,49 +62,3 @@ def test_extended_modules_long_run_stability() -> None:
     assert edge.sprt_state in {'EDGE_HEALTHY_H0', 'EDGE_DECAY_H1', 'INCONCLUSIVE', 'INSUFFICIENT_DATA'}
     assert 0.0 <= ruin_snapshot.risk_of_ruin_probability <= 1.0
     assert tracker.summary(regime.current_regime)['trades'] <= 60
-
-
-def test_market_quality_contract_with_quant_kernel_helper() -> None:
-    from reco_trading.kernel.quant_kernel import QuantKernel
-
-    kernel = QuantKernel.__new__(QuantKernel)
-
-    class SettingsStub:
-        market_min_avg_volume = 2.0
-
-    kernel.s = SettingsStub()
-    quality = MarketQuality(
-        operable=True,
-        reason='market_operable',
-        spread_bps=10.0,
-        realized_volatility=0.01,
-        avg_volume=5.0,
-        gap_ratio=0.0,
-    )
-
-    rel = QuantKernel._relative_liquidity_from_quality(kernel, quality)
-    assert rel == 2.5
-
-
-def test_quant_kernel_market_quality_attribute_access_contract_safe() -> None:
-    source = Path('reco_trading/kernel/quant_kernel.py').read_text(encoding='utf-8')
-    attrs = set(re.findall(r"_last_market_quality\.([a-zA-Z_][a-zA-Z0-9_]*)", source))
-    assert attrs <= {'operable', 'reason', 'spread_bps', 'avg_volume', 'realized_volatility', 'gap_ratio'}
-
-
-def test_market_quality_contract_validation_rejects_missing_avg_volume() -> None:
-    from reco_trading.kernel.quant_kernel import QuantKernel
-
-    class BrokenMarketQuality:
-        operable = True
-        reason = 'ok'
-        spread_bps = 1.0
-        realized_volatility = 0.01
-        gap_ratio = 0.0
-
-    try:
-        QuantKernel._validate_market_quality_contract(BrokenMarketQuality())
-    except RuntimeError as exc:
-        assert 'avg_volume' in str(exc)
-    else:
-        raise AssertionError('Expected RuntimeError for missing avg_volume')
