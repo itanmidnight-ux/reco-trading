@@ -383,14 +383,6 @@ class QuantKernel:
             return 'HIGH_VOL'
         return 'RANGE'
 
-    @staticmethod
-    def _validate_market_quality_contract(market_quality: MarketQualityContract) -> None:
-        required_attrs = ('operable', 'reason', 'spread_bps', 'realized_volatility', 'avg_volume', 'gap_ratio')
-        missing = [attr for attr in required_attrs if not hasattr(market_quality, attr)]
-        if missing:
-            missing_text = ', '.join(missing)
-            raise RuntimeError(f'MarketQuality contract mismatch, missing attributes: {missing_text}')
-
     def _relative_liquidity_from_quality(self, market_quality: MarketQualityContract) -> float:
         avg_volume = float(market_quality.avg_volume)
         if not np.isfinite(avg_volume) or avg_volume < 0.0:
@@ -876,7 +868,7 @@ class QuantKernel:
                                         min_avg_volume=self.s.market_min_avg_volume,
                                         max_gap_ratio=self.s.market_max_gap_ratio,
                                     )
-                                    QuantKernel._validate_market_quality_contract(self._last_market_quality)
+                                    self._validate_market_quality_contract(self._last_market_quality)
 
                                     progress, remaining = self.data_buffer.learning_progress(self.learning_started_at_ms, now.timestamp())
                                     if remaining > 0.0:
@@ -961,7 +953,7 @@ class QuantKernel:
                                     regime = self._map_regime(regime_raw)
                                     returns_series = pd.Series(sig['returns'], dtype=float)
                                     autocorr = float(returns_series.tail(80).autocorr(lag=1) or 0.0)
-                                    rel_liquidity = self._relative_liquidity_from_quality(self._last_market_quality)
+                                    rel_liquidity = float(np.clip(self._last_market_quality.volume / max(self.s.market_min_avg_volume, 1e-9), 0.01, 5.0))
                                     regime_snapshot = self.regime_controller.update(
                                         volatility=float(sig['volatility']),
                                         autocorr=autocorr,
