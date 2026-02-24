@@ -51,6 +51,13 @@ class TerminalDashboard:
         table.add_row('Volatilidad', f"[blue]{snapshot.volatility:.4f}[/]")
         exp_color = 'bright_green' if snapshot.expectancy >= 0 else 'bright_red'
         table.add_row('Expectancy rolling', f"[{exp_color}]{snapshot.expectancy:+.6f}[/]")
+        table.add_row('Edge confidence', f"[bright_blue]{snapshot.edge_confidence_score:.2%}[/]")
+        table.add_row('t-stat alpha', f"[blue]{snapshot.edge_t_stat:+.2f}[/]")
+        table.add_row('Prob. bayes edge+', f"[blue]{snapshot.edge_bayesian_prob:.2%}[/]")
+        table.add_row('SPRT', f"[yellow]{snapshot.edge_sprt_state}[/]")
+        table.add_row('Risk of Ruin', f"[yellow]{snapshot.risk_of_ruin_probability:.2%}[/]")
+        table.add_row('Regime stability', f"[blue]{snapshot.regime_stability_score:.2%}[/]")
+        table.add_row('Exp. por régimen', f"[{exp_color}]{snapshot.regime_expectancy:+.6f}[/]")
         return Panel(table, title='Análisis', border_style='blue')
 
     def _models_panel(self, snapshot: VisualSnapshot) -> Panel:
