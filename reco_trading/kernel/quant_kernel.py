@@ -868,6 +868,7 @@ class QuantKernel:
                                         min_avg_volume=self.s.market_min_avg_volume,
                                         max_gap_ratio=self.s.market_max_gap_ratio,
                                     )
+                                    self._validate_market_quality_contract(self._last_market_quality)
 
                                     progress, remaining = self.data_buffer.learning_progress(self.learning_started_at_ms, now.timestamp())
                                     if remaining > 0.0:
