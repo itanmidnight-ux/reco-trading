@@ -30,6 +30,21 @@ def _build_kernel_for_unit() -> QuantKernel:
     kernel._shutdown_reason = 'running'
     kernel.initial_equity = 10_000.0
     kernel.risk_manager = SimpleNamespace(config=SimpleNamespace(risk_per_trade=0.005))
+    kernel._latest_edge_snapshot = SimpleNamespace(edge_confidence_score=0.5, t_stat=0.0, bayesian_prob_edge_positive=0.5, sprt_state='INCONCLUSIVE')
+    kernel._latest_ruin_snapshot = SimpleNamespace(risk_of_ruin_probability=1.0)
+    kernel._latest_regime_snapshot = {'regime_stability_score': 0.0}
+    kernel._rolling_stats = {'expectancy': 0.0}
+    kernel._signal_quality = {'volatility_adjusted_edge': 0.0, 'expected_value_net_costs': 0.0, 'stability_weight': 0.0}
+    kernel.execution_status = 'IDLE'
+    kernel.system_state = 'IDLE'
+    kernel.s = SimpleNamespace(
+        kill_switch_max_rejections=999,
+        kill_switch_max_latency_ms=1_000_000.0,
+        max_consecutive_losses=999,
+        max_global_drawdown=1.0,
+        max_daily_loss=1.0,
+        allowed_sessions_utc=[],
+    )
     return kernel
 
 
@@ -111,3 +126,64 @@ def test_execute_order_returns_none_when_execution_unfilled():
     result = asyncio.run(kernel._execute_order('SELL', 0.1))
 
     assert result is None
+
+
+def test_check_kill_switch_state_is_pure_and_activate_records_trigger():
+    kernel = _build_kernel_for_unit()
+    kernel.s = SimpleNamespace(
+        kill_switch_max_rejections=3,
+        kill_switch_max_latency_ms=1_000.0,
+        max_consecutive_losses=5,
+        max_global_drawdown=0.99,
+        max_daily_loss=0.99,
+    )
+    kernel.state.rejection_count = 3
+
+    blocked, reason = kernel._check_kill_switch_state()
+
+    assert blocked is True
+    assert reason == 'too_many_rejections'
+    assert kernel.state.kill_switch is False
+    assert kernel.state.last_kill_switch_trigger is None
+
+    blocked, reason = kernel._activate_kill_switch_if_needed()
+
+    assert blocked is True
+    assert reason == 'too_many_rejections'
+    assert kernel.state.kill_switch is True
+    assert kernel.state.last_kill_switch_trigger == 'too_many_rejections'
+
+
+def test_publish_dashboard_does_not_activate_kill_switch() -> None:
+    kernel = _build_kernel_for_unit()
+    kernel.s = SimpleNamespace(
+        kill_switch_max_rejections=1,
+        kill_switch_max_latency_ms=1_000.0,
+        max_consecutive_losses=5,
+        max_global_drawdown=0.99,
+        max_daily_loss=0.99,
+        allowed_sessions_utc=[],
+    )
+    kernel._cooldown_seconds = lambda: 120.0
+    kernel._is_within_allowed_session = lambda now: True
+    kernel.conditional_performance = SimpleNamespace(summary=lambda regime: {'expectancy': 0.0})
+    kernel._latest_edge_snapshot = SimpleNamespace(
+        edge_confidence_score=0.5,
+        t_stat=0.0,
+        bayesian_prob_edge_positive=0.5,
+        sprt_state='INCONCLUSIVE',
+    )
+    kernel._latest_ruin_snapshot = SimpleNamespace(risk_of_ruin_probability=1.0)
+    kernel._latest_regime_snapshot = {'regime_stability_score': 0.0}
+    kernel._rolling_stats = {'expectancy': 0.0}
+    kernel._signal_quality = {'volatility_adjusted_edge': 0.0, 'expected_value_net_costs': 0.0, 'stability_weight': 0.0}
+    kernel.decision_engine = SimpleNamespace(last_confidence=0.0, last_scores={}, last_reason='none')
+    kernel.execution_status = 'IDLE'
+    kernel.system_state = 'IDLE'
+    kernel.state.rejection_count = 1
+
+    kernel._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'RANGE', 100.0, 'OK')
+
+    assert kernel.state.kill_switch is False
+    assert kernel.state.last_kill_switch_trigger is None
+    assert kernel.dashboard.updates

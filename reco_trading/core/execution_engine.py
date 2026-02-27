@@ -163,7 +163,7 @@ class ExecutionEngine:
             self.last_rejection_reason = 'invalid_price_for_capital_limit'
             return 0.0
 
-        max_notional = capital_total * risk_per_trade * confidence
+        max_notional = capital_total * risk_per_trade
         max_qty = max_notional / last_price
         self.last_allowed_qty = max(max_qty, 0.0)
         if max_qty <= 0.0:

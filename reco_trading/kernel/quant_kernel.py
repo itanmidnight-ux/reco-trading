@@ -56,6 +56,7 @@ class RuntimeState:
     last_block_reason: str = 'booting'
     rejection_count: int = 0
     kill_switch: bool = False
+    last_kill_switch_trigger: str | None = None
     avg_latency_ms: float = 0.0
 
     position_state: PositionState = PositionState.FLAT
@@ -426,29 +427,24 @@ class QuantKernel:
         regime_buffer = 0.0015 if regime == 'HIGH_VOL' else (0.0008 if regime == 'RANGE' else 0.0004)
         return float(max(effective_min_edge, self.s.operational_edge_floor, (friction_cost * self.s.friction_safety_multiplier) + regime_buffer))
 
-    def _should_activate_kill_switch(self) -> tuple[bool, str]:
+    def _check_kill_switch_state(self) -> tuple[bool, str]:
         if self.shutdown_event.is_set():
             return True, 'shutdown_requested'
         if self.state.kill_switch:
-            return True, 'kill_switch_active'
+            return True, self.state.last_kill_switch_trigger or 'kill_switch_active'
         if self.state.rejection_count >= self.s.kill_switch_max_rejections:
-            self.state.kill_switch = True
             return True, 'too_many_rejections'
         if self.state.avg_latency_ms >= self.s.kill_switch_max_latency_ms:
-            self.state.kill_switch = True
-            return True, 'latency_circuit_breaker'
+            return True, 'latency_exceeded'
         if self.state.consecutive_losses >= self.s.max_consecutive_losses:
-            self.state.kill_switch = True
-            return True, 'too_many_consecutive_losses'
+            return True, 'consecutive_losses'
         if self.initial_equity > 0:
             total_equity = self.state.equity + self.state.unrealized_pnl + self.state.realized_pnl - self.state.fees_paid
             if not np.isfinite(total_equity):
-                self.state.kill_switch = True
                 return True, 'equity_inconsistent'
             drawdown = 1.0 - (total_equity / max(self.initial_equity, 1e-9))
             if drawdown >= self.s.max_global_drawdown:
-                self.state.kill_switch = True
-                return True, 'drawdown_circuit_breaker'
+                return True, 'max_drawdown'
             today = datetime.now(timezone.utc).date()
             if today != self._daily_anchor_date:
                 self._daily_anchor_date = today
@@ -457,9 +453,16 @@ class QuantKernel:
                 self._daily_anchor_equity = total_equity
             daily_loss_ratio = (self._daily_anchor_equity - total_equity) / max(self._daily_anchor_equity, 1e-9)
             if daily_loss_ratio >= self.s.max_daily_loss:
-                self.state.kill_switch = True
-                return True, 'daily_loss_hard_stop'
+                return True, 'max_daily_loss'
         return False, 'none'
+
+    def _activate_kill_switch_if_needed(self) -> tuple[bool, str]:
+        blocked, reason = self._check_kill_switch_state()
+        if blocked and reason not in {'none', 'shutdown_requested'}:
+            self.state.kill_switch = True
+            if self.state.last_kill_switch_trigger is None:
+                self.state.last_kill_switch_trigger = reason
+        return blocked, reason
 
     def _is_warmup_complete(self, now_ts: float) -> tuple[bool, str]:
         if self.learning_started_at_ms is None:
@@ -477,7 +480,7 @@ class QuantKernel:
         return True, 'warmup_complete'
 
     def should_block_trading(self) -> bool:
-        blocked, reason = self._should_activate_kill_switch()
+        blocked, reason = self._activate_kill_switch_if_needed()
         if blocked:
             self.state.last_block_reason = reason
             self.system_state = 'KILL_SWITCH_ACTIVE'
@@ -789,7 +792,10 @@ class QuantKernel:
         if last_trade_ts:
             cooldown = max(self._cooldown_seconds() - (now.timestamp() - float(last_trade_ts)), 0.0)
 
-        risk_blocked = bool(self.should_block_trading()) if hasattr(self, 'should_block_trading') and hasattr(self, 's') else False
+        if hasattr(self, '_check_kill_switch_state') and hasattr(self, 's'):
+            risk_blocked, risk_reason = self._check_kill_switch_state()
+        else:
+            risk_blocked, risk_reason = False, 'none'
         risk_state = 'BLOCKED' if risk_blocked or self.system_state == SystemState.BLOCKED_BY_RISK.value else 'OK'
         current_regime_perf = self.conditional_performance.summary(getattr(self, '_current_extended_regime', 'UNKNOWN')) if hasattr(self, 'conditional_performance') else {'expectancy': 0.0}
         self.dashboard.update(
@@ -820,6 +826,8 @@ class QuantKernel:
                     'risk_state_blocked': 1.0 if risk_state == 'BLOCKED' else 0.0,
                     'binance_min_notional': float(self.state.binance_min_notional),
                     'final_order_notional': float(self.state.final_order_notional),
+                    'last_kill_switch_trigger': str(self.state.last_kill_switch_trigger or 'none'),
+                    'kill_switch_reason': str(risk_reason),
                 },
                 model_diagnostics={
                     'momentum': {
@@ -1066,7 +1074,7 @@ class QuantKernel:
                                         momentum=float(breakdown.momentum),
                                         reversion=float(breakdown.mean_reversion),
                                         global_probability=probability,
-                                        expected_edge=expected_value_net_costs,
+                                        expected_edge=expected_edge,
                                         friction_cost=friction_cost,
                                         trading_enabled=not self.state.kill_switch,
                                         market_operable=self._last_market_quality.operable,
@@ -1212,8 +1220,15 @@ class QuantKernel:
                                             policy_block_reasons.append('RISK_FRACTION_ZERO')
                                         else:
                                             requested_notional = self.state.equity * risk_fraction
-                                            base_qty = requested_notional / max(last_price, 1e-9)
-                                            order_qty = base_qty * self._volatility_size_multiplier(volatility)
+                                            if requested_notional < min_notional:
+                                                decision = 'HOLD'
+                                                self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                                self.state.last_block_reason = 'notional_below_exchange_minimum'
+                                                self.activity_text = 'BLOCK por notional por debajo del mínimo del exchange'
+                                                policy_block_reasons.append('NOTIONAL_BELOW_EXCHANGE_MINIMUM')
+                                            else:
+                                                base_qty = requested_notional / max(last_price, 1e-9)
+                                                order_qty = base_qty * self._volatility_size_multiplier(volatility)
                                     elif decision == 'SELL':
                                         order_qty = self.state.position_qty
 
@@ -1225,7 +1240,7 @@ class QuantKernel:
 
                                     self._record_decision_audit(
                                         decision=decision,
-                                        expected_edge=expected_value_net_costs,
+                                        expected_edge=expected_edge,
                                         effective_min_edge=effective_min_edge,
                                         confidence=getattr(getattr(self, 'decision_engine', None), 'last_confidence', 0.0),
                                         confidence_threshold=confidence_threshold,
@@ -1313,7 +1328,7 @@ class QuantKernel:
                                     dashboard_decision = 'BLOCK' if decision == 'HOLD' and self.system_state == SystemState.BLOCKED_BY_RISK.value else decision
                                     self._publish_dashboard(
                                         decision=dashboard_decision,
-                                        expected_edge=expected_value_net_costs,
+                                        expected_edge=expected_edge,
                                         mom=breakdown.momentum,
                                         rev=breakdown.mean_reversion,
                                         reg_prob=breakdown.regime,
