@@ -248,3 +248,15 @@ def test_execution_engine_accepts_lowercase_side_input():
     asyncio.run(_run())
     assert len(db.orders) == 1
     assert firewall.registered == 1
+
+
+def test_apply_capital_limit_does_not_double_scale_by_confidence():
+    db = _FakeDB()
+    engine = ExecutionEngine(_FakeClient(), 'BTC/USDT', db, redis_url='redis://localhost:6399/0')
+    engine.set_risk_context(capital_total=1000.0, risk_per_trade=0.1, signal_confidence=0.2)
+
+    async def _run():
+        limited = await engine._apply_capital_limit(side='BUY', amount=2.0)
+        assert limited == 1.0
+
+    asyncio.run(_run())
