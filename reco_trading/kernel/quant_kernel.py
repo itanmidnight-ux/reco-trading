@@ -154,8 +154,10 @@ class SignalEngine:
 
 
 class DecisionEngine:
-    def __init__(self, min_edge: float = 0.08) -> None:
+    def __init__(self, min_edge: float = 0.08, buy_threshold: float = 0.56, sell_threshold: float = 0.44) -> None:
         self.min_edge = float(min_edge)
+        self.buy_threshold = float(np.clip(buy_threshold, 0.0, 1.0))
+        self.sell_threshold = float(np.clip(sell_threshold, 0.0, 1.0))
         self.last_confidence: float = 0.0
         self.last_scores: dict[str, float] = {}
         self.last_reason: str = 'booting'
@@ -205,7 +207,29 @@ class DecisionEngine:
             'regime_uncertain': bool(regime_uncertain),
         }
 
-    def decide(self) -> str:
+    def decide(self, scores: dict[str, float] | None = None, regime: str | None = None) -> str | tuple[str, float]:
+        if scores is not None:
+            momentum = float(np.clip(scores.get('momentum', 0.5), 0.0, 1.0))
+            reversion = float(np.clip(scores.get('mean_reversion', 0.5), 0.0, 1.0))
+            p = float(np.clip((momentum + reversion) / 2.0, 0.0, 1.0))
+            expected_edge = float(p - 0.5)
+            regime_name = str((regime or 'range')).lower()
+            tradable = regime_name != 'blocked'
+            if regime_name == 'range':
+                expected_edge *= 0.5
+            if p >= self.buy_threshold and expected_edge >= self.min_edge and tradable:
+                decision = 'BUY'
+                reason = 'legacy_buy_threshold'
+            elif p <= self.sell_threshold and abs(expected_edge) >= self.min_edge and tradable:
+                decision = 'SELL'
+                reason = 'legacy_sell_threshold'
+            else:
+                decision = 'HOLD'
+                reason = 'legacy_threshold_guard'
+            self.last_confidence = p
+            self.last_scores = {'momentum': momentum, 'reversion': reversion, 'global': p}
+            self.last_reason = reason
+            return decision, p
         momentum = float(self._context['momentum'])
         reversion = float(self._context['reversion'])
         p = float(self._context['global_probability'])
@@ -604,8 +628,8 @@ class QuantKernel:
     async def _minimum_order_notional(self, *, last_price: float) -> tuple[float, str]:
         exchange_min_notional = float(await self.execution_engine.get_symbol_min_notional(reference_price=last_price))
         configured_floor = float(max(
-            self.s.minimal_fixed_position_notional,
-            self.s.minimal_economic_notional,
+            getattr(self.s, 'minimal_fixed_position_notional', 0.0),
+            getattr(self.s, 'minimal_economic_notional', 0.0),
         ))
         min_notional = float(max(exchange_min_notional, configured_floor))
         self.state.binance_min_notional = exchange_min_notional

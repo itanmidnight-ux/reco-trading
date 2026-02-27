@@ -95,14 +95,26 @@ class TradingMetrics:
         # por el resto del sistema (dashboards/tests esperan `*_total` literal).
         # Usamos Gauge monotónico con `inc()` para mantener el nombre exacto.
         self.error_total = Gauge(
-            'reco_errors_total',
+            'reco_errors',
             'Total de errores por componente y tipo.',
             labelnames=('component', 'error_type', *_DEFAULT_LABELS),
             registry=self.registry,
         )
+        self.error_total_legacy = Gauge(
+            'reco_errors_total',
+            'Total de errores por componente y tipo (legacy).',
+            labelnames=('component', 'error_type', *_DEFAULT_LABELS),
+            registry=self.registry,
+        )
         self.request_total = Gauge(
-            'reco_requests_total',
+            'reco_requests',
             'Total de requests/eventos por componente.',
+            labelnames=('component', *_DEFAULT_LABELS),
+            registry=self.registry,
+        )
+        self.request_total_legacy = Gauge(
+            'reco_requests_total',
+            'Total de requests/eventos por componente (legacy).',
             labelnames=('component', *_DEFAULT_LABELS),
             registry=self.registry,
         )
@@ -206,10 +218,14 @@ class TradingMetrics:
         self.drawdown_ratio.labels(**self._labels(scope=scope, **labels)).set(min(max(value, 0.0), 1.0))
 
     def observe_request(self, component: str, **labels: str) -> None:
-        self.request_total.labels(**self._labels(component=component, **labels)).inc()
+        sample = self._labels(component=component, **labels)
+        self.request_total.labels(**sample).inc()
+        self.request_total_legacy.labels(**sample).inc()
 
     def observe_error(self, component: str, error_type: str, **labels: str) -> None:
-        self.error_total.labels(**self._labels(component=component, error_type=error_type, **labels)).inc()
+        sample = self._labels(component=component, error_type=error_type, **labels)
+        self.error_total.labels(**sample).inc()
+        self.error_total_legacy.labels(**sample).inc()
         self.observe_request(component, **labels)
 
     def observe_fill_quality(self, fill_quality_ratio: float, slippage_bps: float, **labels: str) -> None:
