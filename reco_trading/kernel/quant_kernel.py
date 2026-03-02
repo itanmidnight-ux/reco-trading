@@ -26,10 +26,14 @@ from reco_trading.core.system_state import SystemState
 from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.momentum_model import MomentumModel
 from reco_trading.execution.execution_firewall import ExecutionFirewall
+from reco_trading.adaptive.frequency_controller import FrequencyController
 from reco_trading.kernel.conditional_performance import ConditionalPerformanceTracker
 from reco_trading.kernel.edge_monitor import EdgeMonitor, EdgeSnapshot
 from reco_trading.kernel.regime_controller import RegimeController
 from reco_trading.kernel.risk_of_ruin import RiskOfRuinEstimator, RiskOfRuinSnapshot
+from reco_trading.portfolio.allocator import PortfolioAllocator
+from reco_trading.portfolio.exposure_model import ExposureModel
+from reco_trading.statistics.drift_detector import CUSUMDrift, DriftSignal, KLDivergenceDrift
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
 from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
@@ -261,9 +265,6 @@ class DecisionEngine:
         if not market_operable:
             self.last_reason = f'{reason_prefix}market_not_operable'
             return 'HOLD'
-        if regime_uncertain:
-            self.last_reason = f'{reason_prefix}regime_uncertain'
-            return 'HOLD'
         if p < confidence_threshold:
             self.last_reason = f'{reason_prefix}confidence_below_threshold p={p:.4f} min={confidence_threshold:.4f}'
             return 'HOLD'
@@ -327,6 +328,16 @@ class QuantKernel:
         self._latest_ruin_snapshot = RiskOfRuinSnapshot(1.0, 0.15)
         self._latest_regime_snapshot = {'current_regime': 'LOW_VOL_REGIME', 'regime_stability_score': 0.0}
         self._current_extended_regime = 'LOW_VOL_REGIME'
+        self.portfolio_allocator = PortfolioAllocator()
+        self.exposure_model = ExposureModel(lookback_bars=100)
+        self.cusum_drift = CUSUMDrift()
+        self.kl_drift = KLDivergenceDrift()
+        self.frequency_controller = FrequencyController()
+        self._asset_price_history: dict[str, pd.Series] = {}
+        self._asset_edges: dict[str, float] = {}
+        self._asset_volatility: dict[str, float] = {}
+        self._portfolio_weights: dict[str, float] = {self.s.symbol: 1.0}
+        self._latest_drift_signal = DriftSignal(drift_score=0.0, regime_change_probability=0.0)
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -448,8 +459,9 @@ class QuantKernel:
         return float((base_friction * self.s.friction_safety_multiplier) + spread_penalty + volatility_penalty)
 
     def _minimum_operational_edge(self, *, effective_min_edge: float, friction_cost: float, regime: str) -> float:
-        regime_buffer = 0.0015 if regime == 'HIGH_VOL' else (0.0008 if regime == 'RANGE' else 0.0004)
-        return float(max(effective_min_edge, self.s.operational_edge_floor, (friction_cost * self.s.friction_safety_multiplier) + regime_buffer))
+        _ = friction_cost
+        _ = regime
+        return float(max(effective_min_edge, self.s.operational_edge_floor))
 
     def _compute_total_equity(self) -> float:
         return float(self.state.equity + self.state.unrealized_pnl + self.state.realized_pnl - self.state.fees_paid)
@@ -475,8 +487,6 @@ class QuantKernel:
             return True, 'too_many_rejections'
         if self.state.avg_latency_ms >= self.s.kill_switch_max_latency_ms:
             return True, 'latency_exceeded'
-        if self.state.consecutive_losses >= self.s.max_consecutive_losses:
-            return True, 'consecutive_losses'
         if self.initial_equity > 0:
             total_equity = self._compute_total_equity()
             if not np.isfinite(total_equity):
@@ -576,26 +586,21 @@ class QuantKernel:
         }
 
     def _risk_fraction(self, expected_edge: float, volatility: float) -> float:
-        base = float(np.clip(self.s.risk_per_trade, 0.001, self.s.max_confidence_allocation))
-        edge_factor = float(np.clip(abs(expected_edge) / 0.20, 0.10, 1.4))
-        vol_factor = float(np.clip(self.s.volatility_target / max(volatility, 1e-6), 0.20, 1.2))
-        expectancy_scale = float(np.clip(1.0 + self._rolling_stats['expectancy'] * 8.0, 0.40, 1.15))
-        drawdown_scale = float(np.clip(1.0 - (self._rolling_stats['drawdown_pressure'] * 2.2), 0.20, 1.0))
-        stability_scale = float(np.clip(0.60 + self._signal_quality['stability_weight'], 0.30, 1.20))
+        variance = float(max(volatility * volatility, 1e-8))
+        conservative_fraction = float(np.clip(self.s.risk_per_trade, 0.001, self.s.max_confidence_allocation))
+        kelly_fraction = float(max(expected_edge, 0.0) / variance)
+        effective_kelly = float(np.clip(kelly_fraction, 0.0, self.s.max_confidence_allocation))
+        capped_base = float(min(conservative_fraction, effective_kelly))
 
-        edge_conf = float(np.clip(getattr(self._latest_edge_snapshot, 'edge_confidence_score', 0.5), 0.0, 1.0))
-        regime_stability = float(np.clip(self._latest_regime_snapshot.get('regime_stability_score', 0.0), 0.0, 1.0))
+        edge_factor = float(np.clip(abs(expected_edge) / 0.20, 0.10, 1.0))
+        volatility_factor = float(np.clip(self.s.volatility_target / max(volatility, 1e-6), 0.25, 1.0))
+        drawdown_factor = float(np.clip(1.0 - self._rolling_stats['drawdown_pressure'], 0.5, 1.0))
         ruin_prob = float(np.clip(getattr(self._latest_ruin_snapshot, 'risk_of_ruin_probability', 1.0), 0.0, 1.0))
+        ruin_factor = float(np.clip(1.0 - ruin_prob, 0.5, 1.0))
+        drift_factor = float(np.clip(1.0 - self._latest_drift_signal.drift_score, 0.5, 1.0))
 
-        edge_scale = float(np.clip(edge_conf / max(self.s.edge_confidence_threshold, 1e-6), 0.10, 1.0))
-        regime_scale = float(np.clip(regime_stability / max(self.s.regime_stability_threshold, 1e-6), 0.10, 1.0))
-        ruin_scale = float(np.clip(1.0 - (ruin_prob / max(self.s.risk_of_ruin_threshold, 1e-6)), 0.05, 1.0))
-        risk_multiplier = float(np.clip(getattr(self._latest_ruin_snapshot, 'recommended_risk_multiplier', 0.15), 0.05, 1.0))
-
-        conservative_mode = 0.65 if self._rolling_stats['expectancy'] < 0.0 else 1.0
-        scaled = base * edge_factor * vol_factor * expectancy_scale * drawdown_scale * stability_scale
-        scaled *= edge_scale * regime_scale * ruin_scale * risk_multiplier * conservative_mode
-        return float(np.clip(scaled, 0.0, self.s.max_confidence_allocation))
+        risk_fraction = capped_base * edge_factor * volatility_factor * drawdown_factor * ruin_factor * drift_factor
+        return float(np.clip(risk_fraction, 0.0, self.s.max_confidence_allocation))
 
     def _refresh_rolling_stats(self) -> None:
         if not self._trade_pnls:
@@ -626,7 +631,7 @@ class QuantKernel:
         vol_ratio = float(np.clip(volatility / max(self.s.volatility_target, 1e-6), 0.2, 3.0))
         spread_ratio = float(np.clip(spread_bps / max(self.s.market_max_spread_bps, 1e-6), 0.1, 2.0))
 
-        edge_modifier = float(np.clip((1.1 - (0.25 * vol_ratio) - (0.10 * spread_ratio)) * timeframe_factor, 0.35, 1.4))
+        edge_modifier = float(np.clip((1.1 - (0.25 * vol_ratio)) * timeframe_factor, 0.35, 1.4))
         confidence_modifier = float(np.clip(0.85 + (0.20 * vol_ratio) + (0.08 * spread_ratio), 0.75, 1.4))
 
         base_edge = self.decision_engine.min_edge
@@ -634,9 +639,7 @@ class QuantKernel:
         effective_min_edge = float(max(base_edge * edge_modifier, self.s.minimal_mode_min_edge_floor))
         confidence_threshold = float(np.clip(confidence_base * confidence_modifier, 0.50, 0.95))
 
-        regime_uncertain = regime == 'HIGH_VOL' and self.operating_mode != 'MINIMAL'
-        if regime == 'HIGH_VOL' and self.operating_mode == 'MINIMAL':
-            confidence_threshold = float(max(confidence_threshold, self.s.minimal_mode_regime_uncertain_floor))
+        regime_uncertain = False
 
         return effective_min_edge, confidence_threshold, regime_uncertain
 
@@ -1090,6 +1093,28 @@ class QuantKernel:
                                         self.state.negative_edge_streak = 0
 
                                     friction_cost = self._conservative_friction_cost(self._last_market_quality.spread_bps, float(sig['volatility']))
+                                    self._asset_price_history[self.s.symbol] = pd.Series(sig['prices']).astype(float).tail(300)
+                                    self._asset_edges[self.s.symbol] = float(expected_edge)
+                                    self._asset_volatility[self.s.symbol] = float(max(sig['volatility'], 1e-6))
+                                    corr_matrix = self.exposure_model.compute_correlation_matrix(self._asset_price_history)
+                                    self._portfolio_weights = self.portfolio_allocator.allocate(
+                                        asset_edges=self._asset_edges,
+                                        asset_volatility=self._asset_volatility,
+                                        correlation_matrix=corr_matrix,
+                                    )
+
+                                    returns_series = pd.Series(sig['returns']).astype(float).dropna()
+                                    recent_returns = returns_series.tail(60).to_numpy(dtype=float)
+                                    historical_returns = returns_series.tail(240).to_numpy(dtype=float)
+                                    cusum_score = self.cusum_drift.update(float(expected_edge))
+                                    kl_raw = self.kl_drift.compute(recent_returns, historical_returns)
+                                    kl_score = float(np.clip(kl_raw / 0.5, 0.0, 1.0))
+                                    drift_score = float(np.clip(0.5 * cusum_score + 0.5 * kl_score, 0.0, 1.0))
+                                    self._latest_drift_signal = DriftSignal(
+                                        drift_score=drift_score,
+                                        regime_change_probability=drift_score,
+                                    )
+
                                     expected_value_net_costs = float(expected_edge - friction_cost)
                                     self._signal_quality.update(
                                         {
@@ -1105,6 +1130,11 @@ class QuantKernel:
                                         volatility=float(sig['volatility']),
                                         spread_bps=self._last_market_quality.spread_bps,
                                         regime=regime,
+                                    )
+                                    effective_min_edge = self.frequency_controller.adjust_threshold(
+                                        dynamic_edge_threshold=effective_min_edge,
+                                        friction_cost=friction_cost,
+                                        now=now,
                                     )
                                     self.decision_engine.last_scores['volatility'] = float(sig['volatility'])
                                     self.decision_engine.last_scores['momentum_weight'] = momentum_weight
@@ -1235,6 +1265,8 @@ class QuantKernel:
                                         capital=self.state.equity,
                                     )
                                     risk_fraction = self._risk_fraction(expected_edge=expected_value_net_costs, volatility=volatility)
+                                    portfolio_weight = float(self._portfolio_weights.get(self.s.symbol, 1.0))
+                                    risk_fraction *= portfolio_weight
                                     order_qty = 0.0
                                     self.state.final_order_notional = 0.0
                                     if decision == 'BUY':
@@ -1321,6 +1353,7 @@ class QuantKernel:
                                             self.state.position_opened_at = now
                                             self.last_trade_ts = now.timestamp()
                                             self.state.trades += 1
+                                            self.frequency_controller.register_trade(now)
                                             self.state.tp_price, self.state.sl_price = self.execution_engine.compute_dynamic_exit_levels(
                                                 entry_price=self.state.entry_price,
                                                 atr=float(sig['atr']),
