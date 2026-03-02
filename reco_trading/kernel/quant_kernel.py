@@ -451,6 +451,21 @@ class QuantKernel:
         regime_buffer = 0.0015 if regime == 'HIGH_VOL' else (0.0008 if regime == 'RANGE' else 0.0004)
         return float(max(effective_min_edge, self.s.operational_edge_floor, (friction_cost * self.s.friction_safety_multiplier) + regime_buffer))
 
+    def _compute_total_equity(self) -> float:
+        return float(self.state.equity + self.state.unrealized_pnl + self.state.realized_pnl - self.state.fees_paid)
+
+    def _sync_daily_anchor(self, total_equity: float) -> None:
+        today = datetime.now(timezone.utc).date()
+        anchor_date = getattr(self, '_daily_anchor_date', today)
+        anchor_equity = float(getattr(self, '_daily_anchor_equity', 0.0))
+        if today != anchor_date:
+            anchor_date = today
+            anchor_equity = total_equity
+        if anchor_equity <= 0.0:
+            anchor_equity = total_equity
+        self._daily_anchor_date = anchor_date
+        self._daily_anchor_equity = anchor_equity
+
     def _check_kill_switch_state(self) -> tuple[bool, str]:
         if self.shutdown_event.is_set():
             return True, 'shutdown_requested'
@@ -463,24 +478,24 @@ class QuantKernel:
         if self.state.consecutive_losses >= self.s.max_consecutive_losses:
             return True, 'consecutive_losses'
         if self.initial_equity > 0:
-            total_equity = self.state.equity + self.state.unrealized_pnl + self.state.realized_pnl - self.state.fees_paid
+            total_equity = self._compute_total_equity()
             if not np.isfinite(total_equity):
                 return True, 'equity_inconsistent'
             drawdown = 1.0 - (total_equity / max(self.initial_equity, 1e-9))
             if drawdown >= self.s.max_global_drawdown:
                 return True, 'max_drawdown'
             today = datetime.now(timezone.utc).date()
-            if today != self._daily_anchor_date:
-                self._daily_anchor_date = today
-                self._daily_anchor_equity = total_equity
-            if self._daily_anchor_equity <= 0.0:
-                self._daily_anchor_equity = total_equity
-            daily_loss_ratio = (self._daily_anchor_equity - total_equity) / max(self._daily_anchor_equity, 1e-9)
+            daily_anchor_equity = total_equity if today != self._daily_anchor_date else self._daily_anchor_equity
+            if daily_anchor_equity <= 0.0:
+                daily_anchor_equity = total_equity
+            daily_loss_ratio = (daily_anchor_equity - total_equity) / max(daily_anchor_equity, 1e-9)
             if daily_loss_ratio >= self.s.max_daily_loss:
                 return True, 'max_daily_loss'
         return False, 'none'
 
     def _activate_kill_switch_if_needed(self) -> tuple[bool, str]:
+        if self.initial_equity > 0:
+            self._sync_daily_anchor(self._compute_total_equity())
         blocked, reason = self._check_kill_switch_state()
         if blocked and reason not in {'none', 'shutdown_requested'}:
             self.state.kill_switch = True

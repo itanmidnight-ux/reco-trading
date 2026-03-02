@@ -120,3 +120,39 @@ def test_runtime_state_includes_slots_compatible_defaults() -> None:
     assert state.negative_edge_streak == 0
     assert state.binance_min_notional == 0.0
     assert state.final_order_notional == 0.0
+
+
+def test_kill_switch_check_is_pure_and_activation_mutates_state() -> None:
+    pytest.importorskip('pydantic_settings')
+    from reco_trading.kernel.quant_kernel import QuantKernel, RuntimeState
+
+    kernel = QuantKernel.__new__(QuantKernel)
+    kernel.state = RuntimeState()
+    kernel.initial_equity = 1_000.0
+    kernel.shutdown_event = type('Event', (), {'is_set': lambda self: False})()
+    kernel.s = type(
+        'Settings',
+        (),
+        {
+            'kill_switch_max_rejections': 3,
+            'kill_switch_max_latency_ms': 500.0,
+            'max_consecutive_losses': 3,
+            'max_global_drawdown': 0.3,
+            'max_daily_loss': 0.2,
+        },
+    )()
+    kernel._daily_anchor_date = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).date()
+    kernel._daily_anchor_equity = 1_000.0
+
+    kernel.state.rejection_count = 4
+    blocked, reason = QuantKernel._check_kill_switch_state(kernel)
+    assert blocked is True
+    assert reason == 'too_many_rejections'
+    assert kernel.state.kill_switch is False
+    assert kernel.state.last_kill_switch_trigger is None
+
+    blocked, reason = QuantKernel._activate_kill_switch_if_needed(kernel)
+    assert blocked is True
+    assert reason == 'too_many_rejections'
+    assert kernel.state.kill_switch is True
+    assert kernel.state.last_kill_switch_trigger == 'too_many_rejections'
