@@ -4,12 +4,14 @@ import asyncio
 import json
 from datetime import datetime, timezone
 from typing import Any
+import time
 
 import redis
 from loguru import logger
 
 from reco_trading.core.microstructure import MicrostructureSnapshot
 from reco_trading.execution.execution_firewall import ExecutionFirewall
+from reco_trading.execution.idempotent_order_service import IdempotentOrderService
 from reco_trading.execution.smart_order_router import SmartOrderRouter, VenueSnapshot
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
@@ -56,6 +58,7 @@ class ExecutionEngine:
         self.last_capital_limited = False
         self.last_allowed_qty = 0.0
         self._symbol_limits_cache: dict[str, float] = {}
+        self._idempotent_order_service = IdempotentOrderService(client=self.client, db=self.db, symbol=self.symbol)
         try:
             self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
             self._redis.ping()
@@ -182,6 +185,9 @@ class ExecutionEngine:
         except Exception:
             logger.warning('redis write failed')
 
+    async def _persist_execution_async(self, payload: dict[str, Any]) -> None:
+        await asyncio.to_thread(self._persist_execution, payload)
+
 
     @staticmethod
     def compute_dynamic_exit_levels(entry_price: float, atr: float, side: str) -> tuple[float, float]:
@@ -201,6 +207,7 @@ class ExecutionEngine:
         max_retries: int,
         reference_price: float | None = None,
     ) -> dict[str, Any] | None:
+        await self._idempotent_order_service.start()
         for _ in range(max_retries):
             if self._quant_kernel.should_block_trading():
                 self.last_rejection_reason = 'blocked_by_quant_kernel'
@@ -222,8 +229,14 @@ class ExecutionEngine:
                     amount,
                     reference_price=reference_price,
                 )
+                decision_timestamp_ms = int(time.time() * 1000)
                 order = await asyncio.wait_for(
-                    self.client.create_market_order(self.symbol, side, sanitized_amount, firewall_checked=True),
+                    self._idempotent_order_service.submit_market_order(
+                        side=side,
+                        amount=sanitized_amount,
+                        timeout_seconds=timeout_seconds,
+                        decision_timestamp_ms=decision_timestamp_ms,
+                    ),
                     timeout=timeout_seconds,
                 )
             except asyncio.TimeoutError:
@@ -248,10 +261,15 @@ class ExecutionEngine:
                 continue
 
             await self.db.record_fill(fill)
+            client_order_id = str(order.get('clientOrderId') or order.get('client_order_id') or '')
+            if client_order_id:
+                await self._idempotent_order_service.mark_after_fill(client_order_id, fill)
             fill_price = float(fill.get('average') or fill.get('price') or 0.0)
+            exchange_timestamp_ms = int(fill.get('timestamp') or fill.get('transactTime') or int(time.time() * 1000))
+            local_timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             await self.db.persist_order_execution(
                 {
-                    'ts': int(datetime.now(timezone.utc).timestamp() * 1000),
+                    'ts': local_timestamp_ms,
                     'symbol': str(fill.get('symbol') or self.symbol),
                     'side': str(fill.get('side') or side).upper(),
                     'qty': float(fill.get('filled') or fill.get('amount') or sanitized_amount),
@@ -260,10 +278,31 @@ class ExecutionEngine:
                     'pnl': 0.0,
                 }
             )
+            logger.info(
+                'execution_forensic_log {}',
+                json.dumps(
+                    {
+                        'clientOrderId': client_order_id,
+                        'orderId': order_id,
+                        'side': str(fill.get('side') or side).upper(),
+                        'qty': float(fill.get('filled') or fill.get('amount') or sanitized_amount),
+                        'price': fill_price,
+                        'expected_edge_gross': 0.0,
+                        'expected_edge_net': 0.0,
+                        'risk_fraction_final': float(self._risk_context.get('risk_per_trade') or 0.0),
+                        'portfolio_weight': 1.0,
+                        'drift_score': 0.0,
+                        'timestamp_local_ms': local_timestamp_ms,
+                        'timestamp_exchange_ms': exchange_timestamp_ms,
+                        'latency_ms': max(local_timestamp_ms - exchange_timestamp_ms, 0),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
             self._firewall.register_fill(symbol=self.symbol, notional=max(fill_price, 0.0) * sanitized_amount)
             if self._capital_governor:
                 self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * sanitized_amount)
-            self._persist_execution(
+            await self._persist_execution_async(
                 {
                     'symbol': self.symbol,
                     'side': side,
