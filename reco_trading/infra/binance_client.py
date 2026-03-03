@@ -53,14 +53,26 @@ class BinanceClient:
     async def initialize(self) -> None:
         if self._markets_loaded:
             return
-        await self.exchange.load_markets()
+        await self._rate_limiter.acquire()
+        await self._governed_call(
+            self.exchange.load_markets,
+            route_type='market_data',
+            weight=10,
+            priority=BinanceRateGovernor.PRIORITY_MARKET_DATA,
+        )
         await self._time_sync.start()
         self._markets_loaded = True
 
     async def _fetch_server_time_ms(self) -> int:
         if not hasattr(self.exchange, 'publicGetTime'):
             return int(time.time() * 1000)
-        payload = await self.exchange.publicGetTime()
+        await self._rate_limiter.acquire()
+        payload = await self._governed_call(
+            self.exchange.publicGetTime,
+            route_type='telemetry',
+            weight=1,
+            priority=BinanceRateGovernor.PRIORITY_TELEMETRY,
+        )
         return int(payload.get('serverTime') or int(time.time() * 1000))
 
     async def _governed_call(self, fn: Callable[..., Awaitable[Any]], *args: Any, route_type: str, weight: int, priority: int, **kwargs: Any) -> Any:

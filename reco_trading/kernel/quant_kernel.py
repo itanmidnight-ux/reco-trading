@@ -558,7 +558,19 @@ class QuantKernel:
 
         self.execution_status = 'ORDER_SENT'
         started = time.perf_counter()
-        fill = await self.execution_engine.execute(side, qty)
+        context = getattr(self, '_context', {}) or {}
+        execution_context = {
+            'expected_edge': float(context.get('expected_edge') or 0.0),
+            'friction_cost': float(context.get('friction_cost') or 0.0),
+            'expected_edge_net': float((context.get('expected_edge') or 0.0) - (context.get('friction_cost') or 0.0)),
+            'risk_fraction_final': float(context.get('risk_fraction') or getattr(self.s, 'risk_per_trade', 0.0)),
+            'portfolio_weight': float(context.get('portfolio_weight') or 1.0),
+            'drift_score': float(context.get('drift_score') or 0.0),
+        }
+        try:
+            fill = await self.execution_engine.execute(side, qty, execution_context=execution_context)
+        except TypeError:
+            fill = await self.execution_engine.execute(side, qty)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self.state.avg_latency_ms = (self.state.avg_latency_ms * 0.8) + (elapsed_ms * 0.2)
 
@@ -1309,6 +1321,9 @@ class QuantKernel:
                                     )
                                     risk_fraction = self._risk_fraction(expected_edge=expected_value_net_costs, volatility=volatility)
                                     portfolio_weight = float(self._portfolio_weights.get(self.s.symbol, 1.0))
+                                    self._context['risk_fraction'] = float(risk_fraction)
+                                    self._context['portfolio_weight'] = float(portfolio_weight)
+                                    self._context['drift_score'] = float(getattr(self._latest_drift_signal, 'drift_score', 0.0))
                                     if not np.isfinite(portfolio_weight):
                                         portfolio_weight = 1.0
                                     portfolio_weight = float(max(portfolio_weight, 0.0))
