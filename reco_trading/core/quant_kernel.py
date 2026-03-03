@@ -13,7 +13,11 @@ class QuantKernelState:
     firewall_rejections: int = 0
 
 
-class QuantKernel:
+class LegacyQuantKernel:
+    """DEPRECATED: legacy supervisory kernel.
+
+    Runtime entrypoint uses `reco_trading.kernel.quant_kernel.QuantKernel`.
+    """
     def __init__(self, alert_manager: AlertManager | None = None, rejection_threshold_for_conservative: int = 3) -> None:
         self.alert_manager = alert_manager or AlertManager()
         self.state = QuantKernelState()
@@ -44,3 +48,7 @@ class QuantKernel:
                 'risk_snapshot': risk_snapshot,
             },
         )
+
+
+# Backward-compatible alias.
+QuantKernel = LegacyQuantKernel

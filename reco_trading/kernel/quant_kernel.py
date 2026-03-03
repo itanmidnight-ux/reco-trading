@@ -338,6 +338,7 @@ class QuantKernel:
         self._asset_volatility: dict[str, float] = {}
         self._portfolio_weights: dict[str, float] = {self.s.symbol: 1.0}
         self._latest_drift_signal = DriftSignal(drift_score=0.0, regime_change_probability=0.0)
+        self._edge_scale_samples: deque[float] = deque(maxlen=200)
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -586,20 +587,42 @@ class QuantKernel:
         }
 
     def _risk_fraction(self, expected_edge: float, volatility: float) -> float:
-        variance = float(max(volatility * volatility, 1e-8))
+        epsilon = 1e-6
+        volatility_safe = float(volatility)
+        if not np.isfinite(volatility_safe) or volatility_safe <= 0.0:
+            volatility_safe = epsilon
+        variance = float(max(volatility_safe * volatility_safe, 1e-8))
         conservative_fraction = float(np.clip(self.s.risk_per_trade, 0.001, self.s.max_confidence_allocation))
-        kelly_fraction = float(max(expected_edge, 0.0) / variance)
+        expected_edge_safe = float(expected_edge)
+        if not np.isfinite(expected_edge_safe):
+            return 0.0
+        self._edge_scale_samples.append(abs(expected_edge_safe))
+        edge_scale_reference = float(np.mean(self._edge_scale_samples)) if self._edge_scale_samples else 0.10
+        if not np.isfinite(edge_scale_reference) or edge_scale_reference <= 0.0:
+            edge_scale_reference = 0.10
+
+        kelly_fraction = float(max(expected_edge_safe, 0.0) / variance)
         effective_kelly = float(np.clip(kelly_fraction, 0.0, self.s.max_confidence_allocation))
         capped_base = float(min(conservative_fraction, effective_kelly))
 
-        edge_factor = float(np.clip(abs(expected_edge) / 0.20, 0.10, 1.0))
-        volatility_factor = float(np.clip(self.s.volatility_target / max(volatility, 1e-6), 0.25, 1.0))
+        edge_factor = float(np.clip(abs(expected_edge_safe) / max(edge_scale_reference, epsilon), 0.10, 1.0))
+        volatility_factor = float(np.clip(self.s.volatility_target / max(volatility_safe, epsilon), 0.25, 1.0))
         drawdown_factor = float(np.clip(1.0 - self._rolling_stats['drawdown_pressure'], 0.5, 1.0))
         ruin_prob = float(np.clip(getattr(self._latest_ruin_snapshot, 'risk_of_ruin_probability', 1.0), 0.0, 1.0))
         ruin_factor = float(np.clip(1.0 - ruin_prob, 0.5, 1.0))
-        drift_factor = float(np.clip(1.0 - self._latest_drift_signal.drift_score, 0.5, 1.0))
+        drift_signal = getattr(self, '_latest_drift_signal', None)
+        drift_score = float(getattr(drift_signal, 'drift_score', 0.0)) if drift_signal is not None else 0.0
+        if not np.isfinite(drift_score):
+            drift_score = 0.0
+        drift_factor = float(np.clip(1.0 - drift_score, 0.5, 1.0))
+
+        components = [volatility_safe, drift_score, ruin_prob, edge_factor, volatility_factor, drawdown_factor]
+        if not all(np.isfinite(c) for c in components):
+            return 0.0
 
         risk_fraction = capped_base * edge_factor * volatility_factor * drawdown_factor * ruin_factor * drift_factor
+        if not np.isfinite(risk_fraction):
+            return 0.0
         return float(np.clip(risk_fraction, 0.0, self.s.max_confidence_allocation))
 
     def _refresh_rolling_stats(self) -> None:
@@ -1109,6 +1132,10 @@ class QuantKernel:
                                     cusum_score = self.cusum_drift.update(float(expected_edge))
                                     kl_raw = self.kl_drift.compute(recent_returns, historical_returns)
                                     kl_score = float(np.clip(kl_raw / 0.5, 0.0, 1.0))
+                                    if not np.isfinite(cusum_score):
+                                        cusum_score = 0.0
+                                    if not np.isfinite(kl_score):
+                                        kl_score = 0.0
                                     drift_score = float(np.clip(0.5 * cusum_score + 0.5 * kl_score, 0.0, 1.0))
                                     self._latest_drift_signal = DriftSignal(
                                         drift_score=drift_score,
@@ -1266,6 +1293,13 @@ class QuantKernel:
                                     )
                                     risk_fraction = self._risk_fraction(expected_edge=expected_value_net_costs, volatility=volatility)
                                     portfolio_weight = float(self._portfolio_weights.get(self.s.symbol, 1.0))
+                                    if not np.isfinite(portfolio_weight):
+                                        portfolio_weight = 1.0
+                                    portfolio_weight = float(max(portfolio_weight, 0.0))
+                                    if portfolio_weight > 1.0:
+                                        portfolio_weight = 1.0
+                                    if len(self._portfolio_weights) <= 1 and portfolio_weight <= 0.0:
+                                        portfolio_weight = 1.0
                                     risk_fraction *= portfolio_weight
                                     order_qty = 0.0
                                     self.state.final_order_notional = 0.0
@@ -1353,7 +1387,7 @@ class QuantKernel:
                                             self.state.position_opened_at = now
                                             self.last_trade_ts = now.timestamp()
                                             self.state.trades += 1
-                                            self.frequency_controller.register_trade(now)
+                                            self.frequency_controller.register_trade(now, trade_id=str(fill.get('id') or ''))
                                             self.state.tp_price, self.state.sl_price = self.execution_engine.compute_dynamic_exit_levels(
                                                 entry_price=self.state.entry_price,
                                                 atr=float(sig['atr']),
@@ -1391,6 +1425,8 @@ class QuantKernel:
                                             self.state.capital_in_position = 0.0
                                             self.state.partial_exits_done.clear()
                                             self.last_trade_ts = now.timestamp()
+                                            self.state.trades += 1
+                                            self.frequency_controller.register_trade(now, trade_id=str(fill.get('id') or ''))
                                             self.system_state = SystemState.COOLDOWN.value
                                             self.state.last_block_reason = 'none'
                                         else:

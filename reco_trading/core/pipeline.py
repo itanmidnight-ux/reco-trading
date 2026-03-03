@@ -8,7 +8,12 @@ from typing import Any
 import numpy as np
 
 
-class QuantKernel:
+class LegacyQuantKernel:
+    """DEPRECATED: legacy pipeline kernel.
+
+    Runtime entrypoint uses `reco_trading.kernel.quant_kernel.QuantKernel`.
+    This class remains only for compatibility.
+    """
     def __init__(
         self,
         data_feed,
@@ -204,6 +209,8 @@ class QuantKernel:
             self.rl_agent.save_state()
 
 
-class TradingPipeline(QuantKernel):
-    """Alias de compatibilidad."""
+QuantKernel = LegacyQuantKernel
 
+
+class TradingPipeline(LegacyQuantKernel):
+    """Alias de compatibilidad."""

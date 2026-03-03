@@ -11,18 +11,28 @@ class CUSUMDrift:
         self.h = float(max(h, 1e-9))
         self.mean_alpha = float(np.clip(mean_alpha, 0.001, 1.0))
         self.running_mean = 0.0
+        self.running_var = 0.0
         self.cusum = 0.0
         self.initialized = False
 
     def update(self, value: float) -> float:
         x = float(value)
+        if not np.isfinite(x):
+            self.cusum = 0.0
+            return 0.0
         if not self.initialized:
             self.running_mean = x
+            self.running_var = 0.0
             self.initialized = True
             self.cusum = 0.0
             return 0.0
 
+        delta = x - self.running_mean
         self.running_mean = ((1.0 - self.mean_alpha) * self.running_mean) + (self.mean_alpha * x)
+        self.running_var = ((1.0 - self.mean_alpha) * self.running_var) + (self.mean_alpha * (delta * delta))
+        if self.running_var <= 1e-12:
+            self.cusum = 0.0
+            return 0.0
         self.cusum = float(max(0.0, self.cusum + (x - self.running_mean - self.k)))
         return float(np.clip(self.cusum / self.h, 0.0, 1.0))
 
@@ -49,12 +59,17 @@ class KLDivergenceDrift:
         bins = np.linspace(min_edge, max_edge, self.bins + 1)
         p_hist, _ = np.histogram(recent_arr, bins=bins, density=True)
         q_hist, _ = np.histogram(historical_arr, bins=bins, density=True)
+        valid_bins = int(np.count_nonzero((p_hist > 0.0) | (q_hist > 0.0)))
+        if valid_bins < 2:
+            return 0.0
         p = p_hist + self.epsilon
         q = q_hist + self.epsilon
         p /= p.sum()
         q /= q.sum()
-
-        return float(np.sum(p * np.log(p / q)))
+        divergence = float(np.sum(p * np.log(p / q)))
+        if not np.isfinite(divergence):
+            return 0.0
+        return divergence
 
 
 @dataclass(slots=True)

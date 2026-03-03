@@ -21,7 +21,7 @@ def test_decision_engine_blocks_low_confidence_with_dynamic_threshold() -> None:
     assert 'confidence_below_threshold' in engine.last_reason
 
 
-def test_decision_engine_blocks_uncertain_regime() -> None:
+def test_decision_engine_allows_uncertain_regime_when_edge_is_valid() -> None:
     engine = DecisionEngine(min_edge=0.0005)
     engine.update_context(
         momentum=0.80,
@@ -38,5 +38,5 @@ def test_decision_engine_blocks_uncertain_regime() -> None:
 
     decision = engine.decide()
 
-    assert decision == 'HOLD'
-    assert 'regime_uncertain' in engine.last_reason
+    assert decision == 'BUY'
+    assert 'positive_edge' in engine.last_reason
