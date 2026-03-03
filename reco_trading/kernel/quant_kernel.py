@@ -26,6 +26,7 @@ from reco_trading.core.system_state import SystemState
 from reco_trading.core.mean_reversion_model import MeanReversionModel
 from reco_trading.core.momentum_model import MomentumModel
 from reco_trading.execution.execution_firewall import ExecutionFirewall
+from reco_trading.execution.capital_protection_controller import CapitalProtectionController
 from reco_trading.adaptive.frequency_controller import FrequencyController
 from reco_trading.kernel.conditional_performance import ConditionalPerformanceTracker
 from reco_trading.kernel.edge_monitor import EdgeMonitor, EdgeSnapshot
@@ -387,6 +388,10 @@ class QuantKernel:
                 max_daily_notional=200_000,
             ),
             quant_kernel=self,
+        )
+        self.capital_protection_controller = CapitalProtectionController(
+            client=self.client,
+            order_service=self.execution_engine._idempotent_order_service,
         )
 
         await self.client.ping()
@@ -1236,6 +1241,17 @@ class QuantKernel:
                                                 policy_block_reasons.append('MTF_CONFLICT')
                                                 self.state.last_block_reason = 'mtf_conflict'
                                                 self.activity_text = 'HOLD por mtf_conflict'
+
+                                    if executable_decision in {'BUY', 'SELL'}:
+                                        protection = await self.capital_protection_controller.evaluate(
+                                            symbol=self.s.symbol,
+                                            position_qty=self.state.position_qty,
+                                        )
+                                        if not protection.allowed:
+                                            executable_decision = 'HOLD'
+                                            policy_block_reasons.append(protection.reason)
+                                            self.state.last_block_reason = protection.reason
+                                            self.activity_text = f'HOLD por {protection.reason}'
 
                                     if self.operating_mode == 'MINIMAL' and self.state.position_state == PositionState.LONG and executable_decision == 'BUY':
                                         executable_decision = 'HOLD'
