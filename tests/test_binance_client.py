@@ -41,3 +41,25 @@ def test_create_market_order_initializes_markets(monkeypatch):
     assert fake.created == [('BTC/USDT', 0.01)]
     assert out['id'] == '1'
     asyncio.run(client.close())
+
+
+def test_ping_closes_exchange_when_initialize_fails(monkeypatch):
+    class _FailingExchange(_FakeExchange):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+
+        async def load_markets(self):
+            raise RuntimeError('boom')
+
+        async def close(self):
+            self.closed = True
+
+    failing = _FailingExchange()
+    monkeypatch.setattr(bc.ccxt, 'binance', lambda *_a, **_k: failing)
+
+    client = bc.BinanceClient(api_key='k', api_secret='s', testnet=True)
+    with pytest.raises(RuntimeError, match='Binance ping failed'):
+        asyncio.run(client.ping())
+
+    assert failing.closed is True
