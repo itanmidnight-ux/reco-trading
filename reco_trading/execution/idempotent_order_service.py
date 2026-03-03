@@ -37,7 +37,6 @@ class IdempotentOrderService:
         self.symbol = symbol
         self.strategy_id = strategy_id
         self._reconcile_interval_seconds = max(float(reconcile_interval_seconds), 1.0)
-        self._nonce = 0
         self._lock = asyncio.Lock()
         self._journal: dict[str, JournalEntry] = {}
         self._reconcile_task: asyncio.Task[None] | None = None
@@ -70,11 +69,30 @@ class IdempotentOrderService:
         amount: float,
         timeout_seconds: float,
         decision_timestamp_ms: int,
+        client_order_id: str | None = None,
+        decision_context_hash: str | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
-            client_order_id = self._build_client_order_id(side=side, decision_timestamp_ms=decision_timestamp_ms)
+            resolved_client_order_id = client_order_id or self._build_client_order_id(
+                side=side,
+                amount=amount,
+                decision_timestamp_ms=decision_timestamp_ms,
+                decision_context_hash=decision_context_hash,
+            )
+            existing = self._journal.get(resolved_client_order_id)
+            if existing is not None:
+                if existing.exchange_order_id:
+                    recovered = await self.client.fetch_order(existing.symbol, existing.exchange_order_id)
+                    if recovered:
+                        return recovered
+                recovered = await self.client.fetch_order_by_client_order_id(existing.symbol, resolved_client_order_id)
+                if recovered:
+                    existing.exchange_order_id = str(recovered.get('id') or '')
+                    existing.state = JournalState.ACKED
+                    await self._persist_journal(existing)
+                    return recovered
             entry = JournalEntry(
-                client_order_id=client_order_id,
+                client_order_id=resolved_client_order_id,
                 symbol=self.symbol,
                 side=side,
                 amount=float(amount),
@@ -82,10 +100,10 @@ class IdempotentOrderService:
                 state=JournalState.PENDING_SUBMIT,
             )
             await self._persist_journal(entry)
-            self._journal[client_order_id] = entry
+            self._journal[resolved_client_order_id] = entry
 
         try:
-            order = await asyncio.wait_for(self._submit_to_exchange(self.symbol, side, float(amount), client_order_id), timeout=timeout_seconds)
+            order = await asyncio.wait_for(self._submit_to_exchange(self.symbol, side, float(amount), entry.client_order_id), timeout=timeout_seconds)
             entry.exchange_order_id = str(order.get('id') or '')
             entry.state = JournalState.ACKED
             await self._persist_journal(entry)
@@ -120,10 +138,7 @@ class IdempotentOrderService:
             entry.state = JournalState.ACKED
             await self._persist_journal(entry)
             return recovered_order
-        return await asyncio.wait_for(
-            self._submit_to_exchange(entry.symbol, entry.side, entry.amount, entry.client_order_id),
-            timeout=timeout_seconds,
-        )
+        return await self._submit_to_exchange(entry.symbol, entry.side, entry.amount, entry.client_order_id)
 
     async def _reconcile_loop(self) -> None:
         while not self._stop.is_set():
@@ -171,10 +186,17 @@ class IdempotentOrderService:
             }
         )
 
-    def _build_client_order_id(self, *, side: str, decision_timestamp_ms: int) -> str:
-        self._nonce += 1
+    def _build_client_order_id(
+        self,
+        *,
+        side: str,
+        amount: float,
+        decision_timestamp_ms: int,
+        decision_context_hash: str | None = None,
+    ) -> str:
         decision_bucket = int(decision_timestamp_ms // 1000)
-        raw = f'{self.strategy_id}:{self.symbol}:{side}:{decision_bucket}:{self._nonce}'
+        context = (decision_context_hash or '').strip() or f'{float(amount):.8f}'
+        raw = f'{self.strategy_id}:{self.symbol}:{side}:{decision_bucket}:{context}'
         return hashlib.sha256(raw.encode('utf-8')).hexdigest()[:32]
 
     async def _submit_to_exchange(self, symbol: str, side: str, amount: float, client_order_id: str) -> dict[str, Any]:

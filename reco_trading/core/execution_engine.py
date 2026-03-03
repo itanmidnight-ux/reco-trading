@@ -59,9 +59,19 @@ class ExecutionEngine:
         self.last_allowed_qty = 0.0
         self._symbol_limits_cache: dict[str, float] = {}
         self._idempotent_order_service = IdempotentOrderService(client=self.client, db=self.db, symbol=self.symbol)
+        self._execution_lock = asyncio.Lock()
+        self._active_execution_context: dict[str, Any] = {}
+        self._initialized = False
         try:
             self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
-            self._redis.ping()
+        except Exception:
+            self._redis = None
+
+    async def initialize(self) -> None:
+        if not self._redis:
+            return
+        try:
+            await asyncio.to_thread(self._redis.ping)
         except Exception:
             self._redis = None
 
@@ -98,9 +108,8 @@ class ExecutionEngine:
 
         markets = getattr(self.client.exchange, 'markets', None) if hasattr(self.client, 'exchange') else None
         if not markets:
-            load = getattr(self.client.exchange, 'load_markets', None) if hasattr(self.client, 'exchange') else None
-            if load:
-                await load()
+            if hasattr(self.client, 'initialize'):
+                await self.client.initialize()
                 markets = getattr(self.client.exchange, 'markets', None)
 
         min_notional = 0.0
@@ -206,17 +215,23 @@ class ExecutionEngine:
         timeout_seconds: float,
         max_retries: int,
         reference_price: float | None = None,
+        decision_tag: str = '',
     ) -> dict[str, Any] | None:
         await self._idempotent_order_service.start()
+        decision_timestamp_ms = int(time.time() * 1000)
+        decision_bucket = int(decision_timestamp_ms // 1000)
+        decision_context_hash = f'{self.symbol}:{side}:{amount:.8f}:{decision_bucket}:{decision_tag}'
+        client_order_id = self._idempotent_order_service._build_client_order_id(
+            side=side,
+            amount=amount,
+            decision_timestamp_ms=decision_timestamp_ms,
+            decision_context_hash=decision_context_hash,
+        )
         for _ in range(max_retries):
             if self._quant_kernel.should_block_trading():
                 self.last_rejection_reason = 'blocked_by_quant_kernel'
                 return None
-            try:
-                allowed = await asyncio.wait_for(self._evaluate_firewall(side, amount), timeout=timeout_seconds)
-            except asyncio.TimeoutError:
-                self.last_rejection_reason = 'firewall_timeout'
-                continue
+            allowed = await self._evaluate_firewall(side, amount)
             if not allowed:
                 return None
 
@@ -229,15 +244,13 @@ class ExecutionEngine:
                     amount,
                     reference_price=reference_price,
                 )
-                decision_timestamp_ms = int(time.time() * 1000)
-                order = await asyncio.wait_for(
-                    self._idempotent_order_service.submit_market_order(
-                        side=side,
-                        amount=sanitized_amount,
-                        timeout_seconds=timeout_seconds,
-                        decision_timestamp_ms=decision_timestamp_ms,
-                    ),
-                    timeout=timeout_seconds,
+                order = await self._idempotent_order_service.submit_market_order(
+                    side=side,
+                    amount=sanitized_amount,
+                    timeout_seconds=timeout_seconds,
+                    decision_timestamp_ms=decision_timestamp_ms,
+                    client_order_id=client_order_id,
+                    decision_context_hash=decision_context_hash,
                 )
             except asyncio.TimeoutError:
                 self.last_rejection_reason = 'order_timeout'
@@ -287,11 +300,12 @@ class ExecutionEngine:
                         'side': str(fill.get('side') or side).upper(),
                         'qty': float(fill.get('filled') or fill.get('amount') or sanitized_amount),
                         'price': fill_price,
-                        'expected_edge_gross': 0.0,
-                        'expected_edge_net': 0.0,
-                        'risk_fraction_final': float(self._risk_context.get('risk_per_trade') or 0.0),
-                        'portfolio_weight': 1.0,
-                        'drift_score': 0.0,
+                        'expected_edge_gross': float(self._active_execution_context.get('expected_edge') or 0.0),
+                        'friction_cost': float(self._active_execution_context.get('friction_cost') or 0.0),
+                        'expected_edge_net': float(self._active_execution_context.get('expected_edge_net') or 0.0),
+                        'risk_fraction_final': float(self._active_execution_context.get('risk_fraction_final') or self._risk_context.get('risk_per_trade') or 0.0),
+                        'portfolio_weight': float(self._active_execution_context.get('portfolio_weight') or 1.0),
+                        'drift_score': float(self._active_execution_context.get('drift_score') or 0.0),
                         'timestamp_local_ms': local_timestamp_ms,
                         'timestamp_exchange_ms': exchange_timestamp_ms,
                         'latency_ms': max(local_timestamp_ms - exchange_timestamp_ms, 0),
@@ -322,21 +336,28 @@ class ExecutionEngine:
         microstructure: MicrostructureSnapshot | None = None,
         timeout_seconds: float | None = None,
         max_retries: int = 5,
+        execution_context: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         side = str(side).upper()
         if not self._validate_order(side, amount) or not self._validate_microstructure(microstructure):
             return None
-        constrained_amount = await self._apply_capital_limit(side=side, amount=amount)
-        if constrained_amount <= 0.0:
-            return None
-        timeout = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
-        return await self._execute_child_order(
-            side=side,
-            amount=constrained_amount,
-            timeout_seconds=timeout,
-            max_retries=max_retries,
-            reference_price=None,
-        )
+        async with self._execution_lock:
+            constrained_amount = await self._apply_capital_limit(side=side, amount=amount)
+            if constrained_amount <= 0.0:
+                return None
+            timeout = self.order_timeout_seconds if timeout_seconds is None else max(float(timeout_seconds), 0.1)
+            self._active_execution_context = execution_context or {}
+            try:
+                return await self._execute_child_order(
+                    side=side,
+                    amount=constrained_amount,
+                    timeout_seconds=timeout,
+                    max_retries=max_retries,
+                    reference_price=None,
+                    decision_tag='market',
+                )
+            finally:
+                self._active_execution_context = {}
 
     async def _execute_institutional_order(self, side: str, amount: float) -> dict[str, Any] | None:
         book = await self.client.fetch_order_book(self.symbol, limit=10)
@@ -370,13 +391,14 @@ class ExecutionEngine:
             capital_ticket=ticket,
         )
         fills: list[dict[str, Any]] = []
-        for child in route:
+        for idx, child in enumerate(route):
             fill = await self._execute_child_order(
                 side=side,
                 amount=float(child['amount']),
                 timeout_seconds=self.order_timeout_seconds,
                 max_retries=3,
                 reference_price=(bid + ask) / 2 if bid > 0 and ask > 0 else None,
+                decision_tag=f'institutional:{idx}',
             )
             if fill:
                 fills.append(fill)
@@ -384,11 +406,15 @@ class ExecutionEngine:
             return None
         return {'status': 'institutional_completed', 'fills': fills, 'routed_children': len(route), 'filled_children': len(fills)}
 
-    async def execute(self, side: str, amount: float) -> dict[str, Any] | None:
+    async def execute(self, side: str, amount: float, execution_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
         side = str(side).upper()
+        if not self._initialized:
+            await self.initialize()
+            self._initialized = True
         if self._quant_kernel.should_block_trading():
             self.last_rejection_reason = 'blocked_by_quant_kernel'
             return None
         if amount >= self.institutional_order_threshold:
-            return await self._execute_institutional_order(side=side, amount=amount)
-        return await self.execute_market_order(side=side, amount=amount)
+            async with self._execution_lock:
+                return await self._execute_institutional_order(side=side, amount=amount)
+        return await self.execute_market_order(side=side, amount=amount, execution_context=execution_context)
