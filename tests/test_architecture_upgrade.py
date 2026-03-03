@@ -41,3 +41,10 @@ def test_frequency_controller_clamps_to_friction_cost():
     controller = FrequencyController(target_trades_per_day=10, adjustment_strength=0.1)
     adjusted = controller.adjust_threshold(dynamic_edge_threshold=0.001, friction_cost=0.002)
     assert adjusted >= 0.002
+
+
+def test_frequency_controller_deduplicates_trade_ids():
+    controller = FrequencyController(target_trades_per_day=10, adjustment_strength=0.1)
+    controller.register_trade(trade_id='abc123')
+    controller.register_trade(trade_id='abc123')
+    assert len(controller.trade_timestamps) == 1

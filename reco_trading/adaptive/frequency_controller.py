@@ -11,6 +11,7 @@ class FrequencyController:
         self.target_trades_per_day = int(max(target_trades_per_day, 1))
         self.adjustment_strength = float(np.clip(adjustment_strength, 0.001, 0.5))
         self.trade_timestamps: deque[datetime] = deque()
+        self._seen_trade_ids: set[str] = set()
         self.window = timedelta(days=1)
 
     def _prune(self, now: datetime) -> None:
@@ -18,8 +19,13 @@ class FrequencyController:
         while self.trade_timestamps and self.trade_timestamps[0] < cutoff:
             self.trade_timestamps.popleft()
 
-    def register_trade(self, timestamp: datetime | None = None) -> None:
+    def register_trade(self, timestamp: datetime | None = None, trade_id: str | None = None) -> None:
         now = timestamp or datetime.now(timezone.utc)
+        normalized_trade_id = str(trade_id or '').strip()
+        if normalized_trade_id:
+            if normalized_trade_id in self._seen_trade_ids:
+                return
+            self._seen_trade_ids.add(normalized_trade_id)
         self.trade_timestamps.append(now)
         self._prune(now)
 

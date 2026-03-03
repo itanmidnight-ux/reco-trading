@@ -53,16 +53,14 @@ class DecisionEngine:
             'global': confidence,
         }
 
-        if not state.regime.tradable:
-            decision = Decision('HOLD', confidence, f'regime_blocked:{state.regime.name}', scores)
-        elif state.expected_edge <= state.friction_cost:
+        if state.expected_edge <= state.friction_cost:
             decision = Decision('HOLD', confidence, 'edge_below_friction', scores)
         elif abs(state.expected_edge) < self._min_edge:
             decision = Decision('HOLD', confidence, 'edge_below_threshold', scores)
         elif state.expected_edge > 0:
-            decision = Decision('BUY', confidence, 'positive_statistical_edge', scores)
+            decision = Decision('BUY', confidence, f'positive_statistical_edge_regime:{state.regime.name}', scores)
         else:
-            decision = Decision('SELL', confidence, 'negative_statistical_edge', scores)
+            decision = Decision('SELL', confidence, f'negative_statistical_edge_regime:{state.regime.name}', scores)
 
         self._store(decision)
         return decision

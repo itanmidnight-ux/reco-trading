@@ -25,8 +25,11 @@ class KernelNotification:
     timestamp: float = field(default_factory=time.time)
 
 
-class QuantKernel:
-    """Núcleo de control cuantitativo para reaccionar a eventos de validación live."""
+class LegacyQuantKernel:
+    """DEPRECATED: OS-side validation helper kernel.
+
+    Runtime entrypoint uses `reco_trading.kernel.quant_kernel.QuantKernel`.
+    """
 
     def __init__(self, capital_governor: CapitalGovernor, *, strategy_limit: int = 8) -> None:
         self.capital_governor = capital_governor
@@ -63,3 +66,7 @@ class QuantKernel:
             self.mode.position_size_multiplier = 0.50
             self.mode.max_strategies = max(1, self.mode.max_strategies - 4)
         return self.mode
+
+
+# Backward-compatible alias.
+QuantKernel = LegacyQuantKernel
