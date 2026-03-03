@@ -187,6 +187,8 @@ class BinanceClient:
                 raise RuntimeError('Ticker inválido en ping.')
             return True
         except Exception as e:
+            with suppress(Exception):
+                await self.close()
             raise RuntimeError(f'Binance ping failed: {e}') from e
 
     async def fetch_ticker(self, symbol: str) -> Any:
