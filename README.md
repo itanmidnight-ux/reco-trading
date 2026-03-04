@@ -46,6 +46,34 @@ Sistema cuantitativo modular para Binance Spot con activo único BTC/USDT en tim
                     └────────────────────────────┘
 ```
 
+## Arquitectura post-hardening (ejecución determinística)
+
+```text
+run.sh -> main.py -> QuantKernel.run()
+                     |
+                     +--> Startup Safety Barrier
+                     |     - startup_reconciliation
+                     |     - restore open journal + position snapshot
+                     |     - hold trading for startup_safety_seconds
+                     |
+                     +--> Decision Pipeline
+                     |     FeatureEngine + Models + Regime + SignalFusion
+                     |     -> decision_id + persisted decision snapshot
+                     |
+                     +--> ExecutionEngine.execute()
+                           |
+                           +--> Postgres advisory lock (cross-process)
+                           +--> ExecutionFirewall + capital limit checks
+                           +--> Capital reservation (reserve/commit/release)
+                           +--> IdempotentOrderService
+                           |     - durable execution_idempotency_ledger
+                           |     - state machine: PENDING/SUBMITTED/PARTIAL/FILLED/CANCELLED/FAILED
+                           |
+                           +--> ExchangeGateway (governed Binance access)
+                           +--> DB forensic persistence
+                                 orders/fills/order_executions + decision_id
+```
+
 ## Estructura
 
 - `reco_trading/config`: settings y logging.
