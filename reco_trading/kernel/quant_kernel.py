@@ -340,6 +340,13 @@ class QuantKernel:
         self._portfolio_weights: dict[str, float] = {self.s.symbol: 1.0}
         self._latest_drift_signal = DriftSignal(drift_score=0.0, regime_change_probability=0.0)
         self._edge_scale_samples: deque[float] = deque(maxlen=200)
+        self._context: dict[str, Any] = {
+            'expected_edge': 0.0,
+            'friction_cost': 0.0,
+            'risk_fraction': float(self.s.risk_per_trade),
+            'portfolio_weight': 1.0,
+            'drift_score': 0.0,
+        }
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -1195,6 +1202,10 @@ class QuantKernel:
                                         confidence_threshold=confidence_threshold,
                                         regime_uncertain=regime_uncertain,
                                     )
+                                    self._context = dict(getattr(self.decision_engine, '_context', {}) or {})
+                                    self._context.setdefault('risk_fraction', float(self.s.risk_per_trade))
+                                    self._context.setdefault('portfolio_weight', 1.0)
+                                    self._context.setdefault('drift_score', 0.0)
                                     statistical_decision = self.decision_engine.decide()
                                     self.decision_engine.last_scores['volatility'] = float(sig['volatility'])
                                     self.decision_engine.last_scores['momentum_weight'] = momentum_weight
