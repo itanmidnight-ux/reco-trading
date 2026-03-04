@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
+import uuid
 from collections import Counter, deque
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -32,6 +33,7 @@ from reco_trading.kernel.conditional_performance import ConditionalPerformanceTr
 from reco_trading.kernel.edge_monitor import EdgeMonitor, EdgeSnapshot
 from reco_trading.kernel.regime_controller import RegimeController
 from reco_trading.kernel.risk_of_ruin import RiskOfRuinEstimator, RiskOfRuinSnapshot
+from reco_trading.kernel.capital_governor import CapitalGovernor
 from reco_trading.portfolio.allocator import PortfolioAllocator
 from reco_trading.portfolio.exposure_model import ExposureModel
 from reco_trading.statistics.drift_detector import CUSUMDrift, DriftSignal, KLDivergenceDrift
@@ -318,6 +320,7 @@ class QuantKernel:
             'sharpe': 0.0,
             'drawdown_pressure': 0.0,
         }
+        self._startup_safety_until_monotonic: float = 0.0
         self._signal_quality: dict[str, float] = {
             'confidence_score': 0.0,
             'stability_weight': 0.0,
@@ -370,7 +373,9 @@ class QuantKernel:
             testnet=self.s.binance_testnet,
             confirm_mainnet=self.s.confirm_mainnet,
         )
+        logger.info('Startup trading mode: {}', 'TESTNET' if self.s.binance_testnet else 'PRODUCTION')
         self.db = Database(self.s.postgres_dsn, self.s.postgres_admin_dsn)
+        await self.db.init()
         self.market_data = MarketDataService(self.client, self.s.symbol, self.s.timeframe)
         self.signal_engine = SignalEngine()
         self.data_buffer = DataBuffer(window_seconds=max(self.s.learning_phase_seconds, warmup_window_seconds))
@@ -395,6 +400,7 @@ class QuantKernel:
                 max_daily_notional=200_000,
             ),
             quant_kernel=self,
+            capital_governor=CapitalGovernor(hard_cap_global=10_000_000.0),
         )
         self.capital_protection_controller = CapitalProtectionController(
             client=self.client,
@@ -421,6 +427,53 @@ class QuantKernel:
         if not np.isfinite(usdt) or usdt <= 0.0:
             return False, 0.0, 'invalid_usdt_balance'
         return True, usdt, 'ok'
+
+    async def _startup_reconciliation(self) -> None:
+        service = self.execution_engine._idempotent_order_service
+        await service.load_from_ledger()
+        await service.start()
+        try:
+            active = await self.db.load_active_idempotency_entries()
+        except Exception:
+            active = []
+        open_orders = await self.client.fetch_open_orders(self.s.symbol)
+        open_ids = {
+            str(item.get('clientOrderId') or item.get('client_order_id') or '')
+            for item in (open_orders or [])
+        }
+        for row in active:
+            cid = str(row.get('client_order_id') or '')
+            if not cid:
+                continue
+            if cid in open_ids:
+                await self.db.update_idempotency_status(cid, 'SUBMITTED', str(row.get('exchange_order_id') or ''))
+                continue
+            found = await self.client.fetch_order_by_client_order_id(self.s.symbol, cid)
+            if not found:
+                continue
+            status = str(found.get('status') or '').lower()
+            exchange_order_id = str(found.get('id') or row.get('exchange_order_id') or '')
+            if status in {'closed', 'filled'}:
+                await self.db.update_idempotency_status(cid, 'FILLED', exchange_order_id)
+            elif status in {'partially_filled'}:
+                await self.db.update_idempotency_status(cid, 'PARTIALLY_FILLED', exchange_order_id)
+            elif status in {'cancelled', 'canceled'}:
+                await self.db.update_idempotency_status(cid, 'CANCELLED', exchange_order_id)
+            else:
+                await self.db.update_idempotency_status(cid, 'SUBMITTED', exchange_order_id)
+
+        snapshot = await self.db.restore_position_snapshot(self.s.symbol)
+        net_qty = float(snapshot.get('net_qty') or 0.0)
+        avg_entry = float(snapshot.get('avg_entry') or 0.0)
+        if net_qty > 0.0:
+            self.state.position_state = PositionState.LONG
+            self.state.position_qty = net_qty
+            self.state.entry_price = avg_entry
+            self.state.capital_in_position = net_qty * max(avg_entry, 0.0)
+        else:
+            self.state.position_state = PositionState.FLAT
+            self.state.position_qty = 0.0
+            self.state.entry_price = 0.0
 
     def _map_regime(self, raw_regime: str) -> str:
         r = str(raw_regime).lower()
@@ -573,6 +626,7 @@ class QuantKernel:
             'risk_fraction_final': float(context.get('risk_fraction') or getattr(self.s, 'risk_per_trade', 0.0)),
             'portfolio_weight': float(context.get('portfolio_weight') or 1.0),
             'drift_score': float(context.get('drift_score') or 0.0),
+            'decision_id': str(context.get('decision_id') or ''),
         }
         try:
             fill = await self.execution_engine.execute(side, qty, execution_context=execution_context)
@@ -970,7 +1024,9 @@ class QuantKernel:
     async def run(self) -> None:
         try:
             await self.initialize()
-            await self.db.init()
+            await self._startup_reconciliation()
+            safety_seconds = float(getattr(self.s, 'startup_safety_seconds', 10.0))
+            self._startup_safety_until_monotonic = time.monotonic() + max(safety_seconds, 0.0)
             self.metrics_exporter.start()
             self.dashboard.start()
             self._install_signal_handlers()
@@ -984,6 +1040,13 @@ class QuantKernel:
 
                                     ohlcv = await self.market_data.latest_ohlcv(limit=300)
                                     self.data_buffer.push_ohlcv(ohlcv)
+                                    if time.monotonic() < self._startup_safety_until_monotonic:
+                                        self.system_state = SystemState.LEARNING_MARKET.value
+                                        self.state.last_block_reason = 'startup_reconciliation_safety_mode'
+                                        self.activity_text = 'Startup safety mode: reconciliation barrier active'
+                                        self._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv['close'].iloc[-1]), 'OK')
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
                                     if self.learning_started_at_ms is None:
                                         self.learning_started_at_ms = int(ohlcv['timestamp'].iloc[0].timestamp() * 1000)
 
@@ -1394,6 +1457,23 @@ class QuantKernel:
                                         friction_cost=friction_cost,
                                         regime_uncertain=regime_uncertain,
                                         policy_block_reasons=policy_block_reasons,
+                                    )
+
+                                    decision_id = f"dec-{uuid.uuid4()}"
+                                    self._context['decision_id'] = decision_id
+                                    await self.db.persist_decision_snapshot(
+                                        decision_id,
+                                        {
+                                            'ts': datetime.now(timezone.utc).isoformat(),
+                                            'symbol': self.s.symbol,
+                                            'decision': decision,
+                                            'expected_edge': float(expected_edge),
+                                            'risk_fraction': float(risk_fraction),
+                                            'momentum': float(breakdown.momentum),
+                                            'mean_reversion': float(breakdown.mean_reversion),
+                                            'regime_probability': float(breakdown.regime),
+                                            'confidence': float(self.decision_engine.last_confidence),
+                                        },
                                     )
 
                                     if decision in {'BUY', 'SELL'} and order_qty > 0.0:

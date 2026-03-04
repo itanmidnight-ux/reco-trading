@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 import time
@@ -15,6 +16,7 @@ from reco_trading.execution.idempotent_order_service import IdempotentOrderServi
 from reco_trading.execution.smart_order_router import SmartOrderRouter, VenueSnapshot
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
+from reco_trading.infra.exchange_gateway import ExchangeGateway
 from reco_trading.kernel.capital_governor import CapitalGovernor
 
 
@@ -59,6 +61,7 @@ class ExecutionEngine:
         self.last_allowed_qty = 0.0
         self._symbol_limits_cache: dict[str, float] = {}
         self._idempotent_order_service = IdempotentOrderService(client=self.client, db=self.db, symbol=self.symbol)
+        self._gateway = ExchangeGateway(self.client)
         self._execution_lock = asyncio.Lock()
         self._active_execution_context: dict[str, Any] = {}
         self._initialized = False
@@ -123,7 +126,7 @@ class ExecutionEngine:
                 price = float(reference_price or 0.0)
                 if price <= 0.0:
                     try:
-                        ticker = await self.client.fetch_ticker(self.symbol)
+                        ticker = await self._gateway.fetch_ticker(self.symbol)
                         price = float(ticker.get('last') or 0.0)
                     except Exception:
                         price = 0.0
@@ -165,7 +168,7 @@ class ExecutionEngine:
             return 0.0
 
         try:
-            ticker = await self.client.fetch_ticker(self.symbol)
+            ticker = await self._gateway.fetch_ticker(self.symbol)
             last_price = float(ticker.get('last') or 0.0)
         except Exception:
             self.last_rejection_reason = 'ticker_unavailable_for_capital_limit'
@@ -227,6 +230,8 @@ class ExecutionEngine:
             decision_timestamp_ms=decision_timestamp_ms,
             decision_context_hash=decision_context_hash,
         )
+        reservation_id = f'reservation-{uuid.uuid4()}'
+        reservation_notional = 0.0
         for _ in range(max_retries):
             if self._quant_kernel.should_block_trading():
                 self.last_rejection_reason = 'blocked_by_quant_kernel'
@@ -237,13 +242,16 @@ class ExecutionEngine:
 
             try:
                 if reference_price is None or reference_price <= 0:
-                    ticker = await self.client.fetch_ticker(self.symbol)
+                    ticker = await self._gateway.fetch_ticker(self.symbol)
                     reference_price = float(ticker.get('last') or 0.0)
-                sanitized_amount = await self.client.sanitize_order_quantity(
+                sanitized_amount = await self._gateway.sanitize_order_quantity(
                     self.symbol,
                     amount,
                     reference_price=reference_price,
                 )
+                reservation_notional = max(sanitized_amount * max(float(reference_price or 0.0), 0.0), 0.0)
+                if hasattr(self.db, 'reserve_capital'):
+                    await self.db.reserve_capital(reservation_id, self.symbol, side, reservation_notional)
                 order = await self._idempotent_order_service.submit_market_order(
                     side=side,
                     amount=sanitized_amount,
@@ -251,28 +259,63 @@ class ExecutionEngine:
                     decision_timestamp_ms=decision_timestamp_ms,
                     client_order_id=client_order_id,
                     decision_context_hash=decision_context_hash,
+                    decision_id=str(self._active_execution_context.get('decision_id') or ''),
                 )
             except asyncio.TimeoutError:
                 self.last_rejection_reason = 'order_timeout'
+                if hasattr(self.db, 'finalize_capital_reservation'):
+                    await self.db.finalize_capital_reservation(reservation_id, 0.0, 'released')
                 continue
             except Exception:
                 self.last_rejection_reason = 'order_rejected_by_exchange_rules'
+                if hasattr(self.db, 'finalize_capital_reservation'):
+                    await self.db.finalize_capital_reservation(reservation_id, 0.0, 'released')
                 return None
+            order['decision_id'] = str(self._active_execution_context.get('decision_id') or '')
             await self.db.record_order(order)
             order_id = str(order.get('id', ''))
             if not order_id:
                 self.last_rejection_reason = 'empty_order_id'
                 return None
 
-            try:
-                fill = await asyncio.wait_for(self.client.wait_for_fill(self.symbol, order_id), timeout=timeout_seconds)
-            except asyncio.TimeoutError:
+            fill = None
+            if not hasattr(self.client, 'fetch_order'):
+                try:
+                    fill = await asyncio.wait_for(self._gateway.wait_for_fill(self.symbol, order_id), timeout=timeout_seconds)
+                except asyncio.TimeoutError:
+                    fill = None
+            else:
+                started = time.monotonic()
+                while (time.monotonic() - started) < timeout_seconds:
+                    current = await self._gateway.fetch_order(self.symbol, order_id)
+                    if not current:
+                        await asyncio.sleep(1)
+                        continue
+                    client_id = str(current.get('clientOrderId') or current.get('client_order_id') or client_order_id)
+                    if client_id:
+                        await self._idempotent_order_service.mark_after_fill(client_id, current)
+                    status = str(current.get('status') or '').lower()
+                    if status in {'closed', 'filled'}:
+                        fill = current
+                        break
+                    if status in {'canceled', 'cancelled', 'rejected', 'expired'}:
+                        fill = current
+                        break
+                    await asyncio.sleep(1)
+            if fill is None:
                 self.last_rejection_reason = 'fill_timeout'
                 continue
             if not fill:
                 self.last_rejection_reason = 'fill_not_received'
                 continue
+            fill_status = str(fill.get('status') or '').lower()
+            if fill_status in {'canceled', 'cancelled', 'rejected', 'expired'}:
+                self.last_rejection_reason = f'fill_terminal_{fill_status or "unknown"}'
+                if hasattr(self.db, 'finalize_capital_reservation'):
+                    await self.db.finalize_capital_reservation(reservation_id, 0.0, 'released')
+                continue
 
+            fill['decision_id'] = str(self._active_execution_context.get('decision_id') or '')
             await self.db.record_fill(fill)
             client_order_id = str(order.get('clientOrderId') or order.get('client_order_id') or '')
             if client_order_id:
@@ -289,6 +332,7 @@ class ExecutionEngine:
                     'price': fill_price,
                     'status': str(fill.get('status') or 'closed'),
                     'pnl': 0.0,
+                    'decision_id': str(self._active_execution_context.get('decision_id') or ''),
                 }
             )
             logger.info(
@@ -316,6 +360,8 @@ class ExecutionEngine:
             self._firewall.register_fill(symbol=self.symbol, notional=max(fill_price, 0.0) * sanitized_amount)
             if self._capital_governor:
                 self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * sanitized_amount)
+            if hasattr(self.db, 'finalize_capital_reservation'):
+                await self.db.finalize_capital_reservation(reservation_id, max(fill_price, 0.0) * sanitized_amount, 'committed')
             await self._persist_execution_async(
                 {
                     'symbol': self.symbol,
@@ -360,7 +406,7 @@ class ExecutionEngine:
                 self._active_execution_context = {}
 
     async def _execute_institutional_order(self, side: str, amount: float) -> dict[str, Any] | None:
-        book = await self.client.fetch_order_book(self.symbol, limit=10)
+        book = await self._gateway.fetch_order_book(self.symbol, limit=10)
         bids = book.get('bids') or []
         asks = book.get('asks') or []
         bid = float(bids[0][0]) if bids else 0.0
@@ -411,6 +457,18 @@ class ExecutionEngine:
         if not self._initialized:
             await self.initialize()
             self._initialized = True
+        if hasattr(self.db, 'execution_advisory_lock'):
+            async with self.db.execution_advisory_lock() as lock_acquired:
+                if not lock_acquired:
+                    self.last_rejection_reason = 'execution_global_lock_not_acquired'
+                    return None
+                if self._quant_kernel.should_block_trading():
+                    self.last_rejection_reason = 'blocked_by_quant_kernel'
+                    return None
+                if amount >= self.institutional_order_threshold:
+                    async with self._execution_lock:
+                        return await self._execute_institutional_order(side=side, amount=amount)
+                return await self.execute_market_order(side=side, amount=amount, execution_context=execution_context)
         if self._quant_kernel.should_block_trading():
             self.last_rejection_reason = 'blocked_by_quant_kernel'
             return None
