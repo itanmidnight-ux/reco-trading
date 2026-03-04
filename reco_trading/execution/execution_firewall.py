@@ -58,19 +58,17 @@ class ExecutionFirewall:
             self._daily_realized_pnl = 0.0
 
     async def _min_size(self, client: Any, symbol: str) -> float:
-        markets = getattr(client.exchange, 'markets', None) if hasattr(client, 'exchange') else None
-        if not markets:
-            load = getattr(client.exchange, 'load_markets', None) if hasattr(client, 'exchange') else None
-            if load:
-                await load()
-                markets = client.exchange.markets
-        if not markets or symbol not in markets:
+        if hasattr(client, 'get_symbol_rules'):
+            rules = await client.get_symbol_rules(symbol)
+            return float(rules.get('min_qty') or 0.0)
+
+        markets = getattr(client, 'exchange', None)
+        raw_markets = getattr(markets, 'markets', None) if markets is not None else None
+        if not raw_markets or symbol not in raw_markets:
             return 0.0
-        limits = markets[symbol].get('limits', {})
+        limits = raw_markets[symbol].get('limits', {})
         amount_limit = limits.get('amount', {}).get('min')
-        if amount_limit is None:
-            return 0.0
-        return float(amount_limit)
+        return float(amount_limit or 0.0)
 
 
     @staticmethod

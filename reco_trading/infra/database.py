@@ -4,9 +4,12 @@ import hashlib
 import hmac
 import json
 from dataclasses import asdict
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from sqlalchemy import JSON, BigInteger, Column, DateTime, ForeignKey, MetaData, Numeric, String, Table, Text, func, insert, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from loguru import logger
 
@@ -22,6 +25,7 @@ orders = Table(
     Column('price', Numeric),
     Column('amount', Numeric, nullable=False),
     Column('status', String, nullable=False),
+    Column('decision_id', String),
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
@@ -35,6 +39,7 @@ fills = Table(
     Column('fill_price', Numeric),
     Column('fill_amount', Numeric),
     Column('fee', Numeric),
+    Column('decision_id', String),
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
@@ -93,6 +98,45 @@ order_executions = Table(
     Column('price', Numeric, nullable=False),
     Column('status', String, nullable=False),
     Column('pnl', Numeric, nullable=False, server_default='0'),
+    Column('decision_id', String),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+execution_idempotency_ledger = Table(
+    'execution_idempotency_ledger',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('client_order_id', String, unique=True, nullable=False),
+    Column('symbol', String, nullable=False),
+    Column('side', String, nullable=False),
+    Column('qty', Numeric, nullable=False),
+    Column('status', String, nullable=False),
+    Column('exchange_order_id', String, nullable=False, server_default=''),
+    Column('decision_id', String),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column('updated_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+capital_reservations = Table(
+    'capital_reservations',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('reservation_id', String, unique=True, nullable=False),
+    Column('symbol', String, nullable=False),
+    Column('side', String, nullable=False),
+    Column('reserved_amount', Numeric, nullable=False),
+    Column('used_amount', Numeric, nullable=False, server_default='0'),
+    Column('status', String, nullable=False, server_default='active'),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+    Column('updated_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+decision_audit = Table(
+    'decision_audit',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('decision_id', String, unique=True, nullable=False),
+    Column('snapshot', JSON, nullable=False),
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
@@ -465,6 +509,7 @@ class Database:
             'price': order.get('price') or order.get('average') or 0,
             'amount': order.get('amount') or order.get('filled') or 0,
             'status': order.get('status', 'unknown'),
+            'decision_id': order.get('decision_id'),
         }
         async def _op(session: AsyncSession) -> None:
             await session.execute(insert(orders).values(**payload))
@@ -480,6 +525,7 @@ class Database:
             'fill_price': order.get('average') or order.get('price') or 0,
             'fill_amount': order.get('filled') or order.get('amount') or 0,
             'fee': float(fee.get('cost') or 0.0),
+            'decision_id': order.get('decision_id'),
         }
         async def _op(session: AsyncSession) -> None:
             await session.execute(insert(fills).values(**payload))
@@ -515,6 +561,122 @@ class Database:
             await session.execute(insert(order_executions).values(**payload))
 
         await self._execute_in_transaction('persist_order_execution', _op)
+
+    async def persist_decision_snapshot(self, decision_id: str, payload: dict[str, Any]) -> None:
+        async def _op(session: AsyncSession) -> None:
+            stmt = (
+                pg_insert(decision_audit)
+                .values(decision_id=decision_id, snapshot=payload)
+                .on_conflict_do_update(index_elements=[decision_audit.c.decision_id], set_={'snapshot': payload})
+            )
+            await session.execute(stmt)
+
+        await self._execute_in_transaction('persist_decision_snapshot', _op)
+
+    async def upsert_idempotency_ledger(self, payload: dict[str, Any]) -> None:
+        data = {
+            'client_order_id': str(payload.get('client_order_id') or ''),
+            'symbol': str(payload.get('symbol') or ''),
+            'side': str(payload.get('side') or '').upper(),
+            'qty': float(payload.get('qty') or 0.0),
+            'status': str(payload.get('status') or 'PENDING_SUBMIT'),
+            'exchange_order_id': str(payload.get('exchange_order_id') or ''),
+            'decision_id': payload.get('decision_id'),
+            'updated_at': datetime.now(timezone.utc),
+        }
+
+        async def _op(session: AsyncSession) -> None:
+            stmt = (
+                pg_insert(execution_idempotency_ledger)
+                .values(**data)
+                .on_conflict_do_update(
+                    index_elements=[execution_idempotency_ledger.c.client_order_id],
+                    set_={
+                        'status': data['status'],
+                        'exchange_order_id': data['exchange_order_id'],
+                        'qty': data['qty'],
+                        'decision_id': data['decision_id'],
+                        'updated_at': data['updated_at'],
+                    },
+                )
+            )
+            await session.execute(stmt)
+
+        await self._execute_in_transaction('upsert_idempotency_ledger', _op)
+
+    async def update_idempotency_status(self, client_order_id: str, status: str, exchange_order_id: str = '') -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(
+                update(execution_idempotency_ledger)
+                .where(execution_idempotency_ledger.c.client_order_id == client_order_id)
+                .values(status=status, exchange_order_id=exchange_order_id, updated_at=datetime.now(timezone.utc))
+            )
+
+        await self._execute_in_transaction('update_idempotency_status', _op)
+
+    async def load_active_idempotency_entries(self) -> list[dict[str, Any]]:
+        active = ('PENDING_SUBMIT', 'SUBMITTED', 'PARTIALLY_FILLED')
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                select(execution_idempotency_ledger).where(execution_idempotency_ledger.c.status.in_(active))
+            )
+        return [dict(r._mapping) for r in rows]
+
+    async def reserve_capital(self, reservation_id: str, symbol: str, side: str, reserved_amount: float) -> None:
+        payload = {
+            'reservation_id': reservation_id,
+            'symbol': symbol,
+            'side': side,
+            'reserved_amount': float(max(reserved_amount, 0.0)),
+            'status': 'active',
+            'updated_at': datetime.now(timezone.utc),
+        }
+
+        async def _op(session: AsyncSession) -> None:
+            stmt = pg_insert(capital_reservations).values(**payload).on_conflict_do_nothing(index_elements=[capital_reservations.c.reservation_id])
+            await session.execute(stmt)
+
+        await self._execute_in_transaction('reserve_capital', _op)
+
+    async def finalize_capital_reservation(self, reservation_id: str, used_amount: float, status: str) -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(
+                update(capital_reservations)
+                .where(capital_reservations.c.reservation_id == reservation_id)
+                .values(used_amount=float(max(used_amount, 0.0)), status=status, updated_at=datetime.now(timezone.utc))
+            )
+
+        await self._execute_in_transaction('finalize_capital_reservation', _op)
+
+    @asynccontextmanager
+    async def execution_advisory_lock(self, lock_key: int = 741852) -> Any:
+        async with self.session_factory() as session:
+            acquired = bool(await session.scalar(select(func.pg_try_advisory_lock(lock_key))))
+            try:
+                yield acquired
+            finally:
+                if acquired:
+                    await session.scalar(select(func.pg_advisory_unlock(lock_key)))
+
+    async def restore_position_snapshot(self, symbol: str) -> dict[str, float]:
+        async with self.session_factory() as session:
+            buy_rows = await session.execute(
+                select(fills.c.fill_amount, fills.c.fill_price).where((fills.c.symbol == symbol) & (fills.c.side == 'BUY'))
+            )
+            sell_rows = await session.execute(
+                select(fills.c.fill_amount).where((fills.c.symbol == symbol) & (fills.c.side == 'SELL'))
+            )
+        buy_qty = 0.0
+        buy_notional = 0.0
+        for row in buy_rows:
+            qty = float(row.fill_amount or 0.0)
+            px = float(row.fill_price or 0.0)
+            buy_qty += qty
+            buy_notional += qty * px
+        sell_qty = sum(float(row.fill_amount or 0.0) for row in sell_rows)
+        net_qty = max(buy_qty - sell_qty, 0.0)
+        avg_entry = (buy_notional / buy_qty) if buy_qty > 0 else 0.0
+        return {'net_qty': net_qty, 'avg_entry': avg_entry}
 
     async def fill_stats(self) -> dict:
         async with self.session_factory() as session:

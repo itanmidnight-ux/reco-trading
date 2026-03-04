@@ -11,12 +11,11 @@ from typing import Any
 
 class JournalState(str, Enum):
     PENDING_SUBMIT = 'PENDING_SUBMIT'
-    ACKED = 'ACKED'
-    PARTIAL = 'PARTIAL'
+    SUBMITTED = 'SUBMITTED'
+    PARTIALLY_FILLED = 'PARTIALLY_FILLED'
     FILLED = 'FILLED'
-    CANCELED = 'CANCELED'
-    REJECTED = 'REJECTED'
-    UNKNOWN = 'UNKNOWN'
+    CANCELLED = 'CANCELLED'
+    FAILED = 'FAILED'
 
 
 @dataclass(slots=True)
@@ -28,6 +27,7 @@ class JournalEntry:
     decision_timestamp_ms: int
     state: JournalState
     exchange_order_id: str = ''
+    decision_id: str = ''
 
 
 class IdempotentOrderService:
@@ -57,10 +57,34 @@ class IdempotentOrderService:
             self._reconcile_task = None
 
     def active_trade_in_progress(self) -> bool:
-        return any(entry.state in {JournalState.PENDING_SUBMIT, JournalState.ACKED, JournalState.PARTIAL} for entry in self._journal.values())
+        return any(entry.state in {JournalState.PENDING_SUBMIT, JournalState.SUBMITTED, JournalState.PARTIALLY_FILLED} for entry in self._journal.values())
 
     def active_client_order_ids(self) -> set[str]:
-        return {cid for cid, entry in self._journal.items() if entry.state in {JournalState.PENDING_SUBMIT, JournalState.ACKED, JournalState.PARTIAL}}
+        return {cid for cid, entry in self._journal.items() if entry.state in {JournalState.PENDING_SUBMIT, JournalState.SUBMITTED, JournalState.PARTIALLY_FILLED}}
+
+    async def load_from_ledger(self) -> None:
+        if not hasattr(self.db, 'load_active_idempotency_entries'):
+            return
+        entries = await self.db.load_active_idempotency_entries()
+        async with self._lock:
+            self._journal.clear()
+            for raw in entries:
+                try:
+                    state = JournalState(str(raw.get('status') or JournalState.PENDING_SUBMIT.value))
+                except Exception:
+                    state = JournalState.PENDING_SUBMIT
+                entry = JournalEntry(
+                    client_order_id=str(raw.get('client_order_id') or ''),
+                    symbol=str(raw.get('symbol') or self.symbol),
+                    side=str(raw.get('side') or ''),
+                    amount=float(raw.get('qty') or 0.0),
+                    decision_timestamp_ms=int(time.time() * 1000),
+                    state=state,
+                    exchange_order_id=str(raw.get('exchange_order_id') or ''),
+                    decision_id=str(raw.get('decision_id') or ''),
+                )
+                if entry.client_order_id:
+                    self._journal[entry.client_order_id] = entry
 
     async def submit_market_order(
         self,
@@ -71,6 +95,7 @@ class IdempotentOrderService:
         decision_timestamp_ms: int,
         client_order_id: str | None = None,
         decision_context_hash: str | None = None,
+        decision_id: str | None = None,
     ) -> dict[str, Any]:
         async with self._lock:
             resolved_client_order_id = client_order_id or self._build_client_order_id(
@@ -88,7 +113,7 @@ class IdempotentOrderService:
                 recovered = await self.client.fetch_order_by_client_order_id(existing.symbol, resolved_client_order_id)
                 if recovered:
                     existing.exchange_order_id = str(recovered.get('id') or '')
-                    existing.state = JournalState.ACKED
+                    existing.state = JournalState.SUBMITTED
                     await self._persist_journal(existing)
                     return recovered
             entry = JournalEntry(
@@ -98,6 +123,7 @@ class IdempotentOrderService:
                 amount=float(amount),
                 decision_timestamp_ms=int(decision_timestamp_ms),
                 state=JournalState.PENDING_SUBMIT,
+                decision_id=str(decision_id or ''),
             )
             await self._persist_journal(entry)
             self._journal[resolved_client_order_id] = entry
@@ -105,14 +131,14 @@ class IdempotentOrderService:
         try:
             order = await asyncio.wait_for(self._submit_to_exchange(self.symbol, side, float(amount), entry.client_order_id), timeout=timeout_seconds)
             entry.exchange_order_id = str(order.get('id') or '')
-            entry.state = JournalState.ACKED
+            entry.state = JournalState.SUBMITTED
             await self._persist_journal(entry)
             return order
         except asyncio.TimeoutError:
             recovered = await self._recover_or_resubmit(entry=entry, timeout_seconds=timeout_seconds)
             return recovered
         except Exception:
-            entry.state = JournalState.REJECTED
+            entry.state = JournalState.FAILED
             await self._persist_journal(entry)
             raise
 
@@ -123,19 +149,19 @@ class IdempotentOrderService:
         status = str(fill.get('status') or '').lower()
         if status in {'closed', 'filled'}:
             entry.state = JournalState.FILLED
-        elif status in {'open', 'new'}:
-            entry.state = JournalState.PARTIAL if float(fill.get('filled') or 0.0) > 0.0 else JournalState.ACKED
+        elif status in {'open', 'new', 'partially_filled'}:
+            entry.state = JournalState.PARTIALLY_FILLED if float(fill.get('filled') or 0.0) > 0.0 else JournalState.SUBMITTED
         elif status in {'canceled', 'cancelled'}:
-            entry.state = JournalState.CANCELED
+            entry.state = JournalState.CANCELLED
         else:
-            entry.state = JournalState.UNKNOWN
+            entry.state = JournalState.FAILED
         await self._persist_journal(entry)
 
     async def _recover_or_resubmit(self, *, entry: JournalEntry, timeout_seconds: float) -> dict[str, Any]:
         recovered_order = await self.client.fetch_order_by_client_order_id(entry.symbol, entry.client_order_id)
         if recovered_order:
             entry.exchange_order_id = str(recovered_order.get('id') or '')
-            entry.state = JournalState.ACKED
+            entry.state = JournalState.SUBMITTED
             await self._persist_journal(entry)
             return recovered_order
         return await self._submit_to_exchange(entry.symbol, entry.side, entry.amount, entry.client_order_id)
@@ -148,19 +174,21 @@ class IdempotentOrderService:
                 for cid, entry in list(self._journal.items()):
                     if not cid:
                         continue
-                    if cid in open_client_ids and entry.state in {JournalState.PENDING_SUBMIT, JournalState.UNKNOWN}:
-                        entry.state = JournalState.ACKED
+                    if cid in open_client_ids and entry.state in {JournalState.PENDING_SUBMIT, JournalState.FAILED}:
+                        entry.state = JournalState.SUBMITTED
                         await self._persist_journal(entry)
-                    if cid not in open_client_ids and entry.state in {JournalState.PENDING_SUBMIT, JournalState.ACKED, JournalState.PARTIAL}:
+                    if cid not in open_client_ids and entry.state in {JournalState.PENDING_SUBMIT, JournalState.SUBMITTED, JournalState.PARTIALLY_FILLED}:
                         found = await self.client.fetch_order_by_client_order_id(entry.symbol, cid)
                         if found:
                             status = str(found.get('status') or '').lower()
                             if status in {'closed', 'filled'}:
                                 entry.state = JournalState.FILLED
+                            elif status in {'partially_filled'}:
+                                entry.state = JournalState.PARTIALLY_FILLED
                             elif status in {'canceled', 'cancelled'}:
-                                entry.state = JournalState.CANCELED
+                                entry.state = JournalState.CANCELLED
                             else:
-                                entry.state = JournalState.UNKNOWN
+                                entry.state = JournalState.FAILED
                             await self._persist_journal(entry)
             except Exception:
                 pass
@@ -172,6 +200,18 @@ class IdempotentOrderService:
     async def _persist_journal(self, entry: JournalEntry) -> None:
         if not hasattr(self.db, 'persist_validation_event'):
             return
+        if hasattr(self.db, 'upsert_idempotency_ledger'):
+            await self.db.upsert_idempotency_ledger(
+                {
+                    'client_order_id': entry.client_order_id,
+                    'exchange_order_id': entry.exchange_order_id,
+                    'symbol': entry.symbol,
+                    'side': entry.side,
+                    'qty': entry.amount,
+                    'status': entry.state.value,
+                    'decision_id': entry.decision_id,
+                }
+            )
         await self.db.persist_validation_event(
             {
                 'event': 'order_journal',
@@ -182,6 +222,7 @@ class IdempotentOrderService:
                 'amount': entry.amount,
                 'decision_timestamp_ms': entry.decision_timestamp_ms,
                 'state': entry.state.value,
+                'decision_id': entry.decision_id,
                 'ts': int(time.time() * 1000),
             }
         )

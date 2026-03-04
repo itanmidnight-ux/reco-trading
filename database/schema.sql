@@ -92,3 +92,39 @@ CREATE INDEX IF NOT EXISTS idx_system_config_versions_created_at ON system_confi
 CREATE INDEX IF NOT EXISTS idx_system_snapshots_version_id ON system_config_snapshots(version_id);
 CREATE INDEX IF NOT EXISTS idx_system_deployments_version_id ON system_deployments(version_id);
 CREATE INDEX IF NOT EXISTS idx_system_rollbacks_from_version_id ON system_rollbacks(from_version_id);
+
+CREATE TABLE IF NOT EXISTS execution_idempotency_ledger (
+    id BIGSERIAL PRIMARY KEY,
+    client_order_id VARCHAR(64) NOT NULL UNIQUE,
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    qty NUMERIC(24, 12) NOT NULL,
+    status VARCHAR(32) NOT NULL CHECK (status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED','FILLED','CANCELLED','FAILED')),
+    exchange_order_id VARCHAR(64) NOT NULL DEFAULT '',
+    decision_id VARCHAR(64),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS capital_reservations (
+    id BIGSERIAL PRIMARY KEY,
+    reservation_id VARCHAR(128) NOT NULL UNIQUE,
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    reserved_amount NUMERIC(24, 12) NOT NULL,
+    used_amount NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS decision_audit (
+    id BIGSERIAL PRIMARY KEY,
+    decision_id VARCHAR(64) NOT NULL UNIQUE,
+    snapshot JSONB NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE IF EXISTS orders ADD COLUMN IF NOT EXISTS decision_id VARCHAR(64);
+ALTER TABLE IF EXISTS fills ADD COLUMN IF NOT EXISTS decision_id VARCHAR(64);
+ALTER TABLE IF EXISTS order_executions ADD COLUMN IF NOT EXISTS decision_id VARCHAR(64);
