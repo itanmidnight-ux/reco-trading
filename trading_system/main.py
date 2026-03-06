@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -12,6 +13,11 @@ from trading_system.app.main import api, launch_services
 __all__ = ['api', 'launch_services']
 
 if __name__ == '__main__':
+    if os.getenv('RUNTIME_PROFILE', '').strip().lower() == 'production':
+        raise RuntimeError(
+            'trading_system/main.py is development_only and not a production runtime entrypoint. '
+            'Use run.sh -> main.py -> QuantKernel.run().'
+        )
     import asyncio
     import uvicorn
 

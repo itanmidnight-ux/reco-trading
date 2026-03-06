@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,4 +65,9 @@ class FusionEngineAdapter:
 
 
 if __name__ == '__main__':
+    if os.getenv('RUNTIME_PROFILE', '').strip().lower() == 'production':
+        raise RuntimeError(
+            'scripts/live_trading.py is development_only. '
+            'Use canonical runtime: run.sh -> main.py -> QuantKernel.run().'
+        )
     asyncio.run(QuantKernel().run())

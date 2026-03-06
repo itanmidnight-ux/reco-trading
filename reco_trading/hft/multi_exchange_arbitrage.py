@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
@@ -99,6 +100,11 @@ class CcxtAsyncExchangeAdapter(ExchangeAdapter):
         return await self._retry(self.exchange.fetch_ticker, symbol=symbol)
 
     async def create_order(self, symbol: str, side: str, amount: float, order_type: str = 'market') -> dict[str, Any]:
+        if os.getenv('RUNTIME_PROFILE', '').strip().lower() == 'production':
+            raise RuntimeError(
+                'Direct multi-exchange order submission is disabled in production mode. '
+                'Use canonical execution path via ExchangeGateway -> BinanceClient.'
+            )
         return await self._retry(self.exchange.create_order, symbol, order_type, side.lower(), amount)
 
     async def get_balance(self) -> dict[str, Any]:

@@ -81,6 +81,46 @@ CREATE TABLE IF NOT EXISTS system_rollbacks (
     completed_at TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS orders (
+    id BIGSERIAL PRIMARY KEY,
+    exchange_order_id VARCHAR(128) NOT NULL UNIQUE,
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    price NUMERIC(24, 12),
+    amount NUMERIC(24, 12) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    decision_id VARCHAR(64),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS fills (
+    id BIGSERIAL PRIMARY KEY,
+    exchange_order_id VARCHAR(128) NOT NULL,
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    fill_price NUMERIC(24, 12),
+    fill_amount NUMERIC(24, 12),
+    fee NUMERIC(24, 12),
+    order_id BIGINT,
+    decision_id VARCHAR(64),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS order_executions (
+    id BIGSERIAL PRIMARY KEY,
+    ts BIGINT NOT NULL,
+    symbol VARCHAR(32) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    qty NUMERIC(24, 12) NOT NULL,
+    price NUMERIC(24, 12) NOT NULL,
+    status VARCHAR(32) NOT NULL,
+    exchange_order_id VARCHAR(128),
+    pnl NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    order_id BIGINT,
+    decision_id VARCHAR(64),
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_created_at ON trades(created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
@@ -109,6 +149,7 @@ CREATE TABLE IF NOT EXISTS execution_idempotency_ledger (
 CREATE TABLE IF NOT EXISTS capital_reservations (
     id BIGSERIAL PRIMARY KEY,
     reservation_id VARCHAR(128) NOT NULL UNIQUE,
+    client_order_id VARCHAR(64) NOT NULL UNIQUE,
     symbol VARCHAR(32) NOT NULL,
     side VARCHAR(10) NOT NULL,
     reserved_amount NUMERIC(24, 12) NOT NULL,
@@ -117,6 +158,16 @@ CREATE TABLE IF NOT EXISTS capital_reservations (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE IF EXISTS capital_reservations
+    ADD COLUMN IF NOT EXISTS client_order_id VARCHAR(64);
+
+UPDATE capital_reservations
+SET client_order_id = COALESCE(NULLIF(client_order_id, ''), reservation_id)
+WHERE client_order_id IS NULL OR client_order_id = '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_capital_reservations_client_order_id
+    ON capital_reservations(client_order_id);
 
 CREATE TABLE IF NOT EXISTS decision_audit (
     id BIGSERIAL PRIMARY KEY,

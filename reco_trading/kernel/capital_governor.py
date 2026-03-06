@@ -28,7 +28,7 @@ class CapitalTicket:
 
 @dataclass(slots=True)
 class CapitalGovernorState:
-    equity: float = 0.0
+    exchange_equity: float = 0.0
     daily_pnl: float = 0.0
     total_exposure: float = 0.0
     exposure_by_asset: dict[str, float] = field(default_factory=dict)
@@ -73,22 +73,26 @@ class CapitalGovernor:
     def update_state(
         self,
         *,
-        strategy: str,
-        exchange: str,
-        symbol: str,
-        capital_by_strategy: float,
-        capital_by_exchange: float,
-        total_exposure: float,
-        asset_exposure: float,
-        equity: float | None = None,
+        strategy: str = 'directional',
+        exchange: str = 'binance',
+        symbol: str = 'BTC/USDT',
+        capital_by_strategy: float = 0.0,
+        capital_by_exchange: float = 0.0,
+        total_exposure: float = 0.0,
+        asset_exposure: float = 0.0,
+        exchange_equity: float | None = None,
         daily_pnl: float | None = None,
     ) -> None:
         self.state.capital_by_strategy[strategy] = float(capital_by_strategy)
         self.state.exposure_by_exchange[exchange] = float(capital_by_exchange)
         self.state.total_exposure = float(total_exposure)
         self.state.exposure_by_asset[symbol] = float(asset_exposure)
-        if equity is not None:
-            self.state.equity = float(equity)
+        if exchange_equity is not None:
+            self.state.exchange_equity = float(max(exchange_equity, 0.0))
+        elif capital_by_exchange > 0.0 and self.state.exchange_equity <= 0.0:
+            # Backward-compatible fallback for callers that have not yet been
+            # updated to pass explicit exchange equity.
+            self.state.exchange_equity = float(capital_by_exchange)
         if daily_pnl is not None:
             self.state.daily_pnl = float(daily_pnl)
 
@@ -144,11 +148,12 @@ class CapitalGovernor:
         estimated_trade_risk: float | None = None,
     ) -> CapitalTicket:
         request = max(float(requested_notional), 0.0)
-        equity = max(float(self.state.equity), float(self.state.hard_cap_global), 1.0)
+        equity = max(float(self.state.exchange_equity), 0.0)
         daily_loss = max(-float(self.state.daily_pnl), 0.0)
         var95, cvar95 = self.rolling_var_cvar(pnl_or_returns, alpha=0.95)
 
         max_trade_risk = equity * self.max_risk_per_trade_ratio
+        max_trade_notional = equity * self.max_risk_per_trade_ratio
         trade_risk = max(float(estimated_trade_risk if estimated_trade_risk is not None else request * 0.01), 0.0)
         projected_total_exposure = self.state.total_exposure + request
         hard_cap = min(self.state.hard_cap_global, equity * self.max_total_exposure_ratio)
@@ -159,6 +164,7 @@ class CapitalGovernor:
             'equity': equity,
             'trade_risk': trade_risk,
             'max_trade_risk': max_trade_risk,
+            'max_trade_notional': max_trade_notional,
             'daily_loss': daily_loss,
             'projected_daily_loss': projected_daily_loss,
             'projected_total_exposure': projected_total_exposure,
@@ -173,6 +179,8 @@ class CapitalGovernor:
 
         if request <= 0.0:
             return self._reject(strategy, exchange, symbol, request, 'invalid_notional', metrics_payload)
+        if equity <= 0.0:
+            return self._reject(strategy, exchange, symbol, request, 'invalid_exchange_equity', metrics_payload)
         if trade_risk > max_trade_risk:
             return self._reject(strategy, exchange, symbol, request, 'risk_per_trade_limit', metrics_payload)
         if projected_daily_loss > equity * self.max_daily_loss_ratio:
@@ -184,7 +192,12 @@ class CapitalGovernor:
         if available_liquidity <= 0.0:
             return self._reject(strategy, exchange, symbol, request, 'liquidity_unavailable', metrics_payload)
 
-        approved_notional = min(request, max(available_liquidity * 0.15, 0.0), max(hard_cap - self.state.total_exposure, 0.0))
+        approved_notional = min(
+            request,
+            max_trade_notional,
+            max(available_liquidity * 0.15, 0.0),
+            max(hard_cap - self.state.total_exposure, 0.0),
+        )
         if approved_notional <= 0:
             return self._reject(strategy, exchange, symbol, request, 'no_capacity', metrics_payload)
 

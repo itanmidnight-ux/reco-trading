@@ -485,7 +485,15 @@ class QuantKernel:
         except Exception:
             active = []
         open_orders = await self.client.fetch_open_orders(self.s.symbol)
-        await self.db.cleanup_stale_reservations(open_orders=open_orders)
+        active_client_order_ids = {
+            str(row.get('client_order_id') or '')
+            for row in active
+            if str(row.get('client_order_id') or '')
+        }
+        await self.db.cleanup_stale_reservations(
+            open_orders=open_orders,
+            active_client_order_ids=active_client_order_ids,
+        )
         open_ids = {
             str(item.get('clientOrderId') or item.get('client_order_id') or '')
             for item in (open_orders or [])
@@ -1377,7 +1385,18 @@ class QuantKernel:
 
                                     self.state.equity = free_usdt
                                     self.state.exchange_equity = exchange_equity
-                                    sig = self.signal_engine.generate(ohlcv, spread_bps=spread_bps)
+                                    self.capital_governor.update_state(
+                                        strategy='directional',
+                                        exchange='binance',
+                                        symbol=self.s.symbol,
+                                        capital_by_strategy=float(self.state.capital_in_position),
+                                        capital_by_exchange=float(self.state.capital_in_position),
+                                        total_exposure=float(self.state.capital_in_position),
+                                        asset_exposure=float(self.state.capital_in_position),
+                                        exchange_equity=float(self.state.exchange_equity),
+                                        daily_pnl=float(self.state.realized_pnl),
+                                    )
+                                    sig = await asyncio.to_thread(self.signal_engine.generate, ohlcv, spread_bps)
                                     last_price = float(sig['prices'].iloc[-1])
 
                                     if self.state.position_state == PositionState.LONG:
@@ -1782,14 +1801,21 @@ class QuantKernel:
                                             self.activity_text = f'BUY ejecutado qty={self.state.position_qty:.6f}'
                                         elif fill and decision == 'SELL':
                                             fill_price = float(fill['price'] or last_price)
-                                            gross_pnl = (fill_price - self.state.entry_price) * self.state.position_qty
-                                            close_fee = (self.state.position_qty * fill_price) * float(self.s.taker_fee)
+                                            filled_qty = float(fill.get('qty') or fill.get('amount') or fill.get('filled') or 0.0)
+                                            if filled_qty <= 0.0:
+                                                self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                                self.state.last_block_reason = 'sell_fill_qty_zero'
+                                                self.activity_text = 'SELL sin fill qty válido'
+                                                continue
+                                            close_qty = min(filled_qty, max(self.state.position_qty, 0.0))
+                                            gross_pnl = (fill_price - self.state.entry_price) * close_qty
+                                            close_fee = (close_qty * fill_price) * float(self.s.taker_fee)
                                             self.state.fees_paid += close_fee
                                             net_pnl = gross_pnl - close_fee
                                             self.state.realized_pnl += net_pnl
                                             self.execution_engine.register_realized_pnl(net_pnl)
                                             self._trade_pnls.append(float(net_pnl))
-                                            entry_notional = max(self.state.entry_price * max(self.state.position_qty, 1e-9), 1e-9)
+                                            entry_notional = max(self.state.entry_price * max(close_qty, 1e-9), 1e-9)
                                             realized_return = float(net_pnl / entry_notional)
                                             self._trade_returns.append(realized_return)
                                             self.conditional_performance.record_trade(self._current_extended_regime, float(net_pnl), realized_return)
@@ -1798,15 +1824,17 @@ class QuantKernel:
                                             self.state.consecutive_losses = self.state.consecutive_losses + 1 if net_pnl <= 0 else 0
                                             if net_pnl > 0:
                                                 self.state.winning_trades += 1
-                                            self.state.position_state = PositionState.FLAT
-                                            self.state.position_qty = 0.0
-                                            self.state.entry_price = 0.0
-                                            self.state.position_opened_at = None
-                                            self.state.tp_price = 0.0
-                                            self.state.sl_price = 0.0
-                                            self.state.unrealized_pnl = 0.0
-                                            self.state.capital_in_position = 0.0
-                                            self.state.partial_exits_done.clear()
+                                            self.state.position_qty = max(self.state.position_qty - close_qty, 0.0)
+                                            if self.state.position_qty <= 0.0:
+                                                self.state.position_state = PositionState.FLAT
+                                                self.state.position_qty = 0.0
+                                                self.state.entry_price = 0.0
+                                                self.state.position_opened_at = None
+                                                self.state.tp_price = 0.0
+                                                self.state.sl_price = 0.0
+                                                self.state.unrealized_pnl = 0.0
+                                                self.state.capital_in_position = 0.0
+                                                self.state.partial_exits_done.clear()
                                             self.last_trade_ts = now.timestamp()
                                             self.state.trades += 1
                                             self.frequency_controller.register_trade(now, trade_id=str(fill.get('id') or ''))
