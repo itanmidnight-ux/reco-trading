@@ -233,6 +233,16 @@ class Database:
             await conn.execute(text("""
                 DO $$
                 BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'orders'
+                          AND column_name = 'decision_id'
+                    ) THEN
+                        ALTER TABLE orders ADD COLUMN decision_id VARCHAR(64);
+                    END IF;
+
                     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_decision_id') THEN
                         ALTER TABLE orders
                         ADD CONSTRAINT fk_orders_decision_id
@@ -244,6 +254,16 @@ class Database:
             await conn.execute(text("""
                 DO $$
                 BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'fills'
+                          AND column_name = 'order_id'
+                    ) THEN
+                        ALTER TABLE fills ADD COLUMN order_id BIGINT;
+                    END IF;
+
                     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_fills_order_id') THEN
                         ALTER TABLE fills
                         ADD CONSTRAINT fk_fills_order_id
@@ -255,6 +275,16 @@ class Database:
             await conn.execute(text("""
                 DO $$
                 BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public'
+                          AND table_name = 'order_executions'
+                          AND column_name = 'order_id'
+                    ) THEN
+                        ALTER TABLE order_executions ADD COLUMN order_id BIGINT;
+                    END IF;
+
                     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_executions_order_id') THEN
                         ALTER TABLE order_executions
                         ADD CONSTRAINT fk_order_executions_order_id

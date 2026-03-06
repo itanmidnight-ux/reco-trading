@@ -1,16 +1,19 @@
 \if :{?DB_USER}
 \else
-\set DB_USER trading
+\echo 'ERROR: DB_USER must be provided'
+\quit
 \endif
 
 \if :{?DB_PASSWORD}
 \else
-\set DB_PASSWORD trading
+\echo 'ERROR: DB_PASSWORD must be provided'
+\quit
 \endif
 
 \if :{?DB_NAME}
 \else
-\set DB_NAME reco_trading_prod
+\echo 'ERROR: DB_NAME must be provided'
+\quit
 \endif
 
 DO
