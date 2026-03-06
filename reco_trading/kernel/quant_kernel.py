@@ -56,6 +56,7 @@ class RuntimeState:
     equity: float = 0.0
     exchange_equity: float = 0.0
     realized_pnl: float = 0.0
+    lifetime_realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
     fees_paid: float = 0.0
     capital_in_position: float = 0.0
@@ -469,7 +470,11 @@ class QuantKernel:
         pnl_snapshot = await self.db.get_realized_pnl_from_fills(symbol=self.s.symbol)
         realized = float(pnl_snapshot.get('realized_pnl') or 0.0)
         fees_paid = float(pnl_snapshot.get('fees_paid') or 0.0)
-        self.state.realized_pnl = realized if np.isfinite(realized) else 0.0
+        # Historical fills are tracked for audit purposes only.
+        # Session PnL must always start at 0 so dashboard PnL reflects
+        # changes observed after startup reconciliation against exchange equity.
+        self.state.lifetime_realized_pnl = realized if np.isfinite(realized) else 0.0
+        self.state.realized_pnl = 0.0
         self.state.fees_paid = fees_paid if np.isfinite(fees_paid) and fees_paid >= 0.0 else 0.0
 
     async def _startup_reconciliation(self) -> None:
@@ -551,7 +556,8 @@ class QuantKernel:
         except Exception as exc:
             logger.warning('startup_exchange_balance_reconciliation_failed: %s', exc)
 
-        if abs(exchange_qty - net_qty) > 1e-8:
+        discrepancy_detected = abs(exchange_qty - net_qty) > 1e-8
+        if discrepancy_detected:
             logger.warning(
                 'startup_position_discrepancy_detected symbol=%s db_qty=%.10f exchange_qty=%.10f; applying exchange truth',
                 self.s.symbol,
@@ -560,7 +566,9 @@ class QuantKernel:
             )
             net_qty = max(exchange_qty, 0.0)
 
-        if net_qty > 0.0 and avg_entry <= 0.0:
+        # If exchange is the source of truth for qty, stale DB entry can produce
+        # phantom unrealized PnL. Re-anchor entry to current market price.
+        if net_qty > 0.0 and (avg_entry <= 0.0 or discrepancy_detected):
             try:
                 ticker = await self.client.fetch_ticker(self.s.symbol)
                 avg_entry = float(ticker.get('last') or ticker.get('close') or 0.0)
