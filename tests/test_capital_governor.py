@@ -147,3 +147,8 @@ def test_risk_portfolio_router_require_valid_ticket_when_governor_enabled() -> N
             venues=[VenueSnapshot('v1', spread_bps=10, depth=100, latency_ms=10, fee_bps=5, fill_ratio=0.95, liquidity=100)],
             capital_ticket=None,
         )
+
+
+def test_capital_governor_accepts_legacy_base_capital_kwarg() -> None:
+    governor = CapitalGovernor(base_capital=1_000.0)
+    assert governor.state.hard_cap_global == 1_000.0

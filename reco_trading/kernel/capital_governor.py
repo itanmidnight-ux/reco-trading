@@ -50,7 +50,8 @@ class CapitalGovernor:
     def __init__(
         self,
         *,
-        hard_cap_global: float,
+        hard_cap_global: float | None = None,
+        base_capital: float | None = None,
         max_risk_per_trade_ratio: float = 0.005,
         max_daily_loss_ratio: float = 0.03,
         max_total_exposure_ratio: float = 0.80,
@@ -60,7 +61,11 @@ class CapitalGovernor:
         alert_manager: AlertManager | None = None,
         labels: dict[str, str] | None = None,
     ) -> None:
-        self.state = CapitalGovernorState(hard_cap_global=max(float(hard_cap_global), 0.0))
+        # Compatibilidad retroactiva: legacy callers still pass `base_capital`.
+        resolved_hard_cap = hard_cap_global if hard_cap_global is not None else base_capital
+        if resolved_hard_cap is None:
+            raise TypeError('hard_cap_global is required')
+        self.state = CapitalGovernorState(hard_cap_global=max(float(resolved_hard_cap), 0.0))
         self.max_risk_per_trade_ratio = float(max(max_risk_per_trade_ratio, 0.0))
         self.max_daily_loss_ratio = float(max(max_daily_loss_ratio, 0.0))
         self.max_total_exposure_ratio = float(max(max_total_exposure_ratio, 0.0))
@@ -69,6 +74,8 @@ class CapitalGovernor:
         self.metrics = metrics
         self.alert_manager = alert_manager
         self.labels = labels or {}
+        # Legacy compatibility for os.quant_kernel / live validator pathway.
+        self.deployable_capital = float(self.state.hard_cap_global)
 
     def update_state(
         self,
@@ -240,3 +247,9 @@ class CapitalGovernor:
         self.state.daily_pnl += float(pnl)
         self.state.exposure_by_asset[symbol] = self.state.exposure_by_asset.get(symbol, 0.0) + max(float(notional), 0.0)
         self.state.exposure_by_exchange[exchange] = self.state.exposure_by_exchange.get(exchange, 0.0) + max(float(notional), 0.0)
+
+    def reduce_capital(self, multiplier: float) -> float:
+        """Legacy compatibility method used by validation guard rails."""
+        safe_multiplier = float(np.clip(multiplier, 0.0, 1.0))
+        self.deployable_capital = max(self.deployable_capital * safe_multiplier, 0.0)
+        return self.deployable_capital

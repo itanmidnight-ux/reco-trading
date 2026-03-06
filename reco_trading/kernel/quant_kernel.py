@@ -467,8 +467,10 @@ class QuantKernel:
 
     async def _restore_financial_state_from_db(self) -> None:
         pnl_snapshot = await self.db.get_realized_pnl_from_fills(symbol=self.s.symbol)
-        self.state.realized_pnl = float(pnl_snapshot.get('realized_pnl') or 0.0)
-        self.state.fees_paid = float(pnl_snapshot.get('fees_paid') or 0.0)
+        realized = float(pnl_snapshot.get('realized_pnl') or 0.0)
+        fees_paid = float(pnl_snapshot.get('fees_paid') or 0.0)
+        self.state.realized_pnl = realized if np.isfinite(realized) else 0.0
+        self.state.fees_paid = fees_paid if np.isfinite(fees_paid) and fees_paid >= 0.0 else 0.0
 
     async def _startup_reconciliation(self) -> None:
         ok, free_usdt, exchange_equity, _, reason = await self._fetch_account_balance()
@@ -550,6 +552,13 @@ class QuantKernel:
             )
             net_qty = max(exchange_qty, 0.0)
 
+        if net_qty > 0.0 and avg_entry <= 0.0:
+            try:
+                ticker = await self.client.fetch_ticker(self.s.symbol)
+                avg_entry = float(ticker.get('last') or ticker.get('close') or 0.0)
+            except Exception:
+                avg_entry = 0.0
+
         if net_qty > 0.0:
             self.state.position_state = PositionState.LONG
             self.state.position_qty = net_qty
@@ -559,6 +568,9 @@ class QuantKernel:
             self.state.position_state = PositionState.FLAT
             self.state.position_qty = 0.0
             self.state.entry_price = 0.0
+            self.state.capital_in_position = 0.0
+
+        self._repair_state_consistency(reference_price=float(avg_entry if avg_entry > 0.0 else 0.0))
 
         total_equity = self._compute_total_equity()
         self._daily_anchor_equity = total_equity
@@ -622,6 +634,33 @@ class QuantKernel:
 
     def _compute_total_equity(self) -> float:
         return float(max(self.state.exchange_equity, 0.0) + self.state.unrealized_pnl)
+
+    def _repair_state_consistency(self, *, reference_price: float = 0.0) -> None:
+        if not np.isfinite(float(self.state.equity)) or self.state.equity < 0.0:
+            self.state.equity = max(float(self.state.equity) if np.isfinite(float(self.state.equity)) else 0.0, 0.0)
+        if not np.isfinite(float(self.state.exchange_equity)) or self.state.exchange_equity < 0.0:
+            self.state.exchange_equity = max(float(self.state.exchange_equity) if np.isfinite(float(self.state.exchange_equity)) else 0.0, 0.0)
+        if not np.isfinite(float(self.state.position_qty)) or self.state.position_qty < 0.0:
+            self.state.position_qty = 0.0
+
+        if self.state.position_state == PositionState.LONG and self.state.position_qty <= 0.0:
+            self.state.position_state = PositionState.FLAT
+        if self.state.position_state == PositionState.FLAT and self.state.position_qty > 0.0:
+            self.state.position_state = PositionState.LONG
+
+        if self.state.position_state == PositionState.LONG and self.state.entry_price <= 0.0:
+            if reference_price > 0.0 and np.isfinite(reference_price):
+                self.state.entry_price = float(reference_price)
+            else:
+                self.state.position_state = PositionState.FLAT
+                self.state.position_qty = 0.0
+                self.state.entry_price = 0.0
+                self.state.position_opened_at = None
+                self.state.tp_price = 0.0
+                self.state.sl_price = 0.0
+                self.state.unrealized_pnl = 0.0
+                self.state.capital_in_position = 0.0
+                self.state.partial_exits_done.clear()
 
     def _sync_daily_anchor(self, total_equity: float) -> None:
         today = datetime.now(timezone.utc).date()
@@ -1175,7 +1214,6 @@ class QuantKernel:
     ) -> None:
         total_equity = self._compute_total_equity()
         capital_actual = max(float(self.state.exchange_equity), 0.0)
-        drawdown = 0.0 if self.initial_equity <= 0 else max(0.0, self.initial_equity - total_equity)
         self.peak_equity = max(float(getattr(self, 'peak_equity', 0.0)), total_equity)
         peak_drawdown = max(0.0, self.peak_equity - total_equity)
         now = datetime.now(timezone.utc)
@@ -1197,7 +1235,7 @@ class QuantKernel:
                 equity=capital_actual,
                 pnl=self.state.realized_pnl + self.state.unrealized_pnl,
                 daily_pnl=total_equity - float(getattr(self, '_daily_anchor_equity', total_equity)),
-                drawdown=max(drawdown, peak_drawdown),
+                drawdown=peak_drawdown,
                 edge=float(expected_edge),
                 edge_confidence_score=float(getattr(self._latest_edge_snapshot, 'edge_confidence_score', 0.5)),
                 edge_t_stat=float(getattr(self._latest_edge_snapshot, 't_stat', 0.0)),
@@ -1406,6 +1444,8 @@ class QuantKernel:
                                     else:
                                         self.state.unrealized_pnl = 0.0
                                         self.state.capital_in_position = 0.0
+
+                                    self._repair_state_consistency(reference_price=last_price)
 
                                     regime_raw = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
                                     regime = self._map_regime(regime_raw)

@@ -906,27 +906,55 @@ class Database:
         return {'net_qty': position_qty, 'avg_entry': avg_entry if position_qty > 0.0 else 0.0}
 
     async def get_realized_pnl_from_fills(self, symbol: str | None = None) -> dict[str, float]:
-        sell_stmt = select(func.coalesce(func.sum(fills.c.fill_price * fills.c.fill_amount), 0)).where(fills.c.side == 'SELL')
-        buy_stmt = select(func.coalesce(func.sum(fills.c.fill_price * fills.c.fill_amount), 0)).where(fills.c.side == 'BUY')
-        fees_stmt = select(func.coalesce(func.sum(fills.c.fee), 0))
+        stmt = select(
+            fills.c.side,
+            fills.c.fill_amount,
+            fills.c.fill_price,
+            fills.c.fee,
+            fills.c.created_at,
+            fills.c.id,
+        ).order_by(fills.c.created_at.asc(), fills.c.id.asc())
         if symbol:
-            sell_stmt = sell_stmt.where(fills.c.symbol == symbol)
-            buy_stmt = buy_stmt.where(fills.c.symbol == symbol)
-            fees_stmt = fees_stmt.where(fills.c.symbol == symbol)
+            stmt = stmt.where(fills.c.symbol == symbol)
 
         async with self.session_factory() as session:
-            sell_notional = await session.scalar(sell_stmt)
-            buy_notional = await session.scalar(buy_stmt)
-            fees_paid = await session.scalar(fees_stmt)
+            rows = await session.execute(stmt)
 
-        sells = float(sell_notional or 0.0)
-        buys = float(buy_notional or 0.0)
-        fees = float(fees_paid or 0.0)
+        position_qty = 0.0
+        avg_entry = 0.0
+        realized_pnl = 0.0
+        buy_notional = 0.0
+        sell_notional = 0.0
+        fees_total = 0.0
+        for row in rows:
+            side = str(row.side or '').upper()
+            qty = float(row.fill_amount or 0.0)
+            price = float(row.fill_price or 0.0)
+            fee = float(row.fee or 0.0)
+            if qty <= 0.0 or price <= 0.0:
+                continue
+            fees_total += fee
+            notional = qty * price
+            if side == 'BUY':
+                new_qty = position_qty + qty
+                buy_notional += notional
+                if new_qty > 0.0:
+                    avg_entry = ((avg_entry * position_qty) + (price * qty)) / new_qty
+                    position_qty = new_qty
+            elif side == 'SELL':
+                close_qty = min(qty, max(position_qty, 0.0))
+                sell_notional += close_qty * price
+                if close_qty > 0.0:
+                    realized_pnl += ((price - avg_entry) * close_qty) - fee
+                position_qty = max(position_qty - close_qty, 0.0)
+                if position_qty <= 0.0:
+                    avg_entry = 0.0
+
         return {
-            'sell_notional': sells,
-            'buy_notional': buys,
-            'fees_paid': fees,
-            'realized_pnl': sells - buys - fees,
+            'sell_notional': float(sell_notional),
+            'buy_notional': float(buy_notional),
+            'fees_paid': float(fees_total),
+            'realized_pnl': float(realized_pnl),
         }
 
     async def fill_stats(self) -> dict:
