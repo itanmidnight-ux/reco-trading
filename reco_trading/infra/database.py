@@ -698,16 +698,52 @@ class Database:
             'exchange_order_id': exchange_order_id,
             'symbol': order.get('symbol', ''),
             'side': str(order.get('side', '')).upper(),
-            'fill_price': order.get('average') or order.get('price') or 0,
-            'fill_amount': order.get('filled') or order.get('amount') or 0,
+            'fill_price': float(order.get('average') or order.get('price') or 0.0),
+            'fill_amount': float(order.get('filled') or order.get('amount') or 0.0),
             'fee': float(fee.get('cost') or 0.0),
             'decision_id': order.get('decision_id'),
         }
+        if payload['fill_price'] <= 0.0 or payload['fill_amount'] <= 0.0:
+            return
+
         async def _op(session: AsyncSession) -> None:
+            duplicate_stmt = select(fills.c.id).where(
+                fills.c.exchange_order_id == payload['exchange_order_id'],
+                fills.c.side == payload['side'],
+                fills.c.fill_price == payload['fill_price'],
+                fills.c.fill_amount == payload['fill_amount'],
+            ).limit(1)
+            duplicate = await session.scalar(duplicate_stmt)
+            if duplicate is not None:
+                return
             payload['order_id'] = await self._resolve_order_id(session, exchange_order_id)
             await session.execute(insert(fills).values(**payload))
 
         await self._execute_in_transaction('record_fill', _op)
+
+    async def reconcile_exchange_fills(self, symbol: str, trades: list[dict[str, Any]]) -> int:
+        inserted = 0
+        for trade in trades or []:
+            side = str(trade.get('side') or '').upper()
+            qty = float(trade.get('amount') or trade.get('filled') or 0.0)
+            price = float(trade.get('price') or trade.get('average') or 0.0)
+            if side not in {'BUY', 'SELL'} or qty <= 0.0 or price <= 0.0:
+                continue
+            fee_payload = trade.get('fee') if isinstance(trade.get('fee'), dict) else {}
+            fee_cost = float(fee_payload.get('cost') or 0.0)
+            await self.record_fill(
+                {
+                    'id': str(trade.get('order') or trade.get('orderId') or trade.get('id') or ''),
+                    'symbol': str(trade.get('symbol') or symbol),
+                    'side': side,
+                    'average': price,
+                    'filled': qty,
+                    'fee': {'cost': fee_cost},
+                    'decision_id': trade.get('decision_id'),
+                }
+            )
+            inserted += 1
+        return inserted
 
     async def snapshot_portfolio(self, state) -> None:
         async def _op(session: AsyncSession) -> None:
