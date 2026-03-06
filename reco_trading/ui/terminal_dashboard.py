@@ -38,7 +38,7 @@ class TerminalDashboard:
         table.add_row('Capital actual', f"[bold]${snapshot.equity:,.2f}[/]")
         table.add_row('PnL total', f"[{self._money_color(snapshot.pnl)}]{snapshot.pnl:+,.2f}[/]")
         table.add_row('PnL diario', f"[{self._money_color(snapshot.daily_pnl)}]{snapshot.daily_pnl:+,.2f}[/]")
-        table.add_row('Drawdown', f"[yellow]{snapshot.drawdown:.2%}[/]")
+        table.add_row('Drawdown', f"[yellow]${snapshot.drawdown:,.2f}[/]")
         return Panel(table, title='Capital', border_style='cyan')
 
     def _analysis_panel(self, snapshot: VisualSnapshot) -> Panel:

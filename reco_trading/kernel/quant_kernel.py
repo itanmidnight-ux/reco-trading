@@ -1174,9 +1174,10 @@ class QuantKernel:
         critical_error: str = '',
     ) -> None:
         total_equity = self._compute_total_equity()
-        drawdown = 0.0 if self.initial_equity <= 0 else max(0.0, 1.0 - (total_equity / max(self.initial_equity, 1e-9)))
+        capital_actual = max(float(self.state.exchange_equity), 0.0)
+        drawdown = 0.0 if self.initial_equity <= 0 else max(0.0, self.initial_equity - total_equity)
         self.peak_equity = max(float(getattr(self, 'peak_equity', 0.0)), total_equity)
-        peak_drawdown = 0.0 if self.peak_equity <= 0 else max(0.0, (self.peak_equity - total_equity) / max(self.peak_equity, 1e-9))
+        peak_drawdown = max(0.0, self.peak_equity - total_equity)
         now = datetime.now(timezone.utc)
         position_time = (now - self.state.position_opened_at).total_seconds() if self.state.position_opened_at else 0.0
         cooldown = 0.0
@@ -1193,7 +1194,7 @@ class QuantKernel:
         self.dashboard.update(
             VisualSnapshot(
                 price=max(last_price, 0.0),
-                equity=total_equity,
+                equity=capital_actual,
                 pnl=self.state.realized_pnl + self.state.unrealized_pnl,
                 daily_pnl=total_equity - float(getattr(self, '_daily_anchor_equity', total_equity)),
                 drawdown=max(drawdown, peak_drawdown),
