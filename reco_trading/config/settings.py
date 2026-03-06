@@ -245,6 +245,11 @@ class Settings(BaseSettings):
             enabled.append('multi_exchange_arbitrage')
         return tuple(enabled)
 
+    @property
+    def max_gap_ratio(self) -> float:
+        # Compatibilidad retroactiva para referencias legacy del kernel.
+        return float(self.market_max_gap_ratio)
+
     @computed_field
     @property
     def symbol_rest(self) -> str:

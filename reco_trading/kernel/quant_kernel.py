@@ -40,6 +40,7 @@ from reco_trading.portfolio.exposure_model import ExposureModel
 from reco_trading.statistics.drift_detector import CUSUMDrift, DriftSignal, KLDivergenceDrift
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
+from reco_trading.hft.adaptive_market_maker import AdaptiveMarketMaker, MarketMakingState
 from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
 from reco_trading.ui.terminal_dashboard import TerminalDashboard
 from reco_trading.ui.visual_snapshot import VisualSnapshot
@@ -78,6 +79,15 @@ class RuntimeState:
     negative_edge_streak: int = 0
     binance_min_notional: float = 0.0
     final_order_notional: float = 0.0
+
+
+@dataclass(slots=True)
+class StrategyVote:
+    strategy: str
+    decision: str
+    confidence: float
+    reason: str
+
 
 
 class SignalEngine:
@@ -351,6 +361,8 @@ class QuantKernel:
             'portfolio_weight': 1.0,
             'drift_score': 0.0,
         }
+        self.market_making_engine = AdaptiveMarketMaker(MarketMakingState())
+        self.arbitrage_engine_enabled = bool(self.s.enable_multi_exchange_arbitrage)
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -839,28 +851,94 @@ class QuantKernel:
         else:
             logger.info('Decision: {} | Blocked by: none', final_decision)
 
-    def _route_strategies(self, directional_decision: str) -> tuple[str, list[str]]:
+    def _run_adaptive_market_making_engine(self, sig: dict[str, Any], last_price: float) -> StrategyVote:
+        volatility = float(max(sig.get('volatility') or 0.0, 0.0))
+        atr = float(max(sig.get('atr') or 0.0, 0.0))
+        prob_up = float(np.clip(self.decision_engine.last_scores.get('global_probability', 0.5), 0.0, 1.0))
+        quote = self.market_making_engine.compute_quotes(
+            mid_price=max(float(last_price), 1e-9),
+            atr=atr,
+            volatility=volatility,
+            sigma=volatility,
+            time_horizon=1.0,
+            vpin=float(np.clip(sig.get('signal_vector', {}).get('noise_penalty', 0.0), 0.0, 1.0)),
+            liquidity_shock=bool(self._last_market_quality.gap_ratio > max(float(self.s.market_max_gap_ratio), 1e-9)),
+            transformer_prob_up=prob_up,
+        )
+        directional_skew = (quote.reservation_price - float(last_price)) / max(float(last_price), 1e-9)
+        confidence = float(np.clip(abs(directional_skew) * 400.0, 0.0, 1.0))
+        if directional_skew > 0.00025:
+            decision = 'BUY'
+        elif directional_skew < -0.00025:
+            decision = 'SELL'
+        else:
+            decision = 'HOLD'
+        return StrategyVote(
+            strategy='adaptive_market_making',
+            decision=decision,
+            confidence=confidence,
+            reason=f"mm_skew={directional_skew:.6f}",
+        )
+
+    def _run_multi_exchange_arbitrage_engine(self, sig: dict[str, Any]) -> StrategyVote:
+        if not self.arbitrage_engine_enabled:
+            return StrategyVote('multi_exchange_arbitrage', 'HOLD', 0.0, 'arbitrage_disabled')
+
+        expected_edge = float(self._context.get('expected_edge', 0.0))
+        friction_cost = float(self._context.get('friction_cost', 0.0))
+        spread_bps = float(max(self._last_market_quality.spread_bps, 0.0))
+        arbitrage_signal = float(expected_edge - friction_cost - (spread_bps / 10_000.0))
+        confidence = float(np.clip(abs(arbitrage_signal) * 220.0, 0.0, 1.0))
+
+        if arbitrage_signal > 0.0002:
+            decision = 'BUY'
+        elif arbitrage_signal < -0.0002:
+            decision = 'SELL'
+        else:
+            decision = 'HOLD'
+
+        return StrategyVote(
+            strategy='multi_exchange_arbitrage',
+            decision=decision,
+            confidence=confidence,
+            reason=f"arb_edge={arbitrage_signal:.6f}",
+        )
+
+    def _route_strategies(self, directional_decision: str, sig: dict[str, Any], last_price: float) -> tuple[str, list[str]]:
         enabled = set(getattr(self.s, 'enabled_strategies', ()))
-        active_votes: list[str] = []
         reasons: list[str] = []
+        votes: list[StrategyVote] = []
 
         if 'directional' in enabled:
-            active_votes.append(directional_decision)
+            directional_confidence = float(np.clip(self.decision_engine.last_confidence, 0.0, 1.0))
+            votes.append(StrategyVote('directional', directional_decision, directional_confidence, self.decision_engine.last_reason))
         else:
             reasons.append('directional_disabled')
 
         if 'adaptive_market_making' in enabled:
-            reasons.append('adaptive_market_making_enabled_non_directional_mode')
-        if 'multi_exchange_arbitrage' in enabled:
-            reasons.append('multi_exchange_arbitrage_enabled_non_directional_mode')
+            mm_vote = self._run_adaptive_market_making_engine(sig=sig, last_price=last_price)
+            votes.append(mm_vote)
+            reasons.append(f"adaptive_market_making:{mm_vote.decision}:{mm_vote.confidence:.3f}")
 
-        tradable_votes = [v for v in active_votes if v in {'BUY', 'SELL'}]
-        if not tradable_votes:
+        if 'multi_exchange_arbitrage' in enabled:
+            arb_vote = self._run_multi_exchange_arbitrage_engine(sig=sig)
+            votes.append(arb_vote)
+            reasons.append(f"multi_exchange_arbitrage:{arb_vote.decision}:{arb_vote.confidence:.3f}")
+
+        actionable_votes = [vote for vote in votes if vote.decision in {'BUY', 'SELL'}]
+        if not actionable_votes:
             return 'HOLD', reasons
-        if len(set(tradable_votes)) > 1:
-            reasons.append('strategy_conflict')
+
+        best_vote = max(actionable_votes, key=lambda vote: vote.confidence)
+        top_votes = [vote for vote in actionable_votes if abs(vote.confidence - best_vote.confidence) <= 1e-9]
+        top_decisions = {vote.decision for vote in top_votes}
+        if len(top_decisions) > 1:
+            reasons.append('strategy_conflict_equal_confidence')
             return 'HOLD', reasons
-        return tradable_votes[0], reasons
+
+        reasons.append(f"selected_strategy={best_vote.strategy}")
+        return best_vote.decision, reasons
+
 
     async def _assess_institutional_risk(
         self,
@@ -1400,7 +1478,7 @@ class QuantKernel:
                                     self._context.setdefault('portfolio_weight', 1.0)
                                     self._context.setdefault('drift_score', 0.0)
                                     statistical_decision = self.decision_engine.decide()
-                                    routed_decision, routing_reasons = self._route_strategies(statistical_decision)
+                                    routed_decision, routing_reasons = self._route_strategies(statistical_decision, sig, last_price)
                                     self.decision_engine.last_scores['volatility'] = float(sig['volatility'])
                                     self.decision_engine.last_scores['momentum_weight'] = momentum_weight
                                     self.decision_engine.last_scores['reversion_weight'] = reversion_weight
