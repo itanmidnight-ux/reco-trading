@@ -245,6 +245,36 @@ class BinanceClient:
             )
         return normalized
 
+
+    async def create_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        order_type: str = 'market',
+        *,
+        client_order_id: str | None = None,
+        firewall_checked: bool = False,
+    ) -> Any:
+        if not firewall_checked:
+            raise PermissionError('create_order requiere validación previa del ExecutionFirewall')
+        await self.initialize()
+        params: dict[str, Any] = {}
+        if client_order_id:
+            params['newClientOrderId'] = client_order_id
+        return await self._retry(
+            self.exchange.create_order,
+            symbol,
+            order_type,
+            side.lower(),
+            amount,
+            None,
+            params,
+            route_type='order',
+            weight=1,
+            priority=BinanceRateGovernor.PRIORITY_ORDER,
+        )
+
     async def create_market_order(
         self,
         symbol: str,
@@ -285,31 +315,14 @@ class BinanceClient:
         client_order_id: str,
         firewall_checked: bool = False,
     ) -> Any:
-        params = {'newClientOrderId': client_order_id}
-        if not firewall_checked:
-            raise PermissionError('create_market_order requiere validación previa del ExecutionFirewall')
-        await self.initialize()
-        if side.upper() == 'BUY':
-            return await self._retry(
-                self.exchange.create_market_buy_order,
-                symbol,
-                amount,
-                params,
-                route_type='order',
-                weight=1,
-                priority=BinanceRateGovernor.PRIORITY_ORDER,
-            )
-        if side.upper() == 'SELL':
-            return await self._retry(
-                self.exchange.create_market_sell_order,
-                symbol,
-                amount,
-                params,
-                route_type='order',
-                weight=1,
-                priority=BinanceRateGovernor.PRIORITY_ORDER,
-            )
-        raise ValueError(f'Lado de orden inválido: {side}')
+        return await self.create_order(
+            symbol,
+            side,
+            amount,
+            order_type='market',
+            client_order_id=client_order_id,
+            firewall_checked=firewall_checked,
+        )
 
     async def fetch_order(self, symbol: str, order_id: str) -> Any:
         await self.initialize()

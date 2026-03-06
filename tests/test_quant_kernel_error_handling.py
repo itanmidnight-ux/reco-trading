@@ -187,3 +187,42 @@ def test_publish_dashboard_does_not_activate_kill_switch() -> None:
     assert kernel.state.kill_switch is False
     assert kernel.state.last_kill_switch_trigger is None
     assert kernel.dashboard.updates
+
+
+def test_publish_dashboard_uses_exchange_equity_as_capital_actual() -> None:
+    kernel = _build_kernel_for_unit()
+    kernel.s = SimpleNamespace(
+        kill_switch_max_rejections=1,
+        kill_switch_max_latency_ms=1_000.0,
+        max_consecutive_losses=5,
+        max_global_drawdown=0.99,
+        max_daily_loss=0.99,
+        allowed_sessions_utc=[],
+    )
+    kernel._cooldown_seconds = lambda: 120.0
+    kernel._is_within_allowed_session = lambda now: True
+    kernel.conditional_performance = SimpleNamespace(summary=lambda regime: {'expectancy': 0.0})
+    kernel._latest_edge_snapshot = SimpleNamespace(
+        edge_confidence_score=0.5,
+        t_stat=0.0,
+        bayesian_prob_edge_positive=0.5,
+        sprt_state='INCONCLUSIVE',
+    )
+    kernel._latest_ruin_snapshot = SimpleNamespace(risk_of_ruin_probability=1.0)
+    kernel._latest_regime_snapshot = {'regime_stability_score': 0.0}
+    kernel._rolling_stats = {'expectancy': 0.0}
+    kernel._signal_quality = {'volatility_adjusted_edge': 0.0, 'expected_value_net_costs': 0.0, 'stability_weight': 0.0}
+    kernel.decision_engine = SimpleNamespace(last_confidence=0.0, last_scores={}, last_reason='none')
+    kernel.execution_status = 'IDLE'
+    kernel.system_state = 'IDLE'
+    kernel.state.exchange_equity = 470.49
+    kernel.state.unrealized_pnl = 12.34
+    kernel._daily_anchor_equity = 470.49
+    kernel._daily_anchor_date = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).date()
+
+    kernel._publish_dashboard('HOLD', 0.0, 0.5, 0.5, 0.5, 'RANGE', 100.0, 'OK')
+
+    assert kernel.dashboard.updates
+    snapshot = kernel.dashboard.updates[-1]
+    assert snapshot.equity == 470.49
+    assert snapshot.pnl == 12.34
