@@ -26,3 +26,8 @@ def test_settings_reject_invalid_session_window() -> None:
 def test_settings_reject_invalid_volatility_multiplier_bounds() -> None:
     with pytest.raises(ValidationError, match='vol_min_multiplier'):
         Settings(vol_min_multiplier=2.0, vol_max_multiplier=1.0)
+
+
+def test_settings_exposes_legacy_max_gap_ratio_alias() -> None:
+    settings = Settings()
+    assert settings.max_gap_ratio == settings.market_max_gap_ratio
