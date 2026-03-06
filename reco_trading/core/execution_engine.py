@@ -200,6 +200,10 @@ class ExecutionEngine:
     async def _persist_execution_async(self, payload: dict[str, Any]) -> None:
         await asyncio.to_thread(self._persist_execution, payload)
 
+    def register_realized_pnl(self, pnl: float) -> None:
+        if hasattr(self._firewall, 'register_realized_pnl'):
+            self._firewall.register_realized_pnl(float(pnl))
+
 
     @staticmethod
     def compute_dynamic_exit_levels(entry_price: float, atr: float, side: str) -> tuple[float, float]:
