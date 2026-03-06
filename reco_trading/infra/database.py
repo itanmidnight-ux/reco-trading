@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 from sqlalchemy import JSON, BigInteger, Column, DateTime, ForeignKey, MetaData, Numeric, String, Table, Text, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from loguru import logger
 
@@ -223,15 +224,38 @@ class Database:
 
     async def init(self) -> None:
         async with self.engine.begin() as conn:
+            await self.ensure_schema_integrity(conn)
             await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS validation_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    snapshot JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(
+                pg_insert(decision_audit)
+                .values(decision_id='__bootstrap__', snapshot={'bootstrap': True})
+                .on_conflict_do_nothing(index_elements=[decision_audit.c.decision_id])
+            )
+
+    async def ensure_schema_integrity(self, conn: AsyncConnection) -> None:
+        logger.info('database_schema_check_started')
+
+        created_tables = []
+        added_columns = []
+        created_fks = []
+        created_indexes = []
+
+        table_ddls = {
+            'decision_audit': """
                 CREATE TABLE IF NOT EXISTS decision_audit (
                     id BIGSERIAL PRIMARY KEY,
                     decision_id VARCHAR(64) NOT NULL UNIQUE,
                     snapshot JSONB NOT NULL,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await conn.execute(text("""
+            """,
+            'orders': """
                 CREATE TABLE IF NOT EXISTS orders (
                     id BIGSERIAL PRIMARY KEY,
                     exchange_order_id VARCHAR(128) NOT NULL UNIQUE,
@@ -243,8 +267,8 @@ class Database:
                     decision_id VARCHAR(64),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await conn.execute(text("""
+            """,
+            'fills': """
                 CREATE TABLE IF NOT EXISTS fills (
                     id BIGSERIAL PRIMARY KEY,
                     exchange_order_id VARCHAR(128) NOT NULL,
@@ -257,8 +281,8 @@ class Database:
                     decision_id VARCHAR(64),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await conn.execute(text("""
+            """,
+            'order_executions': """
                 CREATE TABLE IF NOT EXISTS order_executions (
                     id BIGSERIAL PRIMARY KEY,
                     ts BIGINT NOT NULL,
@@ -273,8 +297,8 @@ class Database:
                     decision_id VARCHAR(64),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await conn.execute(text("""
+            """,
+            'execution_idempotency_ledger': """
                 CREATE TABLE IF NOT EXISTS execution_idempotency_ledger (
                     id BIGSERIAL PRIMARY KEY,
                     client_order_id VARCHAR(64) NOT NULL UNIQUE,
@@ -287,8 +311,8 @@ class Database:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await conn.execute(text("""
+            """,
+            'capital_reservations': """
                 CREATE TABLE IF NOT EXISTS capital_reservations (
                     id BIGSERIAL PRIMARY KEY,
                     reservation_id VARCHAR(128) NOT NULL UNIQUE,
@@ -301,95 +325,136 @@ class Database:
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
-            """))
-            await conn.execute(text("""
-                CREATE TABLE IF NOT EXISTS validation_history (
-                    id BIGSERIAL PRIMARY KEY,
-                    snapshot JSONB NOT NULL,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                )
-            """))
-            await conn.execute(text('ALTER TABLE capital_reservations ADD COLUMN IF NOT EXISTS client_order_id VARCHAR(64)'))
-            await conn.execute(
-                text(
-                    """
-                    UPDATE capital_reservations
-                    SET client_order_id = COALESCE(NULLIF(client_order_id, ''), reservation_id)
-                    WHERE client_order_id IS NULL OR client_order_id = ''
-                    """
-                )
+            """,
+        }
+
+        for table_name, ddl in table_ddls.items():
+            if not await self._table_exists(conn, table_name):
+                await conn.execute(text(ddl))
+                created_tables.append(table_name)
+
+        column_repairs = (
+            ('orders', 'decision_id', 'VARCHAR(64)'),
+            ('fills', 'decision_id', 'VARCHAR(64)'),
+            ('fills', 'order_id', 'BIGINT'),
+            ('order_executions', 'order_id', 'BIGINT'),
+            ('capital_reservations', 'client_order_id', 'VARCHAR(64)'),
+        )
+        for table_name, column_name, column_type in column_repairs:
+            if not await self._column_exists(conn, table_name, column_name):
+                await conn.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}'))
+                added_columns.append(f'{table_name}.{column_name}')
+                logger.warning('missing_column_added', table=table_name, column=column_name)
+
+        await conn.execute(
+            text(
+                """
+                UPDATE capital_reservations
+                SET client_order_id = COALESCE(NULLIF(client_order_id, ''), reservation_id)
+                WHERE client_order_id IS NULL OR client_order_id = ''
+                """
             )
-            await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_capital_reservations_client_order_id ON capital_reservations(client_order_id)'))
-            await conn.execute(
-                pg_insert(decision_audit)
-                .values(decision_id='__bootstrap__', snapshot={'bootstrap': True})
-                .on_conflict_do_nothing(index_elements=[decision_audit.c.decision_id])
+        )
+
+        fk_repairs = (
+            (
+                'fk_orders_decision_id',
+                'ALTER TABLE orders ADD CONSTRAINT fk_orders_decision_id FOREIGN KEY (decision_id) REFERENCES decision_audit(decision_id) ON DELETE SET NULL',
+            ),
+            (
+                'fk_fills_order_id',
+                'ALTER TABLE fills ADD CONSTRAINT fk_fills_order_id FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL',
+            ),
+            (
+                'fk_order_executions_order_id',
+                'ALTER TABLE order_executions ADD CONSTRAINT fk_order_executions_order_id FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL',
+            ),
+            (
+                'fk_fills_decision_id',
+                'ALTER TABLE fills ADD CONSTRAINT fk_fills_decision_id FOREIGN KEY (decision_id) REFERENCES decision_audit(decision_id) ON DELETE SET NULL',
+            ),
+        )
+        for fk_name, ddl in fk_repairs:
+            if not await self._constraint_exists(conn, fk_name):
+                await conn.execute(text(ddl))
+                created_fks.append(fk_name)
+                logger.warning('missing_fk_created', constraint=fk_name)
+
+        index_repairs = (
+            ('ux_capital_reservations_client_order_id', 'capital_reservations', 'CREATE UNIQUE INDEX IF NOT EXISTS ux_capital_reservations_client_order_id ON capital_reservations(client_order_id)'),
+            ('idx_fills_decision_id', 'fills', 'CREATE INDEX IF NOT EXISTS idx_fills_decision_id ON fills(decision_id)'),
+            ('idx_orders_decision_id', 'orders', 'CREATE INDEX IF NOT EXISTS idx_orders_decision_id ON orders(decision_id)'),
+            ('idx_order_executions_order_id', 'order_executions', 'CREATE INDEX IF NOT EXISTS idx_order_executions_order_id ON order_executions(order_id)'),
+        )
+        for index_name, table_name, ddl in index_repairs:
+            if not await self._index_exists(conn, index_name, table_name):
+                await conn.execute(text(ddl))
+                created_indexes.append(index_name)
+
+        if created_tables or added_columns or created_fks or created_indexes:
+            logger.info(
+                'database_schema_repaired',
+                created_tables=created_tables,
+                added_columns=added_columns,
+                created_fks=created_fks,
+                created_indexes=created_indexes,
             )
-            await conn.execute(text('ALTER TABLE fills ADD COLUMN IF NOT EXISTS order_id BIGINT'))
-            await conn.execute(text('ALTER TABLE order_executions ADD COLUMN IF NOT EXISTS order_id BIGINT'))
-            await conn.execute(text("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1
-                        FROM information_schema.columns
-                        WHERE table_schema = 'public'
-                          AND table_name = 'orders'
-                          AND column_name = 'decision_id'
-                    ) THEN
-                        ALTER TABLE orders ADD COLUMN decision_id VARCHAR(64);
-                    END IF;
 
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_decision_id') THEN
-                        ALTER TABLE orders
-                        ADD CONSTRAINT fk_orders_decision_id
-                        FOREIGN KEY (decision_id) REFERENCES decision_audit(decision_id) ON DELETE SET NULL;
-                    END IF;
-                END
-                $$;
-            """))
-            await conn.execute(text("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1
-                        FROM information_schema.columns
-                        WHERE table_schema = 'public'
-                          AND table_name = 'fills'
-                          AND column_name = 'order_id'
-                    ) THEN
-                        ALTER TABLE fills ADD COLUMN order_id BIGINT;
-                    END IF;
+    async def _table_exists(self, conn: AsyncConnection, table_name: str) -> bool:
+        result = await conn.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = :table_name
+                )
+                """
+            ),
+            {'table_name': table_name},
+        )
+        return bool(result.scalar())
 
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_fills_order_id') THEN
-                        ALTER TABLE fills
-                        ADD CONSTRAINT fk_fills_order_id
-                        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL;
-                    END IF;
-                END
-                $$;
-            """))
-            await conn.execute(text("""
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1
-                        FROM information_schema.columns
-                        WHERE table_schema = 'public'
-                          AND table_name = 'order_executions'
-                          AND column_name = 'order_id'
-                    ) THEN
-                        ALTER TABLE order_executions ADD COLUMN order_id BIGINT;
-                    END IF;
+    async def _column_exists(self, conn: AsyncConnection, table_name: str, column_name: str) -> bool:
+        result = await conn.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = :table_name
+                      AND column_name = :column_name
+                )
+                """
+            ),
+            {'table_name': table_name, 'column_name': column_name},
+        )
+        return bool(result.scalar())
 
-                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_executions_order_id') THEN
-                        ALTER TABLE order_executions
-                        ADD CONSTRAINT fk_order_executions_order_id
-                        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL;
-                    END IF;
-                END
-                $$;
-            """))
+    async def _constraint_exists(self, conn: AsyncConnection, constraint_name: str) -> bool:
+        result = await conn.execute(
+            text('SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = :constraint_name)'),
+            {'constraint_name': constraint_name},
+        )
+        return bool(result.scalar())
+
+    async def _index_exists(self, conn: AsyncConnection, index_name: str, table_name: str) -> bool:
+        result = await conn.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM pg_indexes
+                    WHERE schemaname = 'public'
+                      AND tablename = :table_name
+                      AND indexname = :index_name
+                )
+                """
+            ),
+            {'table_name': table_name, 'index_name': index_name},
+        )
+        return bool(result.scalar())
 
     async def health_check(self) -> None:
         try:
