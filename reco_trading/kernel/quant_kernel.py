@@ -862,7 +862,7 @@ class QuantKernel:
             sigma=volatility,
             time_horizon=1.0,
             vpin=float(np.clip(sig.get('signal_vector', {}).get('noise_penalty', 0.0), 0.0, 1.0)),
-            liquidity_shock=bool(self._last_market_quality.gap_ratio > max(float(self.s.market_max_gap_ratio), 1e-9)),
+            liquidity_shock=bool(self._last_market_quality.gap_ratio > max(float(self.s.max_gap_ratio), 1e-9)),
             transformer_prob_up=prob_up,
         )
         directional_skew = (quote.reservation_price - float(last_price)) / max(float(last_price), 1e-9)

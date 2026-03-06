@@ -13,7 +13,7 @@ class _DecisionEngineStub:
 
 def _build_kernel(enabled: tuple[str, ...]) -> QuantKernel:
     kernel = QuantKernel.__new__(QuantKernel)
-    kernel.s = SimpleNamespace(enabled_strategies=enabled, market_max_gap_ratio=0.02, enable_multi_exchange_arbitrage='multi_exchange_arbitrage' in enabled)
+    kernel.s = SimpleNamespace(enabled_strategies=enabled, max_gap_ratio=0.02, enable_multi_exchange_arbitrage='multi_exchange_arbitrage' in enabled)
     kernel.decision_engine = _DecisionEngineStub(confidence=0.65)
     kernel.market_making_engine = AdaptiveMarketMaker(MarketMakingState())
     kernel._last_market_quality = MarketQuality(True, 'ok', 4.0, 0.01, 1000.0, 0.0)
