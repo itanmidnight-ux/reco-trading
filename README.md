@@ -77,6 +77,11 @@ run.sh -> main.py -> QuantKernel.run()
                                  orders/fills/order_executions + decision_id
 ```
 
+### Runtime de producción canónico
+
+- **Único entrypoint de producción permitido:** `run.sh -> main.py -> QuantKernel.run()`.
+- `scripts/live_trading.py` y `trading_system/main.py` quedan marcados como `development_only`.
+
 ## Estructura
 
 - `reco_trading/config`: settings y logging.

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 from datetime import datetime, timezone
 from typing import Any
 import time
@@ -234,7 +233,6 @@ class ExecutionEngine:
             decision_timestamp_ms=decision_timestamp_ms,
             decision_context_hash=decision_context_hash,
         )
-        reservation_id = f'reservation-{uuid.uuid4()}'
         reservation_notional = 0.0
         for _ in range(max_retries):
             if self._quant_kernel.should_block_trading():
@@ -255,7 +253,7 @@ class ExecutionEngine:
                 )
                 reservation_notional = max(sanitized_amount * max(float(reference_price or 0.0), 0.0), 0.0)
                 if hasattr(self.db, 'reserve_capital'):
-                    await self.db.reserve_capital(reservation_id, self.symbol, side, reservation_notional)
+                    await self.db.reserve_capital(client_order_id, self.symbol, side, reservation_notional)
                 order = await self._idempotent_order_service.submit_market_order(
                     side=side,
                     amount=sanitized_amount,
@@ -268,12 +266,12 @@ class ExecutionEngine:
             except asyncio.TimeoutError:
                 self.last_rejection_reason = 'order_timeout'
                 if hasattr(self.db, 'finalize_capital_reservation'):
-                    await self.db.finalize_capital_reservation(reservation_id, 0.0, 'released')
+                    await self.db.finalize_capital_reservation(client_order_id, 0.0, 'released')
                 continue
             except Exception:
                 self.last_rejection_reason = 'order_rejected_by_exchange_rules'
                 if hasattr(self.db, 'finalize_capital_reservation'):
-                    await self.db.finalize_capital_reservation(reservation_id, 0.0, 'released')
+                    await self.db.finalize_capital_reservation(client_order_id, 0.0, 'released')
                 return None
             order['decision_id'] = str(self._active_execution_context.get('decision_id') or '')
             await self.db.record_order(order)
@@ -316,7 +314,7 @@ class ExecutionEngine:
             if fill_status in {'canceled', 'cancelled', 'rejected', 'expired'}:
                 self.last_rejection_reason = f'fill_terminal_{fill_status or "unknown"}'
                 if hasattr(self.db, 'finalize_capital_reservation'):
-                    await self.db.finalize_capital_reservation(reservation_id, 0.0, 'released')
+                    await self.db.finalize_capital_reservation(client_order_id, 0.0, 'released')
                 continue
 
             fill['decision_id'] = str(self._active_execution_context.get('decision_id') or '')
@@ -366,7 +364,7 @@ class ExecutionEngine:
             if self._capital_governor:
                 self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * sanitized_amount)
             if hasattr(self.db, 'finalize_capital_reservation'):
-                await self.db.finalize_capital_reservation(reservation_id, max(fill_price, 0.0) * sanitized_amount, 'committed')
+                await self.db.finalize_capital_reservation(client_order_id, max(fill_price, 0.0) * sanitized_amount, 'committed')
             await self._persist_execution_async(
                 {
                     'symbol': self.symbol,
@@ -421,6 +419,16 @@ class ExecutionEngine:
 
         ticket = None
         if self._capital_governor:
+            self._capital_governor.update_state(
+                strategy='directional',
+                exchange='binance',
+                symbol=self.symbol,
+                capital_by_strategy=float(self._risk_context.get('capital_total') or 0.0),
+                capital_by_exchange=float(self._risk_context.get('capital_total') or 0.0),
+                total_exposure=0.0,
+                asset_exposure=0.0,
+                exchange_equity=float(self._risk_context.get('capital_total') or 0.0),
+            )
             ticket = self._capital_governor.issue_ticket(
                 strategy='directional',
                 exchange='binance',

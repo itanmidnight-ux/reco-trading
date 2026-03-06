@@ -125,6 +125,7 @@ capital_reservations = Table(
     metadata,
     Column('id', BigInteger, primary_key=True),
     Column('reservation_id', String, unique=True, nullable=False),
+    Column('client_order_id', String, unique=True, nullable=False),
     Column('symbol', String, nullable=False),
     Column('side', String, nullable=False),
     Column('reserved_amount', Numeric, nullable=False),
@@ -222,7 +223,103 @@ class Database:
 
     async def init(self) -> None:
         async with self.engine.begin() as conn:
-            await conn.run_sync(metadata.create_all)
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS decision_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    decision_id VARCHAR(64) NOT NULL UNIQUE,
+                    snapshot JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS orders (
+                    id BIGSERIAL PRIMARY KEY,
+                    exchange_order_id VARCHAR(128) NOT NULL UNIQUE,
+                    symbol VARCHAR(32) NOT NULL,
+                    side VARCHAR(10) NOT NULL,
+                    price NUMERIC,
+                    amount NUMERIC NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    decision_id VARCHAR(64),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS fills (
+                    id BIGSERIAL PRIMARY KEY,
+                    exchange_order_id VARCHAR(128) NOT NULL,
+                    symbol VARCHAR(32) NOT NULL,
+                    side VARCHAR(10) NOT NULL,
+                    fill_price NUMERIC,
+                    fill_amount NUMERIC,
+                    fee NUMERIC,
+                    order_id BIGINT,
+                    decision_id VARCHAR(64),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS order_executions (
+                    id BIGSERIAL PRIMARY KEY,
+                    ts BIGINT NOT NULL,
+                    symbol VARCHAR(32) NOT NULL,
+                    side VARCHAR(10) NOT NULL,
+                    qty NUMERIC NOT NULL,
+                    price NUMERIC NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    exchange_order_id VARCHAR(128),
+                    pnl NUMERIC NOT NULL DEFAULT 0,
+                    order_id BIGINT,
+                    decision_id VARCHAR(64),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS execution_idempotency_ledger (
+                    id BIGSERIAL PRIMARY KEY,
+                    client_order_id VARCHAR(64) NOT NULL UNIQUE,
+                    symbol VARCHAR(32) NOT NULL,
+                    side VARCHAR(10) NOT NULL,
+                    qty NUMERIC NOT NULL,
+                    status VARCHAR(32) NOT NULL,
+                    exchange_order_id VARCHAR(128) NOT NULL DEFAULT '',
+                    decision_id VARCHAR(64),
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS capital_reservations (
+                    id BIGSERIAL PRIMARY KEY,
+                    reservation_id VARCHAR(128) NOT NULL UNIQUE,
+                    client_order_id VARCHAR(64) NOT NULL UNIQUE,
+                    symbol VARCHAR(32) NOT NULL,
+                    side VARCHAR(10) NOT NULL,
+                    reserved_amount NUMERIC NOT NULL,
+                    used_amount NUMERIC NOT NULL DEFAULT 0,
+                    status VARCHAR(32) NOT NULL DEFAULT 'active',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS validation_history (
+                    id BIGSERIAL PRIMARY KEY,
+                    snapshot JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """))
+            await conn.execute(text('ALTER TABLE capital_reservations ADD COLUMN IF NOT EXISTS client_order_id VARCHAR(64)'))
+            await conn.execute(
+                text(
+                    """
+                    UPDATE capital_reservations
+                    SET client_order_id = COALESCE(NULLIF(client_order_id, ''), reservation_id)
+                    WHERE client_order_id IS NULL OR client_order_id = ''
+                    """
+                )
+            )
+            await conn.execute(text('CREATE UNIQUE INDEX IF NOT EXISTS ux_capital_reservations_client_order_id ON capital_reservations(client_order_id)'))
             await conn.execute(
                 pg_insert(decision_audit)
                 .values(decision_id='__bootstrap__', snapshot={'bootstrap': True})
@@ -705,9 +802,10 @@ class Database:
             )
         return [dict(r._mapping) for r in rows]
 
-    async def reserve_capital(self, reservation_id: str, symbol: str, side: str, reserved_amount: float) -> None:
+    async def reserve_capital(self, client_order_id: str, symbol: str, side: str, reserved_amount: float) -> None:
         payload = {
-            'reservation_id': reservation_id,
+            'reservation_id': client_order_id,
+            'client_order_id': client_order_id,
             'symbol': symbol,
             'side': side,
             'reserved_amount': float(max(reserved_amount, 0.0)),
@@ -716,50 +814,58 @@ class Database:
         }
 
         async def _op(session: AsyncSession) -> None:
-            stmt = pg_insert(capital_reservations).values(**payload).on_conflict_do_nothing(index_elements=[capital_reservations.c.reservation_id])
+            stmt = (
+                pg_insert(capital_reservations)
+                .values(**payload)
+                .on_conflict_do_nothing(index_elements=[capital_reservations.c.client_order_id])
+            )
             await session.execute(stmt)
 
         await self._execute_in_transaction('reserve_capital', _op)
 
-    async def finalize_capital_reservation(self, reservation_id: str, used_amount: float, status: str) -> None:
+    async def finalize_capital_reservation(self, client_order_id: str, used_amount: float, status: str) -> None:
         async def _op(session: AsyncSession) -> None:
             await session.execute(
                 update(capital_reservations)
-                .where(capital_reservations.c.reservation_id == reservation_id)
+                .where(capital_reservations.c.client_order_id == client_order_id)
                 .values(used_amount=float(max(used_amount, 0.0)), status=status, updated_at=datetime.now(timezone.utc))
             )
 
         await self._execute_in_transaction('finalize_capital_reservation', _op)
 
-    async def cleanup_stale_reservations(self, open_orders: list[dict[str, Any]] | None = None) -> int:
+    async def cleanup_stale_reservations(
+        self,
+        open_orders: list[dict[str, Any]] | None = None,
+        active_client_order_ids: set[str] | None = None,
+    ) -> int:
         open_orders = open_orders or []
-        open_keys: set[tuple[str, str]] = set()
-        for item in open_orders:
-            symbol = str(item.get('symbol') or '')
-            side = str(item.get('side') or '').upper()
-            if symbol and side:
-                open_keys.add((symbol, side))
+        open_client_ids: set[str] = {
+            str(item.get('clientOrderId') or item.get('client_order_id') or '')
+            for item in open_orders
+            if str(item.get('clientOrderId') or item.get('client_order_id') or '')
+        }
+        active_client_order_ids = active_client_order_ids or set()
 
         async with self.session_factory() as session:
             rows = await session.execute(
                 select(
                     capital_reservations.c.reservation_id,
-                    capital_reservations.c.symbol,
-                    capital_reservations.c.side,
+                    capital_reservations.c.client_order_id,
                 ).where(func.lower(capital_reservations.c.status) == 'active')
             )
             stale_ids: list[str] = []
             for row in rows:
-                reservation_id = str(row.reservation_id or '')
-                symbol = str(row.symbol or '')
-                side = str(row.side or '').upper()
-                if not reservation_id:
+                client_order_id = str(row.client_order_id or row.reservation_id or '')
+                if not client_order_id:
                     continue
-                if (symbol, side) not in open_keys:
-                    stale_ids.append(reservation_id)
+                if client_order_id in open_client_ids:
+                    continue
+                if client_order_id in active_client_order_ids:
+                    continue
+                stale_ids.append(client_order_id)
 
-        for reservation_id in stale_ids:
-            await self.finalize_capital_reservation(reservation_id, 0.0, 'released')
+        for client_order_id in stale_ids:
+            await self.finalize_capital_reservation(client_order_id, 0.0, 'released')
         return len(stale_ids)
 
     @asynccontextmanager
