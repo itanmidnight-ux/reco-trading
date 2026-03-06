@@ -521,6 +521,14 @@ class QuantKernel:
             else:
                 await self.db.update_idempotency_status(cid, 'SUBMITTED', exchange_order_id)
 
+        try:
+            exchange_trades = await self.client.fetch_my_trades(self.s.symbol, limit=1000)
+        except Exception as exc:
+            logger.warning('startup_fetch_my_trades_failed: %s', exc)
+            exchange_trades = []
+        if exchange_trades:
+            await self.db.reconcile_exchange_fills(self.s.symbol, exchange_trades)
+
         await self._restore_financial_state_from_db()
         snapshot = await self.db.restore_position_snapshot(self.s.symbol)
         net_qty = float(snapshot.get('net_qty') or 0.0)
@@ -571,6 +579,9 @@ class QuantKernel:
             self.state.capital_in_position = 0.0
 
         self._repair_state_consistency(reference_price=float(avg_entry if avg_entry > 0.0 else 0.0))
+        valid_financials, invariant_reason = self._validate_financial_invariants()
+        if not valid_financials:
+            raise RuntimeError(f'Financial invariant violation at startup: {invariant_reason}')
 
         total_equity = self._compute_total_equity()
         self._daily_anchor_equity = total_equity
@@ -633,7 +644,8 @@ class QuantKernel:
         return float(max(effective_min_edge, self.s.operational_edge_floor))
 
     def _compute_total_equity(self) -> float:
-        return float(max(self.state.exchange_equity, 0.0) + self.state.unrealized_pnl)
+        # Exchange equity is the accounting source of truth for total account equity.
+        return float(max(self.state.exchange_equity, 0.0))
 
     def _repair_state_consistency(self, *, reference_price: float = 0.0) -> None:
         if not np.isfinite(float(self.state.equity)) or self.state.equity < 0.0:
@@ -673,6 +685,17 @@ class QuantKernel:
             anchor_equity = total_equity
         self._daily_anchor_date = anchor_date
         self._daily_anchor_equity = anchor_equity
+
+    def _validate_financial_invariants(self) -> tuple[bool, str]:
+        equity = float(max(self.state.exchange_equity, 0.0))
+        if self.state.position_qty < -1e-12:
+            return False, 'position_qty_negative'
+        if self.state.position_state == PositionState.LONG and self.state.position_qty > 0.0 and self.state.entry_price <= 0.0:
+            return False, 'entry_price_missing_for_open_position'
+        total_pnl = float(self.state.realized_pnl + self.state.unrealized_pnl)
+        if equity > 0.0 and abs(total_pnl) > equity:
+            return False, 'pnl_exceeds_equity'
+        return True, 'ok'
 
     def _check_kill_switch_state(self) -> tuple[bool, str]:
         if self.shutdown_event.is_set():
@@ -1433,7 +1456,7 @@ class QuantKernel:
                                         total_exposure=float(self.state.capital_in_position),
                                         asset_exposure=float(self.state.capital_in_position),
                                         exchange_equity=float(self.state.exchange_equity),
-                                        daily_pnl=float(self.state.realized_pnl),
+                                        daily_pnl=float(self._compute_total_equity() - float(getattr(self, '_daily_anchor_equity', self._compute_total_equity()))),
                                     )
                                     sig = await asyncio.to_thread(self.signal_engine.generate, ohlcv, spread_bps)
                                     last_price = float(sig['prices'].iloc[-1])
@@ -1446,6 +1469,16 @@ class QuantKernel:
                                         self.state.capital_in_position = 0.0
 
                                     self._repair_state_consistency(reference_price=last_price)
+                                    valid_financials, invariant_reason = self._validate_financial_invariants()
+                                    if not valid_financials:
+                                        self.state.kill_switch = True
+                                        self.state.last_kill_switch_trigger = invariant_reason
+                                        self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                        self.state.last_block_reason = invariant_reason
+                                        self.activity_text = f'Financial invariant violation: {invariant_reason}'
+                                        self._publish_dashboard('DISABLE_TRADING', 0.0, 0.5, 0.5, 0.5, 'RANGE', float(ohlcv["close"].iloc[-1]), 'ERROR')
+                                        await asyncio.sleep(self.s.loop_interval_seconds)
+                                        continue
 
                                     regime_raw = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
                                     regime = self._map_regime(regime_raw)

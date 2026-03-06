@@ -358,6 +358,18 @@ class BinanceClient:
             priority=BinanceRateGovernor.PRIORITY_ACCOUNT,
         )
 
+    async def fetch_my_trades(self, symbol: str, since: int | None = None, limit: int | None = 1000) -> Any:
+        await self.initialize()
+        return await self._retry(
+            self.exchange.fetch_my_trades,
+            symbol,
+            since,
+            limit,
+            route_type='account',
+            weight=5,
+            priority=BinanceRateGovernor.PRIORITY_ACCOUNT,
+        )
+
     async def wait_for_fill(self, symbol: str, order_id: str, timeout: int = 45) -> Any:
         for _ in range(timeout):
             order = await self.fetch_order(symbol, order_id)
