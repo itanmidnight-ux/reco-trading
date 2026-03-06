@@ -217,6 +217,7 @@ def test_publish_dashboard_uses_exchange_equity_as_capital_actual() -> None:
     kernel.system_state = 'IDLE'
     kernel.state.exchange_equity = 470.49
     kernel.state.unrealized_pnl = 12.34
+    kernel.state.realized_pnl = 0.0
     kernel._daily_anchor_equity = 470.49
     kernel._daily_anchor_date = __import__('datetime').datetime.now(__import__('datetime').timezone.utc).date()
 
@@ -226,6 +227,24 @@ def test_publish_dashboard_uses_exchange_equity_as_capital_actual() -> None:
     snapshot = kernel.dashboard.updates[-1]
     assert snapshot.equity == 470.49
     assert snapshot.pnl == 12.34
+
+
+def test_restore_financial_state_from_db_keeps_session_realized_zero() -> None:
+    kernel = _build_kernel_for_unit()
+
+    class _DummyDB:
+        async def get_realized_pnl_from_fills(self, symbol: str):
+            assert symbol == 'BTC/USDT'
+            return {'realized_pnl': 455.44, 'fees_paid': 1.25}
+
+    kernel.db = _DummyDB()
+    kernel.s = SimpleNamespace(symbol='BTC/USDT')
+
+    asyncio.run(kernel._restore_financial_state_from_db())
+
+    assert kernel.state.lifetime_realized_pnl == 455.44
+    assert kernel.state.realized_pnl == 0.0
+    assert kernel.state.fees_paid == 1.25
 
 
 def test_publish_dashboard_drawdown_uses_peak_equity() -> None:
