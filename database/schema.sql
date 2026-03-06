@@ -128,3 +128,44 @@ CREATE TABLE IF NOT EXISTS decision_audit (
 ALTER TABLE IF EXISTS orders ADD COLUMN IF NOT EXISTS decision_id VARCHAR(64);
 ALTER TABLE IF EXISTS fills ADD COLUMN IF NOT EXISTS decision_id VARCHAR(64);
 ALTER TABLE IF EXISTS order_executions ADD COLUMN IF NOT EXISTS decision_id VARCHAR(64);
+
+DO
+$$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_decision_id') THEN
+        ALTER TABLE orders
+            ADD CONSTRAINT fk_orders_decision_id
+            FOREIGN KEY (decision_id) REFERENCES decision_audit(decision_id) ON DELETE SET NULL;
+    END IF;
+END
+$$;
+
+ALTER TABLE IF EXISTS fills
+    ADD COLUMN IF NOT EXISTS order_id BIGINT;
+
+DO
+$$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_fills_order_id') THEN
+        ALTER TABLE fills
+            ADD CONSTRAINT fk_fills_order_id
+            FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL;
+    END IF;
+END
+$$;
+
+ALTER TABLE IF EXISTS order_executions
+    ADD COLUMN IF NOT EXISTS order_id BIGINT;
+
+DO
+$$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_executions_order_id') THEN
+        ALTER TABLE order_executions
+            ADD CONSTRAINT fk_order_executions_order_id
+            FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL;
+    END IF;
+END
+$$;
+
+ALTER TABLE IF EXISTS order_executions ADD COLUMN IF NOT EXISTS exchange_order_id VARCHAR(64);

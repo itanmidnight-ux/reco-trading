@@ -60,11 +60,14 @@ run.sh -> main.py -> QuantKernel.run()
                      |     FeatureEngine + Models + Regime + SignalFusion
                      |     -> decision_id + persisted decision snapshot
                      |
+                     +--> Institutional Risk Layer
+                     |     - InstitutionalRiskManager (kelly/cvar/correlation/exposure/liquidity)
+                     |
                      +--> ExecutionEngine.execute()
                            |
                            +--> Postgres advisory lock (cross-process)
                            +--> ExecutionFirewall + capital limit checks
-                           +--> Capital reservation (reserve/commit/release)
+                           +--> CapitalGovernor ticket + capital reservation (reserve/commit/release)
                            +--> IdempotentOrderService
                            |     - durable execution_idempotency_ledger
                            |     - state machine: PENDING/SUBMITTED/PARTIAL/FILLED/CANCELLED/FAILED
@@ -151,7 +154,7 @@ El script `scripts/reset_database.sh` soporta variables de entorno operativas:
 Ejemplo:
 
 ```bash
-DB_PASS='trading_secure_2026' ADMIN_OS_USER=root ./scripts/reset_database.sh
+DB_PASS='<your_db_password>' ADMIN_OS_USER=root ./scripts/reset_database.sh
 ```
 
 ## Despliegue operacional (systemd / docker compose)

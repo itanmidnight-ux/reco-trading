@@ -333,6 +333,7 @@ class ExecutionEngine:
                     'status': str(fill.get('status') or 'closed'),
                     'pnl': 0.0,
                     'decision_id': str(self._active_execution_context.get('decision_id') or ''),
+                    'exchange_order_id': str(fill.get('id') or order_id),
                 }
             )
             logger.info(

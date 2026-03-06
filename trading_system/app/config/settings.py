@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     max_consecutive_losses: int = Field(default=5)
     risk_per_trade: float = Field(default=0.01)
 
-    postgres_dsn: str = Field(default='postgresql+asyncpg://trading:trading@localhost:5432/trading')
+    postgres_dsn: str = Field(default='')
     redis_url: str = Field(default='redis://localhost:6379/0')
 
     @property
