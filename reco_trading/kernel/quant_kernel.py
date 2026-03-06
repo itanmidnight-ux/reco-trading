@@ -21,6 +21,7 @@ from reco_trading.core.data_buffer import DataBuffer
 from reco_trading.core.execution_engine import ExecutionEngine
 from reco_trading.core.feature_engine import FeatureEngine
 from reco_trading.core.market_data import MarketDataService, MarketQuality, MarketQualityContract
+from reco_trading.core.institutional_risk_manager import InstitutionalRiskManager, RiskLimits
 from reco_trading.core.market_regime import MarketRegimeDetector
 from reco_trading.core.signal_fusion import SignalCombiner
 from reco_trading.core.system_state import SystemState
@@ -387,6 +388,7 @@ class QuantKernel:
         self.risk_of_ruin = RiskOfRuinEstimator()
         self.conditional_performance = ConditionalPerformanceTracker(window=self.s.conditional_performance_window)
 
+        self.capital_governor = CapitalGovernor(hard_cap_global=10_000_000.0)
         self.execution_engine = ExecutionEngine(
             self.client,
             self.s.symbol,
@@ -400,7 +402,19 @@ class QuantKernel:
                 max_daily_notional=200_000,
             ),
             quant_kernel=self,
-            capital_governor=CapitalGovernor(hard_cap_global=10_000_000.0),
+            capital_governor=self.capital_governor,
+        )
+        self.institutional_risk_manager = InstitutionalRiskManager(
+            limits=RiskLimits(
+                risk_per_trade=float(self.s.risk_per_trade),
+                max_daily_loss=float(self.s.max_daily_loss),
+                max_global_drawdown=float(self.s.max_global_drawdown),
+                max_total_exposure=float(self.s.max_total_exposure),
+                max_asset_exposure=float(self.s.max_asset_exposure),
+                correlation_threshold=float(self.s.correlation_threshold),
+            ),
+            atr_multiplier=float(self.s.atr_stop_multiplier),
+            capital_governor=self.capital_governor,
         )
         self.capital_protection_controller = CapitalProtectionController(
             client=self.client,
@@ -465,6 +479,33 @@ class QuantKernel:
         snapshot = await self.db.restore_position_snapshot(self.s.symbol)
         net_qty = float(snapshot.get('net_qty') or 0.0)
         avg_entry = float(snapshot.get('avg_entry') or 0.0)
+
+        base_asset = self.s.symbol.split('/', 1)[0]
+        exchange_qty = 0.0
+        try:
+            balance = await self.client.fetch_balance()
+            asset_bucket = balance.get(base_asset) if isinstance(balance, dict) else None
+            if isinstance(asset_bucket, dict):
+                exchange_qty = float(asset_bucket.get('free') or 0.0) + float(asset_bucket.get('used') or 0.0)
+            free_bucket = balance.get('free') if isinstance(balance, dict) else None
+            used_bucket = balance.get('used') if isinstance(balance, dict) else None
+            if isinstance(free_bucket, dict) or isinstance(used_bucket, dict):
+                exchange_qty = max(
+                    exchange_qty,
+                    float((free_bucket or {}).get(base_asset) or 0.0) + float((used_bucket or {}).get(base_asset) or 0.0),
+                )
+        except Exception as exc:
+            logger.warning('startup_exchange_balance_reconciliation_failed: %s', exc)
+
+        if abs(exchange_qty - net_qty) > 1e-8:
+            logger.warning(
+                'startup_position_discrepancy_detected symbol=%s db_qty=%.10f exchange_qty=%.10f; applying exchange truth',
+                self.s.symbol,
+                net_qty,
+                exchange_qty,
+            )
+            net_qty = max(exchange_qty, 0.0)
+
         if net_qty > 0.0:
             self.state.position_state = PositionState.LONG
             self.state.position_qty = net_qty
@@ -798,6 +839,95 @@ class QuantKernel:
         else:
             logger.info('Decision: {} | Blocked by: none', final_decision)
 
+    def _route_strategies(self, directional_decision: str) -> tuple[str, list[str]]:
+        enabled = set(getattr(self.s, 'enabled_strategies', ()))
+        active_votes: list[str] = []
+        reasons: list[str] = []
+
+        if 'directional' in enabled:
+            active_votes.append(directional_decision)
+        else:
+            reasons.append('directional_disabled')
+
+        if 'adaptive_market_making' in enabled:
+            reasons.append('adaptive_market_making_enabled_non_directional_mode')
+        if 'multi_exchange_arbitrage' in enabled:
+            reasons.append('multi_exchange_arbitrage_enabled_non_directional_mode')
+
+        tradable_votes = [v for v in active_votes if v in {'BUY', 'SELL'}]
+        if not tradable_votes:
+            return 'HOLD', reasons
+        if len(set(tradable_votes)) > 1:
+            reasons.append('strategy_conflict')
+            return 'HOLD', reasons
+        return tradable_votes[0], reasons
+
+    async def _assess_institutional_risk(
+        self,
+        *,
+        decision: str,
+        order_qty: float,
+        last_price: float,
+        sig: dict[str, Any],
+        returns_series: pd.Series,
+    ) -> tuple[bool, str, float]:
+        if decision not in {'BUY', 'SELL'}:
+            return True, 'not_applicable', order_qty
+        if order_qty <= 0.0:
+            return False, 'order_qty_zero', 0.0
+
+        requested_notional = max(order_qty * max(last_price, 0.0), 0.0)
+        available_liquidity = max(float(self._last_market_quality.avg_volume) * max(last_price, 0.0), 0.0)
+        if requested_notional > 0.0 and available_liquidity > 0.0:
+            liquidity_coverage = available_liquidity / max(requested_notional, 1e-9)
+            if liquidity_coverage < 1.0:
+                return False, 'institutional_liquidity_coverage_low', 0.0
+
+        ticket = self.capital_governor.issue_ticket(
+            strategy='directional',
+            exchange='binance',
+            symbol=self.s.symbol,
+            requested_notional=requested_notional,
+            pnl_or_returns=list(self._trade_returns),
+            spread_bps=float(self._last_market_quality.spread_bps),
+            available_liquidity=max(available_liquidity, requested_notional),
+            price_gap_pct=float(self._last_market_quality.gap_ratio),
+            estimated_trade_risk=max(requested_notional * float(self.s.risk_per_trade), 0.0),
+        )
+
+        returns_matrix = pd.DataFrame({self.s.symbol: returns_series.tail(300).astype(float)})
+        notional_by_exchange = {'binance': float(self.state.capital_in_position)}
+        total_exposure = float(self.state.capital_in_position)
+        risk_assessment = self.institutional_risk_manager.assess(
+            symbol=self.s.symbol,
+            side=decision,
+            equity=float(self.state.equity),
+            daily_pnl=float(self.state.realized_pnl),
+            current_price=float(last_price),
+            atr=float(sig.get('atr') or 0.0),
+            annualized_volatility=float(sig.get('volatility') or 0.0),
+            volatility_multiplier=1.0,
+            expected_win_rate=max(float(self.decision_engine.last_confidence), 0.5),
+            avg_win=max(float(np.mean([x for x in self._trade_pnls if x > 0.0])) if any(x > 0.0 for x in self._trade_pnls) else 1.0, 1e-9),
+            avg_loss=max(abs(float(np.mean([x for x in self._trade_pnls if x <= 0.0])) if any(x <= 0.0 for x in self._trade_pnls) else 1.0), 1e-9),
+            returns_matrix=returns_matrix,
+            risk_per_trade_override=float(self._context.get('risk_fraction') or self.s.risk_per_trade),
+            exchange='binance',
+            notional_by_exchange=notional_by_exchange,
+            total_exposure=total_exposure,
+            capital_ticket=ticket,
+        )
+
+        if not risk_assessment.allowed:
+            return False, f'institutional_risk:{risk_assessment.reason}', 0.0
+
+        if decision == 'BUY':
+            capped_qty = min(order_qty, float(risk_assessment.position_size))
+        else:
+            capped_qty = min(order_qty, float(max(self.state.position_qty, 0.0)))
+        if capped_qty <= 0.0:
+            return False, 'institutional_risk:size_capped_to_zero', 0.0
+        return True, 'ok', capped_qty
 
     def _is_within_allowed_session(self, now: datetime) -> bool:
         if not self.s.allowed_sessions_utc:
@@ -1270,12 +1400,13 @@ class QuantKernel:
                                     self._context.setdefault('portfolio_weight', 1.0)
                                     self._context.setdefault('drift_score', 0.0)
                                     statistical_decision = self.decision_engine.decide()
+                                    routed_decision, routing_reasons = self._route_strategies(statistical_decision)
                                     self.decision_engine.last_scores['volatility'] = float(sig['volatility'])
                                     self.decision_engine.last_scores['momentum_weight'] = momentum_weight
                                     self.decision_engine.last_scores['reversion_weight'] = reversion_weight
-                                    executable_decision = statistical_decision
-                                    policy_block_reasons: list[str] = []
-                                    self.state.pending_action = statistical_decision if statistical_decision in {'BUY', 'SELL'} else None
+                                    executable_decision = routed_decision
+                                    policy_block_reasons: list[str] = list(routing_reasons)
+                                    self.state.pending_action = routed_decision if routed_decision in {'BUY', 'SELL'} else None
                                     self.state.last_block_reason = self.decision_engine.last_reason
                                     self.activity_text = self.decision_engine.last_reason
 
@@ -1447,6 +1578,23 @@ class QuantKernel:
                                         if self.system_state == SystemState.BLOCKED_BY_RISK.value:
                                             self.state.last_block_reason = self.state.last_block_reason or 'blocked'
                                         decision = 'HOLD'
+
+                                    if decision in {'BUY', 'SELL'} and order_qty > 0.0:
+                                        risk_ok, risk_reason, risk_capped_qty = await self._assess_institutional_risk(
+                                            decision=decision,
+                                            order_qty=order_qty,
+                                            last_price=last_price,
+                                            sig=sig,
+                                            returns_series=returns_series,
+                                        )
+                                        if not risk_ok:
+                                            decision = 'HOLD'
+                                            policy_block_reasons.append(risk_reason)
+                                            self.system_state = SystemState.BLOCKED_BY_RISK.value
+                                            self.state.last_block_reason = risk_reason
+                                            self.activity_text = f'BLOCK por {risk_reason}'
+                                        else:
+                                            order_qty = float(risk_capped_qty)
 
                                     self._record_decision_audit(
                                         decision=decision,

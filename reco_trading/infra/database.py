@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from sqlalchemy import JSON, BigInteger, Column, DateTime, ForeignKey, MetaData, Numeric, String, Table, Text, func, insert, select, update
+from sqlalchemy import JSON, BigInteger, Column, DateTime, ForeignKey, MetaData, Numeric, String, Table, Text, func, insert, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from loguru import logger
@@ -39,6 +39,7 @@ fills = Table(
     Column('fill_price', Numeric),
     Column('fill_amount', Numeric),
     Column('fee', Numeric),
+    Column('order_id', BigInteger),
     Column('decision_id', String),
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
@@ -97,7 +98,9 @@ order_executions = Table(
     Column('qty', Numeric, nullable=False),
     Column('price', Numeric, nullable=False),
     Column('status', String, nullable=False),
+    Column('exchange_order_id', String),
     Column('pnl', Numeric, nullable=False, server_default='0'),
+    Column('order_id', BigInteger),
     Column('decision_id', String),
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
@@ -220,6 +223,46 @@ class Database:
     async def init(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+            await conn.execute(
+                pg_insert(decision_audit)
+                .values(decision_id='__bootstrap__', snapshot={'bootstrap': True})
+                .on_conflict_do_nothing(index_elements=[decision_audit.c.decision_id])
+            )
+            await conn.execute(text('ALTER TABLE fills ADD COLUMN IF NOT EXISTS order_id BIGINT'))
+            await conn.execute(text('ALTER TABLE order_executions ADD COLUMN IF NOT EXISTS order_id BIGINT'))
+            await conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_orders_decision_id') THEN
+                        ALTER TABLE orders
+                        ADD CONSTRAINT fk_orders_decision_id
+                        FOREIGN KEY (decision_id) REFERENCES decision_audit(decision_id) ON DELETE SET NULL;
+                    END IF;
+                END
+                $$;
+            """))
+            await conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_fills_order_id') THEN
+                        ALTER TABLE fills
+                        ADD CONSTRAINT fk_fills_order_id
+                        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL;
+                    END IF;
+                END
+                $$;
+            """))
+            await conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_order_executions_order_id') THEN
+                        ALTER TABLE order_executions
+                        ADD CONSTRAINT fk_order_executions_order_id
+                        FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE SET NULL;
+                    END IF;
+                END
+                $$;
+            """))
 
     async def health_check(self) -> None:
         try:
@@ -501,6 +544,11 @@ class Database:
         )
         return to_version
 
+    async def _resolve_order_id(self, session: AsyncSession, exchange_order_id: str) -> int | None:
+        if not exchange_order_id:
+            return None
+        return await session.scalar(select(orders.c.id).where(orders.c.exchange_order_id == exchange_order_id).limit(1))
+
     async def record_order(self, order: dict) -> None:
         payload = {
             'exchange_order_id': str(order.get('id')),
@@ -518,8 +566,9 @@ class Database:
 
     async def record_fill(self, order: dict) -> None:
         fee = order.get('fee') if isinstance(order.get('fee'), dict) else {}
+        exchange_order_id = str(order.get('id') or '')
         payload = {
-            'exchange_order_id': str(order.get('id')),
+            'exchange_order_id': exchange_order_id,
             'symbol': order.get('symbol', ''),
             'side': str(order.get('side', '')).upper(),
             'fill_price': order.get('average') or order.get('price') or 0,
@@ -528,6 +577,7 @@ class Database:
             'decision_id': order.get('decision_id'),
         }
         async def _op(session: AsyncSession) -> None:
+            payload['order_id'] = await self._resolve_order_id(session, exchange_order_id)
             await session.execute(insert(fills).values(**payload))
 
         await self._execute_in_transaction('record_fill', _op)
@@ -558,7 +608,10 @@ class Database:
 
     async def persist_order_execution(self, payload: dict[str, Any]) -> None:
         async def _op(session: AsyncSession) -> None:
-            await session.execute(insert(order_executions).values(**payload))
+            exchange_order_id = str(payload.get('exchange_order_id') or '')
+            row = dict(payload)
+            row['order_id'] = await self._resolve_order_id(session, exchange_order_id)
+            await session.execute(insert(order_executions).values(**row))
 
         await self._execute_in_transaction('persist_order_execution', _op)
 

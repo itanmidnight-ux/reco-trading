@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from reco_trading.core.capital_governor import CapitalGovernor
+from reco_trading.kernel.capital_governor import CapitalGovernor
 
 
 @dataclass(slots=True)

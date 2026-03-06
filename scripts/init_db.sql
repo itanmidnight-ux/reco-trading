@@ -1,25 +1,40 @@
+\if :{?DB_USER}
+\else
+\set DB_USER trading
+\endif
+
+\if :{?DB_PASSWORD}
+\else
+\set DB_PASSWORD trading
+\endif
+
+\if :{?DB_NAME}
+\else
+\set DB_NAME reco_trading_prod
+\endif
+
 DO
 $$
 BEGIN
-   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'trading') THEN
-      CREATE ROLE trading LOGIN;
+   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = :'DB_USER') THEN
+      EXECUTE format('CREATE ROLE %I LOGIN', :'DB_USER');
    END IF;
 
-   ALTER ROLE trading WITH LOGIN PASSWORD 'trading';
+   EXECUTE format('ALTER ROLE %I WITH LOGIN PASSWORD %L', :'DB_USER', :'DB_PASSWORD');
 END
 $$;
 
-SELECT 'CREATE DATABASE trading OWNER trading'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'trading')
+SELECT format('CREATE DATABASE %I OWNER %I', :'DB_NAME', :'DB_USER')
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'DB_NAME')
 \gexec
 
-\c trading
+\connect :DB_NAME
 
-ALTER DATABASE trading OWNER TO trading;
-ALTER SCHEMA public OWNER TO trading;
-GRANT ALL ON SCHEMA public TO trading;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO trading;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO trading;
+SELECT format('ALTER DATABASE %I OWNER TO %I', :'DB_NAME', :'DB_USER')\gexec
+SELECT format('ALTER SCHEMA public OWNER TO %I', :'DB_USER')\gexec
+SELECT format('GRANT ALL ON SCHEMA public TO %I', :'DB_USER')\gexec
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO %I', :'DB_USER')\gexec
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO %I', :'DB_USER')\gexec
 
 CREATE TABLE IF NOT EXISTS orders (
   id BIGSERIAL PRIMARY KEY,

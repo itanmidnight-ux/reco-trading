@@ -32,8 +32,6 @@ class MeanReversionModel:
 
     def predict_reversion(self, frame: pd.DataFrame) -> float:
         if not self._fitted:
-            self.fit(frame)
-        if not self._fitted:
             return 0.5
         return float(self.model.predict_proba(frame[self.FEATURES].tail(1))[0, 1])
 
