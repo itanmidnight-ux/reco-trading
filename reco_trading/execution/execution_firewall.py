@@ -164,3 +164,7 @@ class ExecutionFirewall:
         self._total_exposure += n
         self._daily_notional += n
         self._daily_realized_pnl += float(realized_pnl)
+
+    def register_realized_pnl(self, pnl: float) -> None:
+        self._roll_day_if_needed()
+        self._daily_realized_pnl += float(pnl)

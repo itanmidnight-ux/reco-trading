@@ -731,6 +731,37 @@ class Database:
 
         await self._execute_in_transaction('finalize_capital_reservation', _op)
 
+    async def cleanup_stale_reservations(self, open_orders: list[dict[str, Any]] | None = None) -> int:
+        open_orders = open_orders or []
+        open_keys: set[tuple[str, str]] = set()
+        for item in open_orders:
+            symbol = str(item.get('symbol') or '')
+            side = str(item.get('side') or '').upper()
+            if symbol and side:
+                open_keys.add((symbol, side))
+
+        async with self.session_factory() as session:
+            rows = await session.execute(
+                select(
+                    capital_reservations.c.reservation_id,
+                    capital_reservations.c.symbol,
+                    capital_reservations.c.side,
+                ).where(func.lower(capital_reservations.c.status) == 'active')
+            )
+            stale_ids: list[str] = []
+            for row in rows:
+                reservation_id = str(row.reservation_id or '')
+                symbol = str(row.symbol or '')
+                side = str(row.side or '').upper()
+                if not reservation_id:
+                    continue
+                if (symbol, side) not in open_keys:
+                    stale_ids.append(reservation_id)
+
+        for reservation_id in stale_ids:
+            await self.finalize_capital_reservation(reservation_id, 0.0, 'released')
+        return len(stale_ids)
+
     @asynccontextmanager
     async def execution_advisory_lock(self, lock_key: int = 741852) -> Any:
         async with self.session_factory() as session:
@@ -743,23 +774,54 @@ class Database:
 
     async def restore_position_snapshot(self, symbol: str) -> dict[str, float]:
         async with self.session_factory() as session:
-            buy_rows = await session.execute(
-                select(fills.c.fill_amount, fills.c.fill_price).where((fills.c.symbol == symbol) & (fills.c.side == 'BUY'))
+            rows = await session.execute(
+                select(fills.c.side, fills.c.fill_amount, fills.c.fill_price, fills.c.created_at)
+                .where(fills.c.symbol == symbol)
+                .order_by(fills.c.created_at.asc(), fills.c.id.asc())
             )
-            sell_rows = await session.execute(
-                select(fills.c.fill_amount).where((fills.c.symbol == symbol) & (fills.c.side == 'SELL'))
-            )
-        buy_qty = 0.0
-        buy_notional = 0.0
-        for row in buy_rows:
+        position_qty = 0.0
+        avg_entry = 0.0
+        for row in rows:
+            side = str(row.side or '').upper()
             qty = float(row.fill_amount or 0.0)
             px = float(row.fill_price or 0.0)
-            buy_qty += qty
-            buy_notional += qty * px
-        sell_qty = sum(float(row.fill_amount or 0.0) for row in sell_rows)
-        net_qty = max(buy_qty - sell_qty, 0.0)
-        avg_entry = (buy_notional / buy_qty) if buy_qty > 0 else 0.0
-        return {'net_qty': net_qty, 'avg_entry': avg_entry}
+            if qty <= 0.0:
+                continue
+            if side == 'BUY':
+                new_qty = position_qty + qty
+                if new_qty <= 0.0:
+                    continue
+                avg_entry = ((avg_entry * position_qty) + (px * qty)) / new_qty
+                position_qty = new_qty
+            elif side == 'SELL':
+                position_qty = max(position_qty - qty, 0.0)
+                if position_qty <= 0.0:
+                    avg_entry = 0.0
+        return {'net_qty': position_qty, 'avg_entry': avg_entry if position_qty > 0.0 else 0.0}
+
+    async def get_realized_pnl_from_fills(self, symbol: str | None = None) -> dict[str, float]:
+        sell_stmt = select(func.coalesce(func.sum(fills.c.fill_price * fills.c.fill_amount), 0)).where(fills.c.side == 'SELL')
+        buy_stmt = select(func.coalesce(func.sum(fills.c.fill_price * fills.c.fill_amount), 0)).where(fills.c.side == 'BUY')
+        fees_stmt = select(func.coalesce(func.sum(fills.c.fee), 0))
+        if symbol:
+            sell_stmt = sell_stmt.where(fills.c.symbol == symbol)
+            buy_stmt = buy_stmt.where(fills.c.symbol == symbol)
+            fees_stmt = fees_stmt.where(fills.c.symbol == symbol)
+
+        async with self.session_factory() as session:
+            sell_notional = await session.scalar(sell_stmt)
+            buy_notional = await session.scalar(buy_stmt)
+            fees_paid = await session.scalar(fees_stmt)
+
+        sells = float(sell_notional or 0.0)
+        buys = float(buy_notional or 0.0)
+        fees = float(fees_paid or 0.0)
+        return {
+            'sell_notional': sells,
+            'buy_notional': buys,
+            'fees_paid': fees,
+            'realized_pnl': sells - buys - fees,
+        }
 
     async def fill_stats(self) -> dict:
         async with self.session_factory() as session:
