@@ -373,6 +373,17 @@ class QuantKernel:
         }
         self.market_making_engine = AdaptiveMarketMaker(MarketMakingState())
         self.arbitrage_engine_enabled = bool(self.s.enable_multi_exchange_arbitrage)
+        self._db_persist_semaphore = asyncio.Semaphore(4)
+        self._db_persist_tasks: set[asyncio.Task[Any]] = set()
+
+    def _schedule_db_persist(self, coro: Any) -> None:
+        async def _runner() -> None:
+            async with self._db_persist_semaphore:
+                await coro
+
+        task = asyncio.create_task(_runner())
+        self._db_persist_tasks.add(task)
+        task.add_done_callback(lambda t: self._db_persist_tasks.discard(t))
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -2019,6 +2030,10 @@ class QuantKernel:
             await self._shutdown_resources()
 
     async def _shutdown_resources(self) -> None:
+        pending = list(getattr(self, '_db_persist_tasks', set()))
+        if pending:
+            with suppress(Exception):
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=3.0)
         with suppress(Exception):
             self.dashboard.stop()
         with suppress(Exception):
