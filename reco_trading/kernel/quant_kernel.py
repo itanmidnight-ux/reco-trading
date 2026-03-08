@@ -91,6 +91,13 @@ class StrategyVote:
     reason: str
 
 
+@dataclass(slots=True)
+class RiskVerdict:
+    blocked: bool
+    reason: str
+    source: str
+
+
 
 class SignalEngine:
     def __init__(self) -> None:
@@ -418,6 +425,7 @@ class QuantKernel:
             ),
             quant_kernel=self,
             capital_governor=self.capital_governor,
+            require_atomic_finalization=True,
         )
         self.institutional_risk_manager = InstitutionalRiskManager(
             limits=RiskLimits(
@@ -522,7 +530,14 @@ class QuantKernel:
             if cid in open_ids:
                 await self.db.update_idempotency_status(cid, 'SUBMITTED', str(row.get('exchange_order_id') or ''))
                 continue
-            found = await self.client.fetch_order_by_client_order_id(self.s.symbol, cid)
+            if hasattr(self.client, 'fetch_order_by_client_order_id_detailed'):
+                lookup = await self.client.fetch_order_by_client_order_id_detailed(self.s.symbol, cid)
+                if not lookup.get('ok') and lookup.get('error_type') in {'network', 'rate_limit'}:
+                    logger.warning('startup_order_lookup_transient cid=%s error_type=%s', cid, lookup.get('error_type'))
+                    continue
+                found = lookup.get('order')
+            else:
+                found = await self.client.fetch_order_by_client_order_id(self.s.symbol, cid)
             if not found:
                 continue
             status = str(found.get('status') or '').lower()
@@ -776,6 +791,14 @@ class QuantKernel:
             self.state.last_block_reason = reason
             self.system_state = 'KILL_SWITCH_ACTIVE'
         return blocked
+
+    def _risk_verdict(self) -> RiskVerdict:
+        blocked, reason = self._check_kill_switch_state()
+        if blocked:
+            return RiskVerdict(True, reason, 'kill_switch')
+        if self.system_state == SystemState.BLOCKED_BY_RISK.value:
+            return RiskVerdict(True, self.state.last_block_reason or 'blocked_by_risk', 'risk_layer')
+        return RiskVerdict(False, 'none', 'ok')
 
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
         self.state.rejection_count += 1
@@ -1274,11 +1297,8 @@ class QuantKernel:
         if last_trade_ts:
             cooldown = max(self._cooldown_seconds() - (now.timestamp() - float(last_trade_ts)), 0.0)
 
-        if hasattr(self, '_check_kill_switch_state') and hasattr(self, 's'):
-            risk_blocked, risk_reason = self._check_kill_switch_state()
-        else:
-            risk_blocked, risk_reason = False, 'none'
-        risk_state = 'BLOCKED' if risk_blocked or self.system_state == SystemState.BLOCKED_BY_RISK.value else 'OK'
+        verdict = self._risk_verdict() if hasattr(self, '_risk_verdict') else RiskVerdict(False, 'none', 'ok')
+        risk_state = 'BLOCKED' if verdict.blocked else 'OK'
         current_regime_perf = self.conditional_performance.summary(getattr(self, '_current_extended_regime', 'UNKNOWN')) if hasattr(self, 'conditional_performance') else {'expectancy': 0.0}
         self.dashboard.update(
             VisualSnapshot(
@@ -1309,7 +1329,8 @@ class QuantKernel:
                     'binance_min_notional': float(self.state.binance_min_notional),
                     'final_order_notional': float(self.state.final_order_notional),
                     'last_kill_switch_trigger': str(self.state.last_kill_switch_trigger or 'none'),
-                    'kill_switch_reason': str(risk_reason),
+                    'kill_switch_reason': str(verdict.reason),
+                    'risk_verdict_source': str(verdict.source),
                 },
                 model_diagnostics={
                     'momentum': {

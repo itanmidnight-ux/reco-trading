@@ -186,7 +186,13 @@ class IdempotentOrderService:
                         entry.state = JournalState.SUBMITTED
                         await self._persist_journal(entry)
                     if cid not in open_client_ids and entry.state in {JournalState.PENDING_SUBMIT, JournalState.SUBMITTED, JournalState.PARTIALLY_FILLED}:
-                        found = await self.client.fetch_order_by_client_order_id(entry.symbol, cid)
+                        if hasattr(self.client, 'fetch_order_by_client_order_id_detailed'):
+                            lookup = await self.client.fetch_order_by_client_order_id_detailed(entry.symbol, cid)
+                            if not lookup.get('ok') and lookup.get('error_type') in {'network', 'rate_limit'}:
+                                continue
+                            found = lookup.get('order')
+                        else:
+                            found = await self.client.fetch_order_by_client_order_id(entry.symbol, cid)
                         if found:
                             status = str(found.get('status') or '').lower()
                             if status in {'closed', 'filled'}:

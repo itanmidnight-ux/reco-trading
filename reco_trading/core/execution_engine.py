@@ -42,6 +42,7 @@ class ExecutionEngine:
         quant_kernel: Any | None = None,
         sor: SmartOrderRouter | None = None,
         capital_governor: CapitalGovernor | None = None,
+        require_atomic_finalization: bool = False,
     ) -> None:
         self.client = client
         self.symbol = symbol
@@ -64,6 +65,7 @@ class ExecutionEngine:
         self._execution_lock = asyncio.Lock()
         self._active_execution_context: dict[str, Any] = {}
         self._initialized = False
+        self._require_atomic_finalization = bool(require_atomic_finalization)
         try:
             self._redis = redis.Redis.from_url(redis_url, decode_responses=True)
         except Exception:
