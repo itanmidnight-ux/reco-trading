@@ -16,6 +16,7 @@ class JournalState(str, Enum):
     FILLED = 'FILLED'
     CANCELLED = 'CANCELLED'
     FAILED = 'FAILED'
+    SUBMISSION_UNCERTAIN = 'SUBMISSION_UNCERTAIN'
 
 
 @dataclass(slots=True)
@@ -158,12 +159,26 @@ class IdempotentOrderService:
         await self._persist_journal(entry)
 
     async def _recover_or_resubmit(self, *, entry: JournalEntry, timeout_seconds: float) -> dict[str, Any]:
-        recovered_order = await self.client.fetch_order_by_client_order_id(entry.symbol, entry.client_order_id)
-        if recovered_order:
-            entry.exchange_order_id = str(recovered_order.get('id') or '')
-            entry.state = JournalState.SUBMITTED
-            await self._persist_journal(entry)
-            return recovered_order
+        entry.state = JournalState.SUBMISSION_UNCERTAIN
+        await self._persist_journal(entry)
+
+        max_checks = max(int(timeout_seconds // 2), 3)
+        for _ in range(max_checks):
+            if hasattr(self.client, 'fetch_order_by_client_order_id_detailed'):
+                lookup = await self.client.fetch_order_by_client_order_id_detailed(entry.symbol, entry.client_order_id)
+                recovered_order = lookup.get('order')
+                if not lookup.get('ok') and lookup.get('error_type') in {'network', 'rate_limit'}:
+                    await asyncio.sleep(1)
+                    continue
+            else:
+                recovered_order = await self.client.fetch_order_by_client_order_id(entry.symbol, entry.client_order_id)
+            if recovered_order:
+                entry.exchange_order_id = str(recovered_order.get('id') or '')
+                entry.state = JournalState.SUBMITTED
+                await self._persist_journal(entry)
+                return recovered_order
+            await asyncio.sleep(1)
+
         return await self._submit_to_exchange(entry.symbol, entry.side, entry.amount, entry.client_order_id)
 
     async def _reconcile_loop(self) -> None:

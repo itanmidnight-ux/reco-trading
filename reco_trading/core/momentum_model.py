@@ -38,11 +38,11 @@ class MomentumModel:
         if snapshot.returns.size < 8:
             return 0.5
         recent = snapshot.returns[-20:]
+        short = snapshot.returns[-5:]
         mu = float(recent.mean())
         sigma = float(recent.std() or 1e-9)
         z_momentum = mu / sigma
-        z_momentum = max(min(z_momentum, 6.0), -6.0)
-        return float(1.0 / (1.0 + pow(2.718281828, -z_momentum)))
-        signal = float(snapshot.returns[-5:].mean() / max(snapshot.volatility, 1e-9))
-        centered = max(min(signal, 6.0), -6.0)
+        signal = float(short.mean() / max(snapshot.volatility, 1e-9))
+        mixed = 0.65 * z_momentum + 0.35 * signal
+        centered = max(min(mixed, 6.0), -6.0)
         return float(1.0 / (1.0 + pow(2.718281828, -centered)))

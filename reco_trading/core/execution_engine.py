@@ -69,6 +69,31 @@ class ExecutionEngine:
         except Exception:
             self._redis = None
 
+    @property
+    def order_service(self) -> IdempotentOrderService:
+        return self._idempotent_order_service
+
+    async def get_exchange_min_size(self) -> float:
+        if hasattr(self._firewall, 'get_min_size'):
+            return await self._firewall.get_min_size(client=self.client, symbol=self.symbol)
+        return 0.0
+
+    def update_firewall_limits(
+        self,
+        *,
+        max_total_exposure: float | None = None,
+        max_asset_exposure: float | None = None,
+        max_daily_loss: float | None = None,
+        max_daily_notional: float | None = None,
+    ) -> None:
+        if hasattr(self._firewall, 'update_limits'):
+            self._firewall.update_limits(
+                max_total_exposure=max_total_exposure,
+                max_asset_exposure=max_asset_exposure,
+                max_daily_loss=max_daily_loss,
+                max_daily_notional=max_daily_notional,
+            )
+
     async def initialize(self) -> None:
         if not self._redis:
             return
@@ -226,7 +251,8 @@ class ExecutionEngine:
         await self._idempotent_order_service.start()
         decision_timestamp_ms = int(time.time() * 1000)
         decision_bucket = int(decision_timestamp_ms // 1000)
-        decision_context_hash = f'{self.symbol}:{side}:{amount:.8f}:{decision_bucket}:{decision_tag}'
+        decision_id = str(self._active_execution_context.get('decision_id') or '')
+        decision_context_hash = f'{self.symbol}:{side}:{amount:.8f}:{decision_bucket}:{decision_tag}:{decision_id}'
         client_order_id = self._idempotent_order_service._build_client_order_id(
             side=side,
             amount=amount,
@@ -261,7 +287,7 @@ class ExecutionEngine:
                     decision_timestamp_ms=decision_timestamp_ms,
                     client_order_id=client_order_id,
                     decision_context_hash=decision_context_hash,
-                    decision_id=str(self._active_execution_context.get('decision_id') or ''),
+                    decision_id=decision_id,
                 )
             except asyncio.TimeoutError:
                 self.last_rejection_reason = 'order_timeout'
@@ -318,26 +344,34 @@ class ExecutionEngine:
                 continue
 
             fill['decision_id'] = str(self._active_execution_context.get('decision_id') or '')
-            await self.db.record_fill(fill)
             client_order_id = str(order.get('clientOrderId') or order.get('client_order_id') or '')
             if client_order_id:
                 await self._idempotent_order_service.mark_after_fill(client_order_id, fill)
             fill_price = float(fill.get('average') or fill.get('price') or 0.0)
             exchange_timestamp_ms = int(fill.get('timestamp') or fill.get('transactTime') or int(time.time() * 1000))
             local_timestamp_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-            await self.db.persist_order_execution(
-                {
-                    'ts': local_timestamp_ms,
-                    'symbol': str(fill.get('symbol') or self.symbol),
-                    'side': str(fill.get('side') or side).upper(),
-                    'qty': float(fill.get('filled') or fill.get('amount') or sanitized_amount),
-                    'price': fill_price,
-                    'status': str(fill.get('status') or 'closed'),
-                    'pnl': 0.0,
-                    'decision_id': str(self._active_execution_context.get('decision_id') or ''),
-                    'exchange_order_id': str(fill.get('id') or order_id),
-                }
-            )
+            execution_payload = {
+                'ts': local_timestamp_ms,
+                'symbol': str(fill.get('symbol') or self.symbol),
+                'side': str(fill.get('side') or side).upper(),
+                'qty': float(fill.get('filled') or fill.get('amount') or sanitized_amount),
+                'price': fill_price,
+                'status': str(fill.get('status') or 'closed'),
+                'pnl': 0.0,
+                'decision_id': str(self._active_execution_context.get('decision_id') or ''),
+                'exchange_order_id': str(fill.get('id') or order_id),
+            }
+            if hasattr(self.db, 'finalize_execution_atomically'):
+                await self.db.finalize_execution_atomically(
+                    order=order,
+                    fill=fill,
+                    execution_payload=execution_payload,
+                    client_order_id=client_order_id,
+                    committed_notional=max(fill_price, 0.0) * sanitized_amount,
+                )
+            else:
+                await self.db.record_fill(fill)
+                await self.db.persist_order_execution(execution_payload)
             logger.info(
                 'execution_forensic_log {}',
                 json.dumps(
@@ -363,7 +397,7 @@ class ExecutionEngine:
             self._firewall.register_fill(symbol=self.symbol, notional=max(fill_price, 0.0) * sanitized_amount)
             if self._capital_governor:
                 self._capital_governor.register_fill(symbol=self.symbol, exchange='binance', notional=max(fill_price, 0.0) * sanitized_amount)
-            if hasattr(self.db, 'finalize_capital_reservation'):
+            if hasattr(self.db, 'finalize_capital_reservation') and not hasattr(self.db, 'finalize_execution_atomically'):
                 await self.db.finalize_capital_reservation(client_order_id, max(fill_price, 0.0) * sanitized_amount, 'committed')
             await self._persist_execution_async(
                 {
