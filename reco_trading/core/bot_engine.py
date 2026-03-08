@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+import time
 
 import ccxt
-from rich.live import Live
 
 from reco_trading.config.settings import Settings
 from reco_trading.core.state_machine import BotState
@@ -24,7 +24,7 @@ from reco_trading.ui.dashboard import DashboardSnapshot, TerminalDashboard
 class BotEngine:
     """Orchestrates market analysis, risk controls, trading and monitoring."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, state_manager: "StateManager | None" = None) -> None:
         self.settings = settings
         self.logger = logging.getLogger(__name__)
         self.state = BotState.STARTING
@@ -41,7 +41,8 @@ class BotEngine:
         self.trades_today = 0
         self.day_marker = datetime.now(timezone.utc).date()
         self.last_close_time: datetime | None = None
-        self.snapshot = DashboardSnapshot(pair=settings.symbol.replace("/", ""), timeframe="5m / 15m")
+        self.state_manager = state_manager
+        self.start_time = time.time()
 
     async def run(self) -> None:
         await self.repository.setup()
@@ -77,7 +78,7 @@ class BotEngine:
                     await self.repository.record_error(self.state.value, "runtime", str(exc))
                     await asyncio.sleep(self.settings.loop_sleep_seconds)
 
-    async def _tick(self, live: Live) -> None:
+    async def _tick(self) -> None:
         self._roll_day()
         await self._set_state(BotState.ANALYZING)
 
@@ -106,14 +107,14 @@ class BotEngine:
         if self.signal_engine.is_sideways(frame5):
             await self._set_state(BotState.WAITING_SIGNAL, "sideways_market")
             await self._log("INFO", "sideways_market_detected")
-            await self._refresh(live)
+            await self._refresh(price=price, bid=bid, ask=ask, spread=spread, atr=float(last_candle["atr"]))
             return
 
     def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         frame5: pd.DataFrame = market_data["frame5"]
         frame15: pd.DataFrame = market_data["frame15"]
         bundle = self.signal_engine.generate(frame5, frame15)
-        side, confidence, grade = self.confidence_model.evaluate(bundle)
+        side, confidence, _grade = self.confidence_model.evaluate(bundle)
         await self.repository.record_signal(
             self.settings.symbol,
             {
@@ -128,19 +129,6 @@ class BotEngine:
             confidence,
             side,
         )
-        self.snapshot.trend = bundle.trend
-        self.snapshot.signals = {
-            "trend": bundle.trend,
-            "momentum": bundle.momentum,
-            "volume": bundle.volume,
-            "volatility": bundle.volatility,
-            "structure": bundle.structure,
-            "order_flow": bundle.order_flow,
-        }
-        self.snapshot.confidence = confidence
-        self.snapshot.signal_grade = grade
-        self.snapshot.volatility_regime = bundle.regime
-        self.snapshot.order_flow_signal = bundle.order_flow
 
         return {
             "bundle": bundle,
@@ -180,26 +168,65 @@ class BotEngine:
             confidence_threshold=self.settings.confidence_threshold,
         )
         cooldown_ok = self._is_cooldown_complete()
-        if not bundle.regime_trade_allowed:
-            await self._log("INFO", "blocked_by_low_volatility_regime")
-        if not cooldown_ok:
-            await self._log("INFO", "blocked_by_trade_cooldown")
+
+        self._push_state(
+            pair=self.settings.symbol,
+            timeframe=f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
+            current_price=price,
+            bid=bid,
+            ask=ask,
+            spread=spread,
+            trend=bundle.trend,
+            signal=side,
+            confidence=confidence,
+            volatility_regime=bundle.regime,
+            order_flow=bundle.order_flow,
+            adx=float(last_candle.get("adx", 0.0)),
+            atr=float(last_candle.get("atr", 0.0)),
+            volume=float(last_candle.get("volume", 0.0)),
+            balance=balance,
+            equity=balance + daily_pnl,
+            daily_pnl=daily_pnl,
+            trades_today=self.trades_today,
+            cooldown="READY" if cooldown_ok else "ACTIVE",
+            signal_analysis={
+                "trend": bundle.trend,
+                "momentum": bundle.momentum,
+                "volume_signal": bundle.volume,
+                "order_flow": bundle.order_flow,
+                "confidence": confidence,
+            },
+            risk_metrics={
+                "risk_per_trade": f"{self.settings.max_trade_balance_fraction:.2%}",
+                "max_trades_per_hour": self.settings.max_trades_per_day,
+                "cooldown": self.settings.cooldown_minutes,
+                "consecutive_losses": 0,
+                "current_drawdown": f"{max(0.0, -daily_pnl):.4f}",
+                "daily_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
+            },
+            system={
+                "uptime_seconds": time.time() - self.start_time,
+                "api_latency_ms": 0.0,
+                "database_status": "CONNECTED",
+                "last_server_sync": datetime.utcnow().isoformat(),
+            },
+        )
 
         if not risk.approved or not bundle.regime_trade_allowed or not cooldown_ok:
             await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_SIGNAL, risk.reason)
             await self._monitor_positions(price)
-            await self._refresh(live)
+            await self._refresh(price=price, bid=bid, ask=ask, spread=spread, atr=float(last_candle["atr"]))
             return
 
         if self.position_manager.can_open(confidence):
             await self._open_trade(side, price, float(last_candle["atr"]), bundle.size_multiplier)
 
         await self._monitor_positions(price)
-        await self._refresh(live)
+        await self._refresh(price=price, bid=bid, ask=ask, spread=spread, atr=float(last_candle["atr"]))
 
     async def _open_trade(self, side: str, price: float, atr: float, size_multiplier: float) -> None:
         await self._set_state(BotState.PLACING_ORDER)
-        base_capital = self.snapshot.available_capital * size_multiplier
+        base_capital = (await self._fetch_usdt_balance()) * self.settings.max_trade_balance_fraction * size_multiplier
         qty = self.order_manager.normalize_quantity(base_capital / price)
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
@@ -242,6 +269,23 @@ class BotEngine:
         )
 
         self.trades_today += 1
+        signal_analysis = self.state_manager.snapshot().get("signal_analysis", {}) if self.state_manager else {}
+        trade_payload = {
+            "trade_id": trade.id,
+            "time": datetime.utcnow().isoformat(timespec="seconds"),
+            "pair": self.settings.symbol,
+            "side": side,
+            "entry": entry,
+            "size": qty,
+            "position_value": qty * entry,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "status": "OPEN",
+            **signal_analysis,
+        }
+        if self.state_manager:
+            self.state_manager.add_trade(trade_payload)
+            self.state_manager.notify("Trade executed", f"{side} {self.settings.symbol} @ {entry:.2f}")
         await self._set_state(BotState.ORDER_FILLED)
         await self._log("INFO", f"order_filled side={side} qty={qty:.8f} entry={entry:.2f}")
 
@@ -267,6 +311,8 @@ class BotEngine:
             self.position_manager.close(position.trade_id)
             self.last_close_time = datetime.now(timezone.utc)
             await self._set_state(BotState.TAKE_PROFIT_HIT if "TAKE_PROFIT" in exit_reason else BotState.STOP_LOSS_HIT)
+            if self.state_manager:
+                self.state_manager.notify("Trade closed", f"id={position.trade_id} pnl={pnl:.4f}")
             await self._log("INFO", f"position_closed reason={exit_reason} pnl={pnl:.4f}")
 
     def _update_loss_protection(self, pnl: float) -> bool:
@@ -326,10 +372,17 @@ class BotEngine:
         previous = self.state
         self.state = new_state
         await self.repository.record_state_change(previous.value, new_state.value, context)
+        self._push_state(status=new_state.value)
 
     async def _log(self, level: str, message: str) -> None:
         getattr(self.logger, level.lower(), self.logger.info)(message)
         await self.repository.record_log(level, self.state.value, message)
+        if self.state_manager:
+            self.state_manager.add_log(level, message)
+
+    def _push_state(self, **payload: object) -> None:
+        if self.state_manager:
+            self.state_manager.update(**payload)
 
     def _roll_day(self) -> None:
         today = datetime.now(timezone.utc).date()
@@ -342,23 +395,11 @@ class BotEngine:
             return True
         return datetime.now(timezone.utc) - self.last_close_time >= timedelta(minutes=self.settings.cooldown_minutes)
 
-    async def _refresh(self, live: Live) -> None:
-        self._update_dashboard()
-        live.update(TerminalDashboard().render(self.snapshot), refresh=True)
-        await asyncio.sleep(self.settings.loop_sleep_seconds)
-
-    def _update_dashboard(self) -> None:
-        self.snapshot.state = self.state.value
+    async def _refresh(self, price: float, bid: float, ask: float, spread: float, atr: float) -> None:
         if self.position_manager.positions:
-            position = self.position_manager.positions[0]
-            self.snapshot.open_position = position.side
-            self.snapshot.entry_price = position.entry_price
-            self.snapshot.stop_loss = position.trailing_stop or position.stop_loss
-            self.snapshot.take_profit = position.take_profit
-            self.snapshot.position_size = position.quantity
+            pos = self.position_manager.positions[0]
+            self._push_state(open_position=pos.side, last_trade=f"{pos.side} @ {pos.entry_price:.2f}")
         else:
-            self.snapshot.open_position = "NONE"
-            self.snapshot.entry_price = 0.0
-            self.snapshot.stop_loss = 0.0
-            self.snapshot.take_profit = 0.0
-            self.snapshot.position_size = 0.0
+            self._push_state(open_position="NONE")
+        self._push_state(current_price=price, bid=bid, ask=ask, spread=spread, atr=atr)
+        await asyncio.sleep(self.settings.loop_sleep_seconds)
