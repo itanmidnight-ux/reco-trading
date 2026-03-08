@@ -1,205 +1,75 @@
-# reco-trading (producción BTC/USDT Spot 5m)
+# reco-trading: Minimal Binance Retail Bot
 
-Sistema cuantitativo modular para Binance Spot con activo único BTC/USDT en timeframe 5m.
+This refactor replaces the institutional multi-module stack with a minimal, safety-first bot for very small accounts.
 
-## Arquitectura institucional objetivo
-
-```text
-                    ┌────────────────────────────┐
-                    │        DATA FEED LAYER     │
-                    │ WebSocket + REST Binance   │
-                    └─────────────┬──────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │     FEATURE ENGINE         │
-                    │ Indicators + Microstruct   │
-                    └─────────────┬──────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │ MARKET REGIME DETECTOR     │
-                    │ HMM + GMM + Volatility     │
-                    └─────────────┬──────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │   SIGNAL FUSION ENGINE     │
-                    │ Probabilistic Ensemble     │
-                    └─────────────┬──────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │ INSTITUTIONAL RISK MANAGER │
-                    │ Exposure + Correlation     │
-                    └─────────────┬──────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │ EXECUTION ENGINE (ASYNC)   │
-                    │ Smart Order Router         │
-                    └─────────────┬──────────────┘
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │ DATABASE + REDIS STATE     │
-                    └────────────────────────────┘
-```
-
-## Arquitectura post-hardening (ejecución determinística)
+## New architecture
 
 ```text
-run.sh -> main.py -> QuantKernel.run()
-                     |
-                     +--> Startup Safety Barrier
-                     |     - startup_reconciliation
-                     |     - restore open journal + position snapshot
-                     |     - hold trading for startup_safety_seconds
-                     |
-                     +--> Decision Pipeline
-                     |     FeatureEngine + Models + Regime + SignalFusion
-                     |     -> decision_id + persisted decision snapshot
-                     |
-                     +--> Institutional Risk Layer
-                     |     - InstitutionalRiskManager (kelly/cvar/correlation/exposure/liquidity)
-                     |
-                     +--> ExecutionEngine.execute()
-                           |
-                           +--> Postgres advisory lock (cross-process)
-                           +--> ExecutionFirewall + capital limit checks
-                           +--> CapitalGovernor ticket + capital reservation (reserve/commit/release)
-                           +--> IdempotentOrderService
-                           |     - durable execution_idempotency_ledger
-                           |     - state machine: PENDING/SUBMITTED/PARTIAL/FILLED/CANCELLED/FAILED
-                           |
-                           +--> ExchangeGateway (governed Binance access)
-                           +--> DB forensic persistence
-                                 orders/fills/order_executions + decision_id
+bot/
+  config.py
+  main.py
+  exchange/
+    binance_client.py
+    websocket_manager.py
+  core/
+    market_data.py
+    strategy.py
+    risk_manager.py
+    execution_engine.py
+    portfolio.py
+  services/
+    order_manager.py
+    state_manager.py
+  utils/
+    logger.py
+    helpers.py
 ```
 
-### Runtime de producción canónico
+## Strategy (single low-frequency directional model)
 
-- **Único entrypoint de producción permitido:** `run.sh -> main.py -> QuantKernel.run()`.
-- `scripts/live_trading.py` y `trading_system/main.py` quedan marcados como `development_only`.
+- Momentum + SMA trend confirmation (fast/slow SMA)
+- Volatility filter (minimum and maximum volatility regime)
+- RSI filter to avoid overstretched entries
+- Trade target: low-frequency operation (3–10 trades/week target with 15m bars + strict risk gates)
 
-## Estructura
+## Risk constraints
 
-- `reco_trading/config`: settings y logging.
-- `reco_trading/core`: market data, features, modelos, fusión, riesgo, ejecución, portfolio.
-- `reco_trading/infra`: cliente Binance, DB async y persistencia de estado en Redis.
-- `reco_trading/research`: backtest profesional, walk-forward y Monte Carlo.
-- `reco_trading/monitoring`: health checks y alertas.
-- `database/schema.sql`: esquema SQL institucional para `reco_trading_prod`.
-- `scripts/reset_database.sh`: reset completo de PostgreSQL con usuario `trading`.
+- `max_risk_per_trade = 1%`
+- `max_trades_per_day = 3`
+- `daily_loss_limit = 3%`
+- `max_open_positions = 1`
+- Trading stops for the day when daily loss limit is reached.
 
-## Instalación Debian 13
+## Execution safety
+
+Before any order, the bot validates:
+
+- LOT_SIZE-adjusted quantity
+- MIN_NOTIONAL
+- PRICE reference
+- available balance
+- expected edge > estimated fees + spread + extra safety buffer
+
+## Binance safety controls
+
+- `recvWindow` on signed order calls
+- timestamp drift sync (`fetch_time` + local offset)
+- retry with exponential backoff for API operations
+- websocket manager with auto-reconnect
+- order reconciliation through `fetch_my_trades`
+
+## Run
 
 ```bash
-./install.sh
-# install.sh sincroniza automáticamente POSTGRES_DSN en .env
-# Edita únicamente tus API keys reales si aplica
-./run.sh
+pip install -r requirements.txt
+export BINANCE_API_KEY="..."
+export BINANCE_API_SECRET="..."
+export BINANCE_TESTNET=true
+python -m bot.main
 ```
 
-
-## Estrategias permitidas en producción
-
-El kernel valida una lista cerrada de estrategias habilitables por configuración:
-- `directional` (stacking + transformer)
-- `adaptive_market_making`
-- `multi_exchange_arbitrage`
-
-Los módulos experimentales quedan fuera del camino productivo y se ejecutan solo bajo perfil `research`.
-
-## Seguridad
-
-- Claves API en `.env` únicamente.
-- `.env` ignorado por git.
-- Usar API key sin permisos de retiro y con whitelist de IP.
-- El sistema separa `BINANCE_TESTNET=false/true` por entorno.
-- La inicialización de PostgreSQL es determinística mediante `config/database.env` + `install.sh` (idempotente).
-
-## Solución de autenticación Postgres (usuario `trading`)
-
-Si ves errores tipo `password authentication failed for user "trading"`:
+Or run the root entrypoint:
 
 ```bash
-./scripts/reset_database.sh
+python main.py
 ```
-
-Y valida `pg_hba.conf` (ruta típica `/etc/postgresql/*/main/pg_hba.conf`) con:
-
-```text
-local   all   trading   md5
-```
-
-Luego reinicia:
-
-```bash
-sudo service postgresql restart
-```
-
-
-## Signal Fusion Engine institucional (implementado)
-
-`reco_trading/core/signal_fusion.py` ahora incluye:
-- memoria rolling de PnL por modelo,
-- pesos dinámicos Sharpe con *recency decay* y *Bayesian shrinkage*,
-- ajuste por régimen (`trend`, `range`, `volatile`),
-- dampening por volatilidad,
-- calibración online opcional (logistic/Platt-like) para probabilidad final.
-
-## Reset DB robusto
-
-El script `scripts/reset_database.sh` soporta variables de entorno operativas:
-- `DB_NAME`, `DB_USER`, `DB_PASS`, `DB_HOST`, `DB_PORT`,
-- `ADMIN_OS_USER` (default `root`, fallback automático a `postgres`),
-- `SCHEMA_PATH`.
-
-Ejemplo:
-
-```bash
-DB_PASS='<your_db_password>' ADMIN_OS_USER=root ./scripts/reset_database.sh
-```
-
-## Despliegue operacional (systemd / docker compose)
-
-Se añadió la carpeta `deploy/` con:
-- unidades systemd para `orchestrator`, `trading-worker`, `evolution-worker`, `architecture-search-worker` y `self-healing-worker`.
-- scripts de tuning Linux (`ulimit`, red kernel 6.x, afinidad CPU y cgroups).
-- validación de compatibilidad de runtime para Python 3.11+, CUDA, Redis y PostgreSQL.
-- perfiles para bare-metal y docker compose opcional.
-
-Ver guía completa en `deploy/README.md`.
-
-
-## Operación real: validaciones obligatorias Binance
-
-El sistema arranca con validaciones estrictas para evitar estados degradados silenciosos:
-
-- `symbol` obligatorio en formato `BASE/QUOTE` (ej: `BTC/USDT`).
-- En mainnet (`BINANCE_TESTNET=false`) exige `CONFIRM_MAINNET=true`.
-- `BinanceClient.ping()` valida conexión real con `load_markets()` + `fetch_ticker('BTC/USDT')`.
-- Si el precio inicial `last <= 0`, el kernel aborta.
-- Se valida balance real (`fetch_balance`) al inicio y se registra en logs.
-- En órdenes de mercado usa métodos explícitos de CCXT:
-  - `create_market_buy_order('BTC/USDT', amount)`
-  - `create_market_sell_order('BTC/USDT', amount)`
-
-
-## App de escritorio (ventana emergente)
-
-Para abrir el dashboard como app nativa en ventana (sin navegador):
-
-```bash
-python -m trading_system.dashboard.desktop_app
-```
-
-Configurable con:
-
-- `API_BASE` (default `http://127.0.0.1:8000`)
-
-```bash
-API_BASE=http://127.0.0.1:8000 python -m trading_system.dashboard.desktop_app
-```
-
