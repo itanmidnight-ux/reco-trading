@@ -29,14 +29,26 @@ class PositionManager:
         self.positions.append(position)
 
     def check_exit(self, position: Position, current_price: float) -> str | None:
-        if current_price <= position.stop_loss:
+        if position.side == "BUY":
+            if current_price <= position.stop_loss:
+                return "STOP_LOSS_HIT"
+            if current_price >= position.take_profit:
+                return "TAKE_PROFIT_HIT"
+            if current_price >= position.entry_price + position.atr:
+                trail = current_price - position.atr
+                position.trailing_stop = max(position.trailing_stop or 0.0, trail)
+            if position.trailing_stop and current_price <= position.trailing_stop:
+                return "TRAILING_STOP_HIT"
+            return None
+
+        if current_price >= position.stop_loss:
             return "STOP_LOSS_HIT"
-        if current_price >= position.take_profit:
+        if current_price <= position.take_profit:
             return "TAKE_PROFIT_HIT"
-        if current_price >= position.entry_price + position.atr:
-            trail = current_price - position.atr
-            position.trailing_stop = max(position.trailing_stop or 0.0, trail)
-        if position.trailing_stop and current_price <= position.trailing_stop:
+        if current_price <= position.entry_price - position.atr:
+            trail = current_price + position.atr
+            position.trailing_stop = min(position.trailing_stop or position.stop_loss, trail)
+        if position.trailing_stop and current_price >= position.trailing_stop:
             return "TRAILING_STOP_HIT"
         return None
 
