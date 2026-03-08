@@ -27,7 +27,7 @@ class TerminalDashboard:
         table.add_row(
             f"[bold cyan]Sistema[/]: {snapshot.system_state}",
             f"[bold blue]Régimen[/]: {snapshot.regime}",
-            f"[bold {risk_color}]Riesgo[/]: {snapshot.risk_state}",
+            f"[bold {risk_color}]Riesgo[/]: {snapshot.risk_state}  |  [bold cyan]Feed[/]: {snapshot.data_quality_status}",
         )
         return Panel(table, title='Estado', border_style='blue')
 
@@ -35,10 +35,12 @@ class TerminalDashboard:
         table = Table.grid(expand=True)
         table.add_column()
         table.add_column(justify='right')
-        table.add_row('Capital actual', f"[bold]${snapshot.equity:,.2f}[/]")
-        table.add_row('PnL total', f"[{self._money_color(snapshot.pnl)}]{snapshot.pnl:+,.2f}[/]")
+        table.add_row('Capital real (USDT disponible)', f"[bold bright_green]${snapshot.capital_real_usdt:,.2f}[/]")
+        table.add_row('Equity total cuenta (USDT)', f"[bold]${snapshot.account_equity_usdt:,.2f}[/]")
+        table.add_row('PnL total (sesión)', f"[{self._money_color(snapshot.pnl)}]{snapshot.pnl:+,.2f}[/]")
         table.add_row('PnL diario', f"[{self._money_color(snapshot.daily_pnl)}]{snapshot.daily_pnl:+,.2f}[/]")
         table.add_row('Drawdown', f"[yellow]${snapshot.drawdown:,.2f}[/]")
+        table.add_row('Calidad de datos', f"[cyan]{snapshot.data_quality_status}[/]")
         return Panel(table, title='Capital', border_style='cyan')
 
     def _analysis_panel(self, snapshot: VisualSnapshot) -> Panel:

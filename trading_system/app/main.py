@@ -22,7 +22,10 @@ from trading_system.app.services.execution.service import ExecutionService, Orde
 from trading_system.app.services.feature_engineering.pipeline import FeatureEngineeringService
 from trading_system.app.services.market_data.binance_client import BinanceClient
 from trading_system.app.services.market_data.history_builder import OhlcvState
-from trading_system.app.services.market_data.stream_handler import MarketStreamHandler
+try:
+    from trading_system.app.services.market_data.stream_handler import MarketStreamHandler
+except ModuleNotFoundError:  # pragma: no cover - entorno mínimo para modo dashboard-only
+    MarketStreamHandler = None  # type: ignore[assignment]
 from trading_system.app.services.monitoring.service import MonitoringService
 from trading_system.app.services.regime_detection.service import RegimeDetectionService
 from trading_system.app.services.risk_management.service import RiskManagementService
@@ -41,7 +44,11 @@ class TradingSystem:
 
         self.rate_limiter = BinanceRateLimitController(self.settings.binance_max_weight, self.settings.order_rate_per_sec)
         self.binance = BinanceClient(self.settings, self.rate_limiter)
-        self.stream = MarketStreamHandler(self.settings, self.bus, self.binance.ws_base)
+        if MarketStreamHandler is None:
+            self.stream = None
+            logger.warning('websockets package no disponible: stream de mercado deshabilitado (modo dashboard-only)')
+        else:
+            self.stream = MarketStreamHandler(self.settings, self.bus, self.binance.ws_base)
 
         self.db = Repository(self.settings.postgres_dsn)
         self.db_writer = AsyncDBWriter()
@@ -60,6 +67,14 @@ class TradingSystem:
         self.last_market_event_ts = time.time()
         self.last_entry_price = 0.0
         self._last_snapshot_ts = 0.0
+        self._last_account_refresh_ts = 0.0
+        self._initial_account_equity_usdt: float | None = None
+        self._peak_account_equity_usdt: float = 0.0
+        self._last_account_balance: dict[str, float] = {
+            'capital_real_usdt': 0.0,
+            'account_equity_usdt': 0.0,
+            'active_exposure': 0.0,
+        }
 
     def _enforce_startup_security(self) -> None:
         if not self.settings.binance_testnet and not self.settings.confirm_mainnet:
@@ -124,22 +139,87 @@ class TradingSystem:
 
     def dashboard_state(self) -> DashboardState:
         drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+        ws_stale = (time.time() - self.last_market_event_ts) >= 8
         return DashboardState(
             latest_price=self.state.close[-1] if self.state.close else 0.0,
             regime=str(self.last_status.get('regime', 'UNKNOWN')),
             signal=str(self.last_status.get('signal', 'HOLD')),
-            binance_status='connected' if (time.time() - self.last_market_event_ts) < 8 else 'stale',
+            binance_status='stale' if ws_stale else 'connected',
             latency_ms=max(0.0, (time.time() - self.last_market_event_ts) * 1000),
-            risk_active=drawdown < self.settings.max_drawdown,
-            active_exposure=self.risk.equity,
+            risk_active=drawdown >= self.settings.max_drawdown,
+            active_exposure=float(self._last_account_balance.get('active_exposure', 0.0)),
+            capital_real_usdt=float(self._last_account_balance.get('capital_real_usdt', 0.0)),
+            account_equity_usdt=float(self._last_account_balance.get('account_equity_usdt', 0.0)),
         )
+
+    async def _refresh_account_state_if_due(self) -> None:
+        now = time.time()
+        if (now - self._last_account_refresh_ts) < 5.0:
+            return
+        self._last_account_refresh_ts = now
+        try:
+            account = await self.binance.get_account()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('No se pudo refrescar balance de cuenta para dashboard: %s', exc)
+            return
+
+        balances = account.get('balances') if isinstance(account, dict) else None
+        if not isinstance(balances, list):
+            return
+
+        symbol = str(self.settings.symbol or 'BTCUSDT').upper()
+        if symbol.endswith('USDT') and len(symbol) > 4:
+            base_asset = symbol[:-4]
+            quote_asset = 'USDT'
+        else:
+            base_asset = symbol
+            quote_asset = 'USDT'
+
+        free_quote = 0.0
+        used_quote = 0.0
+        base_total = 0.0
+        for item in balances:
+            asset = str(item.get('asset') or '').upper()
+            free = float(item.get('free') or 0.0)
+            locked = float(item.get('locked') or 0.0)
+            if asset == quote_asset:
+                free_quote = free
+                used_quote = locked
+            elif asset == base_asset:
+                base_total = free + locked
+
+        last_price = float(self.state.close[-1]) if self.state.close else 0.0
+        base_nav = base_total * max(last_price, 0.0)
+        self._last_account_balance = {
+            'capital_real_usdt': float(max(free_quote, 0.0)),
+            'account_equity_usdt': float(max(free_quote + used_quote + base_nav, 0.0)),
+            'active_exposure': float(max(base_nav, 0.0)),
+        }
+
+        account_equity = float(self._last_account_balance['account_equity_usdt'])
+        if account_equity > 0.0 and self._initial_account_equity_usdt is None:
+            self._initial_account_equity_usdt = account_equity
+            self._peak_account_equity_usdt = account_equity
+        if account_equity > 0.0:
+            self._peak_account_equity_usdt = max(self._peak_account_equity_usdt, account_equity)
 
     async def _snapshot_equity_if_due(self) -> None:
         now = time.time()
         if (now - self._last_snapshot_ts) < 60:
             return
         self._last_snapshot_ts = now
-        drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+
+        account_equity = float(self._last_account_balance.get('account_equity_usdt') or 0.0)
+        if account_equity > 0.0 and self._initial_account_equity_usdt is not None:
+            self._peak_account_equity_usdt = max(self._peak_account_equity_usdt, account_equity)
+            drawdown = (self._peak_account_equity_usdt - account_equity) / max(self._peak_account_equity_usdt, 1e-9)
+            pnl_total = account_equity - self._initial_account_equity_usdt
+            snapshot_equity = account_equity
+        else:
+            drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+            pnl_total = self.monitoring.metrics.pnl
+            snapshot_equity = self.risk.equity
+
         await self.db_writer.submit(
             WriteTask(
                 fn=self.db.save,
@@ -147,9 +227,9 @@ class TradingSystem:
                     'table': 'equity_snapshots',
                     'payload': {
                         'ts': int(now * 1000),
-                        'equity': self.risk.equity,
+                        'equity': snapshot_equity,
                         'drawdown': drawdown,
-                        'pnl_total': self.monitoring.metrics.pnl,
+                        'pnl_total': pnl_total,
                     },
                 },
             )
@@ -158,6 +238,7 @@ class TradingSystem:
     async def on_kline(self, event: Event) -> None:
         self.last_market_event_ts = time.time()
         self.state.ingest_kline(event.payload)
+        await self._refresh_account_state_if_due()
         if len(self.state.close) < 80:
             return
 
@@ -251,6 +332,8 @@ class TradingSystem:
             await asyncio.sleep(2)
 
     async def run(self) -> None:
+        if self.stream is None:
+            raise RuntimeError('Market stream no disponible: instala dependencia websockets para ejecutar trading_system runtime')
         self.register_handlers()
         await self.db.initialize()
         asyncio.create_task(self.db_writer.run())
