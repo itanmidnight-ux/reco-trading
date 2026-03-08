@@ -23,6 +23,7 @@ class Settings:
     max_trade_balance_fraction: float = 0.20
     confidence_threshold: float = 0.75
     daily_loss_limit_fraction: float = 0.03
+    cooldown_minutes: int = 10
 
     @classmethod
     def from_env(cls) -> "Settings":

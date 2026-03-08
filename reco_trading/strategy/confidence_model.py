@@ -4,18 +4,43 @@ from reco_trading.strategy.signal_engine import SignalBundle
 
 
 class ConfidenceModel:
-    """Signal voting and confidence calculation."""
+    """Weighted voting and confidence scoring."""
 
-    def evaluate(self, bundle: SignalBundle) -> tuple[str, float]:
-        votes = [bundle.trend, bundle.momentum, bundle.volume, bundle.volatility, bundle.structure]
-        buy_votes = sum(1 for vote in votes if vote == "BUY")
-        sell_votes = sum(1 for vote in votes if vote == "SELL")
-        total = len(votes)
+    def evaluate(self, bundle: SignalBundle) -> tuple[str, float, str]:
+        weighted_votes = {
+            "trend": 0.25,
+            "momentum": 0.15,
+            "volume": 0.10,
+            "volatility": 0.15,
+            "structure": 0.15,
+            "order_flow": 0.20,
+        }
+        signal_map = {
+            "trend": bundle.trend,
+            "momentum": bundle.momentum,
+            "volume": bundle.volume,
+            "volatility": bundle.volatility,
+            "structure": bundle.structure,
+            "order_flow": bundle.order_flow,
+        }
 
-        if buy_votes >= sell_votes:
+        buy_score = sum(weight for name, weight in weighted_votes.items() if signal_map[name] == "BUY")
+        sell_score = sum(weight for name, weight in weighted_votes.items() if signal_map[name] == "SELL")
+
+        if buy_score >= sell_score:
             side = "BUY"
-            confidence = buy_votes / total
+            confidence = buy_score
         else:
             side = "SELL"
-            confidence = sell_votes / total
-        return side, confidence
+            confidence = sell_score
+
+        if confidence >= 0.90:
+            grade = "EXCEPTIONAL"
+        elif confidence >= 0.85:
+            grade = "STRONG"
+        elif confidence >= 0.75:
+            grade = "ACTIONABLE"
+        else:
+            grade = "WEAK"
+
+        return side, confidence, grade

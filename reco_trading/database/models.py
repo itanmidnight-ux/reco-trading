@@ -38,6 +38,8 @@ class Signal(Base):
     volume: Mapped[str] = mapped_column(String(10))
     volatility: Mapped[str] = mapped_column(String(10))
     structure: Mapped[str] = mapped_column(String(10))
+    order_flow: Mapped[str] = mapped_column(String(10), default="NEUTRAL")
+    regime: Mapped[str] = mapped_column(String(24), default="NORMAL_VOLATILITY")
     confidence: Mapped[float] = mapped_column(Float)
     action: Mapped[str] = mapped_column(String(10))
 
@@ -54,6 +56,26 @@ class MarketData(Base):
     low: Mapped[float] = mapped_column(Float)
     close: Mapped[float] = mapped_column(Float)
     volume: Mapped[float] = mapped_column(Float)
+
+
+class StateChange(Base):
+    __tablename__ = "state_changes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    from_state: Mapped[str] = mapped_column(String(40))
+    to_state: Mapped[str] = mapped_column(String(40), index=True)
+    context: Mapped[str] = mapped_column(Text, default="")
+
+
+class ErrorLog(Base):
+    __tablename__ = "error_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    state: Mapped[str] = mapped_column(String(40), index=True)
+    category: Mapped[str] = mapped_column(String(32), index=True)
+    message: Mapped[str] = mapped_column(Text)
 
 
 class BotLog(Base):
