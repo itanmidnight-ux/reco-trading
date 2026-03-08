@@ -108,14 +108,6 @@ class DashboardService:
         win_rate = (wins / total_trades) if total_trades else 0.0
         pnl_total_from_trades = sum(float(trade['pnl']) for trade in trades)
 
-        running = 0.0
-        peak = 0.0
-        realized_drawdown = 0.0
-        for trade in sorted(trades, key=lambda t: _normalize_ts_ms(t['ts'])):
-            running += float(trade['pnl'])
-            peak = max(peak, running)
-            realized_drawdown = max(realized_drawdown, peak - running)
-
         now_ms = int(time.time() * 1000)
         day_ms = 24 * 60 * 60 * 1000
         pnl_daily = sum(
@@ -124,8 +116,7 @@ class DashboardService:
             if (now_ms - _normalize_ts_ms(trade['ts'])) <= day_ms
         )
 
-        pnl_total = pnl_total_from_trades
-        account_pnl_total = float(equity_curve[-1]['pnl_total']) if equity_curve else pnl_total_from_trades
+        pnl_total = float(equity_curve[-1]['pnl_total']) if equity_curve else pnl_total_from_trades
 
         returns = [float(trade['pnl']) for trade in trades if float(trade['pnl']) != 0.0]
         expectancy = pnl_total / total_trades if total_trades else 0.0
@@ -135,7 +126,7 @@ class DashboardService:
             sharpe = 0.0
 
         capital = float(equity_curve[-1]['equity']) if equity_curve else 0.0
-        drawdown = realized_drawdown
+        drawdown = max((float(point['drawdown']) for point in equity_curve), default=0.0)
 
         return {
             'capital': capital,
@@ -169,7 +160,4 @@ class DashboardService:
         merged['balance_real'] = capital_real_usdt
         merged['capital_real_usdt'] = capital_real_usdt
         merged['account_equity_usdt'] = account_equity_usdt
-        merged['pnl_total'] = float(merged.get('pnl_total') or 0.0)
-        merged['pnl_daily'] = float(merged.get('pnl_daily') or 0.0)
-        merged['drawdown'] = float(merged.get('drawdown') or 0.0)
         return merged

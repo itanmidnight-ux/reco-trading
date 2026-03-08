@@ -3,7 +3,19 @@ let tradesTable;
 
 const fmt = (v, d = 4) => Number(v ?? 0).toFixed(d);
 const money = (v) => `${fmt(v, 2)} USDT`;
+
 const pct = (v) => `${(Number(v ?? 0) * 100).toFixed(2)}%`;
+const fmtTs = (ts) => {
+  const n = Number(ts ?? 0);
+  const ms = n < 10000000000 ? n * 1000 : n;
+  return new Date(ms).toLocaleString();
+};
+
+const fmtTs = (ts) => {
+  const n = Number(ts ?? 0);
+  const ms = n < 10000000000 ? n * 1000 : n;
+  return new Date(ms).toLocaleString();
+};
 
 const fmtTs = (ts) => {
   const n = Number(ts ?? 0);
@@ -19,7 +31,6 @@ function applyClass(el, value) {
 function updateMetrics(data) {
   document.getElementById('capital').textContent = money(data.capital_real_usdt ?? data.capital);
   document.getElementById('account-equity').textContent = money(data.account_equity_usdt ?? data.capital);
-
   const pnlTotal = document.getElementById('pnl-total');
   pnlTotal.textContent = money(data.pnl_total);
   applyClass(pnlTotal, data.pnl_total);

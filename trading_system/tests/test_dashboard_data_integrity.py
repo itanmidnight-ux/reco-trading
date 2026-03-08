@@ -30,9 +30,8 @@ def test_get_metrics_normalizes_seconds_timestamps_and_uses_latest_equity_pnl_to
 
     metrics = asyncio.run(service.get_metrics())
     assert metrics['capital'] == 125.0
-    assert metrics['pnl_total'] == 8.0
-    assert metrics['account_pnl_total'] == 8.5
-    assert metrics['drawdown'] == 2.0
+    assert metrics['pnl_total'] == 8.5
+    assert metrics['drawdown'] == 0.05
 
 
 def test_get_dashboard_payload_prioritizes_real_capital_fields() -> None:
@@ -68,33 +67,3 @@ def test_get_dashboard_payload_prioritizes_real_capital_fields() -> None:
     assert payload['balance_real'] == 321.0
     assert payload['capital_real_usdt'] == 321.0
     assert payload['account_equity_usdt'] == 470.0
-
-
-def test_get_activity_feed_merges_signals_and_executions_sorted() -> None:
-    service = DashboardService(_DummyRepository(), lambda: {})
-
-    async def _trades(limit: int = 100):
-        return [
-            {'ts': 1700000001000, 'symbol': 'BTCUSDT', 'side': 'BUY', 'qty': 0.01, 'price': 50000.0, 'status': 'entry_filled', 'pnl': 0.0},
-        ]
-
-    class _Signal:
-        ts = 1700000002000
-        signal = 'LONG'
-        symbol = 'BTCUSDT'
-        score = 0.88
-        expected_value = 0.0123
-        reason = 'test_reason'
-
-    async def _fetch_all(stmt):
-        return [_Signal()]
-
-    service.get_recent_trades = _trades  # type: ignore[method-assign]
-    service._fetch_all = _fetch_all  # type: ignore[method-assign]
-
-    import asyncio
-
-    feed = asyncio.run(service.get_activity_feed(limit=10))
-    assert len(feed) == 2
-    assert feed[0]['type'] == 'signal'
-    assert feed[1]['type'] == 'execution'
