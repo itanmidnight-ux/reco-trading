@@ -22,7 +22,10 @@ from trading_system.app.services.execution.service import ExecutionService, Orde
 from trading_system.app.services.feature_engineering.pipeline import FeatureEngineeringService
 from trading_system.app.services.market_data.binance_client import BinanceClient
 from trading_system.app.services.market_data.history_builder import OhlcvState
-from trading_system.app.services.market_data.stream_handler import MarketStreamHandler
+try:
+    from trading_system.app.services.market_data.stream_handler import MarketStreamHandler
+except ModuleNotFoundError:  # pragma: no cover - entorno mínimo para modo dashboard-only
+    MarketStreamHandler = None  # type: ignore[assignment]
 from trading_system.app.services.monitoring.service import MonitoringService
 from trading_system.app.services.regime_detection.service import RegimeDetectionService
 from trading_system.app.services.risk_management.service import RiskManagementService
@@ -41,7 +44,11 @@ class TradingSystem:
 
         self.rate_limiter = BinanceRateLimitController(self.settings.binance_max_weight, self.settings.order_rate_per_sec)
         self.binance = BinanceClient(self.settings, self.rate_limiter)
-        self.stream = MarketStreamHandler(self.settings, self.bus, self.binance.ws_base)
+        if MarketStreamHandler is None:
+            self.stream = None
+            logger.warning('websockets package no disponible: stream de mercado deshabilitado (modo dashboard-only)')
+        else:
+            self.stream = MarketStreamHandler(self.settings, self.bus, self.binance.ws_base)
 
         self.db = Repository(self.settings.postgres_dsn)
         self.db_writer = AsyncDBWriter()
@@ -316,6 +323,8 @@ class TradingSystem:
             await asyncio.sleep(2)
 
     async def run(self) -> None:
+        if self.stream is None:
+            raise RuntimeError('Market stream no disponible: instala dependencia websockets para ejecutar trading_system runtime')
         self.register_handlers()
         await self.db.initialize()
         asyncio.create_task(self.db_writer.run())

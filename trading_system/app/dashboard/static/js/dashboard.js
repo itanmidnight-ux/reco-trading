@@ -17,6 +17,12 @@ const fmtTs = (ts) => {
   return new Date(ms).toLocaleString();
 };
 
+const fmtTs = (ts) => {
+  const n = Number(ts ?? 0);
+  const ms = n < 10000000000 ? n * 1000 : n;
+  return new Date(ms).toLocaleString();
+};
+
 function applyClass(el, value) {
   el.classList.remove('positive', 'negative');
   el.classList.add(Number(value) >= 0 ? 'positive' : 'negative');
@@ -33,7 +39,7 @@ function updateMetrics(data) {
   pnlDaily.textContent = money(data.pnl_daily);
   applyClass(pnlDaily, data.pnl_daily);
 
-  document.getElementById('drawdown').textContent = pct(data.drawdown);
+  document.getElementById('drawdown').textContent = money(data.drawdown);
   document.getElementById('win-rate').textContent = pct(data.win_rate);
   document.getElementById('sharpe').textContent = fmt(data.sharpe);
   document.getElementById('signal').textContent = data.signal ?? '-';

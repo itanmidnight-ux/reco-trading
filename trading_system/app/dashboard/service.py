@@ -132,6 +132,7 @@ class DashboardService:
             'capital': capital,
             'balance_real': capital,
             'pnl_total': pnl_total,
+            'account_pnl_total': account_pnl_total,
             'pnl_daily': pnl_daily,
             'drawdown': drawdown,
             'total_trades': total_trades,

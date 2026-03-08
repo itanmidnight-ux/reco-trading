@@ -115,4 +115,20 @@ if [ ${#missing_vars[@]} -gt 0 ]; then
   exit 1
 fi
 
+dashboard_pid=""
+cleanup() {
+  if [ -n "${dashboard_pid}" ]; then
+    kill "${dashboard_pid}" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
+
+if [ "${DASHBOARD_AUTOSTART:-true}" = "true" ]; then
+  DASHBOARD_HOST="${DASHBOARD_HOST:-127.0.0.1}"
+  DASHBOARD_PORT="${DASHBOARD_PORT:-8000}"
+  echo "Iniciando dashboard web en http://${DASHBOARD_HOST}:${DASHBOARD_PORT}/dashboard"
+  uvicorn trading_system.main:api --host "${DASHBOARD_HOST}" --port "${DASHBOARD_PORT}" --log-level warning >/tmp/reco_dashboard.log 2>&1 &
+  dashboard_pid="$!"
+fi
+
 python main.py
