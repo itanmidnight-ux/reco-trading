@@ -68,8 +68,6 @@ class TradingSystem:
         self.last_entry_price = 0.0
         self._last_snapshot_ts = 0.0
         self._last_account_refresh_ts = 0.0
-        self._initial_account_equity_usdt: float | None = None
-        self._peak_account_equity_usdt: float = 0.0
         self._last_account_balance: dict[str, float] = {
             'capital_real_usdt': 0.0,
             'account_equity_usdt': 0.0,
@@ -195,13 +193,6 @@ class TradingSystem:
             'account_equity_usdt': float(max(free_quote + used_quote + base_nav, 0.0)),
             'active_exposure': float(max(base_nav, 0.0)),
         }
-
-        account_equity = float(self._last_account_balance['account_equity_usdt'])
-        if account_equity > 0.0 and self._initial_account_equity_usdt is None:
-            self._initial_account_equity_usdt = account_equity
-            self._peak_account_equity_usdt = account_equity
-        if account_equity > 0.0:
-            self._peak_account_equity_usdt = max(self._peak_account_equity_usdt, account_equity)
 
     async def _snapshot_equity_if_due(self) -> None:
         now = time.time()

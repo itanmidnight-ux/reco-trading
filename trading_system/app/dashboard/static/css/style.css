@@ -37,8 +37,7 @@ body {
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
 }
 
-.topbar { grid-area: topbar; display: flex; justify-content: space-between; align-items: center; }
-.metrics { grid-area: metrics; display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+.topbar { grid-area: topbar; display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
 .left { grid-area: left; }
 .center { grid-area: center; min-height: 380px; }
 .activity { grid-area: activity; min-height: 380px; }
@@ -63,22 +62,8 @@ body {
 
 table.dataTable { color: var(--text) !important; }
 .dataTables_wrapper .dataTables_filter input,
-.dataTables_wrapper .dataTables_length select {
-  background: #0a1322;
-  color: var(--text);
-  border: 1px solid #2b3f63;
-}
+.dataTables_wrapper .dataTables_length select { background: #0b0e11; color: #d8dee9; border: 1px solid #2e3742; }
 
-@media (max-width: 1200px) {
-  .dashboard-app {
-    grid-template-areas:
-      'topbar'
-      'metrics'
-      'left'
-      'center'
-      'activity'
-      'bottom';
-    grid-template-columns: 1fr;
-  }
-  .metrics { grid-template-columns: repeat(2, 1fr); }
-}
+.metric strong { color: #eaf2ff; font-weight: 700; }
+.panel h3 { margin-top: 0; color: #8ab4ff; letter-spacing: .2px; }
+.topbar { border: 1px solid #26313d; box-shadow: 0 0 0 1px rgba(59,130,246,.15) inset; }
