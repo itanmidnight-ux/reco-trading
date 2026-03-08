@@ -61,6 +61,43 @@ validation_history = Table(
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
+financial_snapshots = Table(
+    'financial_snapshots',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('snapshot', JSON, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+positions_ledger = Table(
+    'positions_ledger',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('symbol', String, nullable=False),
+    Column('qty', Numeric, nullable=False),
+    Column('avg_entry', Numeric, nullable=False, server_default='0'),
+    Column('mark_price', Numeric, nullable=False, server_default='0'),
+    Column('unrealized_pnl', Numeric, nullable=False, server_default='0'),
+    Column('source', String, nullable=False, server_default='runtime'),
+    Column('snapshot_ts', BigInteger, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
+pnl_ledger = Table(
+    'pnl_ledger',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('symbol', String, nullable=False),
+    Column('realized_pnl', Numeric, nullable=False, server_default='0'),
+    Column('unrealized_pnl', Numeric, nullable=False, server_default='0'),
+    Column('total_pnl', Numeric, nullable=False, server_default='0'),
+    Column('daily_pnl', Numeric, nullable=False, server_default='0'),
+    Column('equity', Numeric, nullable=False, server_default='0'),
+    Column('source', String, nullable=False, server_default='runtime'),
+    Column('snapshot_ts', BigInteger, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
 candles = Table(
     'candles',
     metadata,
@@ -326,12 +363,95 @@ class Database:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """,
+            'financial_snapshots': """
+                CREATE TABLE IF NOT EXISTS financial_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    snapshot JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """,
+            'positions_ledger': """
+                CREATE TABLE IF NOT EXISTS positions_ledger (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(32) NOT NULL,
+                    qty NUMERIC NOT NULL,
+                    avg_entry NUMERIC NOT NULL DEFAULT 0,
+                    mark_price NUMERIC NOT NULL DEFAULT 0,
+                    unrealized_pnl NUMERIC NOT NULL DEFAULT 0,
+                    source VARCHAR(32) NOT NULL DEFAULT 'runtime',
+                    snapshot_ts BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """,
+            'pnl_ledger': """
+                CREATE TABLE IF NOT EXISTS pnl_ledger (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol VARCHAR(32) NOT NULL,
+                    realized_pnl NUMERIC NOT NULL DEFAULT 0,
+                    unrealized_pnl NUMERIC NOT NULL DEFAULT 0,
+                    total_pnl NUMERIC NOT NULL DEFAULT 0,
+                    daily_pnl NUMERIC NOT NULL DEFAULT 0,
+                    equity NUMERIC NOT NULL DEFAULT 0,
+                    source VARCHAR(32) NOT NULL DEFAULT 'runtime',
+                    snapshot_ts BIGINT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """,
         }
 
         for table_name, ddl in table_ddls.items():
             if not await self._table_exists(conn, table_name):
                 await conn.execute(text(ddl))
                 created_tables.append(table_name)
+
+        await conn.execute(
+            text(
+                """
+                CREATE OR REPLACE VIEW accounting_view AS
+                SELECT
+                    p.snapshot_ts,
+                    p.symbol,
+                    p.qty,
+                    p.avg_entry,
+                    p.mark_price,
+                    p.unrealized_pnl,
+                    l.realized_pnl,
+                    l.total_pnl,
+                    l.daily_pnl,
+                    l.equity,
+                    GREATEST(p.created_at, l.created_at) AS created_at
+                FROM positions_ledger p
+                JOIN pnl_ledger l
+                  ON p.symbol = l.symbol
+                 AND p.snapshot_ts = l.snapshot_ts
+                """
+            )
+        )
+
+        # Alinear estados permitidos del ledger de idempotencia en despliegues antiguos.
+        await conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = 'execution_idempotency_ledger'::regclass
+                          AND contype = 'c'
+                          AND conname = 'execution_idempotency_ledger_status_check'
+                    ) THEN
+                        ALTER TABLE execution_idempotency_ledger DROP CONSTRAINT execution_idempotency_ledger_status_check;
+                    END IF;
+                    ALTER TABLE execution_idempotency_ledger
+                    ADD CONSTRAINT execution_idempotency_ledger_status_check
+                    CHECK (status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED','FILLED','CANCELLED','FAILED','SUBMISSION_UNCERTAIN'));
+                EXCEPTION WHEN undefined_table THEN
+                    NULL;
+                END
+                $$;
+                """
+            )
+        )
 
         column_repairs = (
             ('orders', 'decision_id', 'VARCHAR(64)'),
@@ -815,6 +935,143 @@ class Database:
             await session.execute(insert(portfolio_state).values(snapshot=asdict(state)))
 
         await self._execute_in_transaction('snapshot_portfolio', _op)
+
+    async def persist_financial_snapshot(self, payload: dict[str, Any]) -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(insert(financial_snapshots).values(snapshot=payload))
+
+        await self._execute_in_transaction('persist_financial_snapshot', _op)
+
+    async def persist_position_and_pnl_snapshot(self, payload: dict[str, Any]) -> None:
+        ts = int(payload.get('ts') or int(datetime.now(timezone.utc).timestamp() * 1000))
+        symbol = str(payload.get('symbol') or '')
+        position_row = {
+            'symbol': symbol,
+            'qty': float(payload.get('position_qty') or 0.0),
+            'avg_entry': float(payload.get('entry_price') or 0.0),
+            'mark_price': float(payload.get('mark_price') or 0.0),
+            'unrealized_pnl': float(payload.get('unrealized_pnl') or 0.0),
+            'source': str(payload.get('source') or 'runtime'),
+            'snapshot_ts': ts,
+        }
+        pnl_row = {
+            'symbol': symbol,
+            'realized_pnl': float(payload.get('realized_pnl') or 0.0),
+            'unrealized_pnl': float(payload.get('unrealized_pnl') or 0.0),
+            'total_pnl': float(payload.get('total_pnl') or 0.0),
+            'daily_pnl': float(payload.get('daily_pnl') or 0.0),
+            'equity': float(payload.get('equity') or 0.0),
+            'source': str(payload.get('source') or 'runtime'),
+            'snapshot_ts': ts,
+        }
+
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(insert(positions_ledger).values(**position_row))
+            await session.execute(insert(pnl_ledger).values(**pnl_row))
+
+        await self._execute_in_transaction('persist_position_and_pnl_snapshot', _op)
+
+    async def fetch_recent_accounting_view(self, symbol: str, limit: int = 200) -> list[dict[str, Any]]:
+        q = text(
+            """
+            SELECT snapshot_ts, symbol, qty, avg_entry, mark_price, unrealized_pnl,
+                   realized_pnl, total_pnl, daily_pnl, equity, created_at
+            FROM accounting_view
+            WHERE symbol = :symbol
+            ORDER BY snapshot_ts DESC
+            LIMIT :limit
+            """
+        )
+        async with self.session_factory() as session:
+            rows = await session.execute(q, {'symbol': symbol, 'limit': int(max(limit, 1))})
+            result: list[dict[str, Any]] = []
+            for r in rows:
+                result.append(
+                    {
+                        'snapshot_ts': int(r.snapshot_ts),
+                        'symbol': str(r.symbol),
+                        'qty': float(r.qty or 0.0),
+                        'avg_entry': float(r.avg_entry or 0.0),
+                        'mark_price': float(r.mark_price or 0.0),
+                        'unrealized_pnl': float(r.unrealized_pnl or 0.0),
+                        'realized_pnl': float(r.realized_pnl or 0.0),
+                        'total_pnl': float(r.total_pnl or 0.0),
+                        'daily_pnl': float(r.daily_pnl or 0.0),
+                        'equity': float(r.equity or 0.0),
+                        'created_at': str(r.created_at),
+                    }
+                )
+            return result
+
+    async def finalize_execution_atomically(
+        self,
+        *,
+        order: dict[str, Any],
+        fill: dict[str, Any],
+        execution_payload: dict[str, Any],
+        client_order_id: str,
+        committed_notional: float,
+    ) -> None:
+        async def _op(session: AsyncSession) -> None:
+            order_payload = {
+                'exchange_order_id': str(order.get('id')),
+                'symbol': order.get('symbol', ''),
+                'side': str(order.get('side', '')).upper(),
+                'price': order.get('price') or order.get('average') or 0,
+                'amount': order.get('amount') or order.get('filled') or 0,
+                'status': order.get('status', 'unknown'),
+                'decision_id': order.get('decision_id'),
+            }
+            await session.execute(
+                pg_insert(orders)
+                .values(**order_payload)
+                .on_conflict_do_update(
+                    index_elements=[orders.c.exchange_order_id],
+                    set_={'status': order_payload['status'], 'amount': order_payload['amount'], 'price': order_payload['price']},
+                )
+            )
+
+            fee = fill.get('fee') if isinstance(fill.get('fee'), dict) else {}
+            fill_payload = {
+                'exchange_order_id': str(fill.get('id') or order.get('id') or ''),
+                'symbol': fill.get('symbol', order.get('symbol', '')),
+                'side': str(fill.get('side', order.get('side', ''))).upper(),
+                'fill_price': float(fill.get('average') or fill.get('price') or 0.0),
+                'fill_amount': float(fill.get('filled') or fill.get('amount') or 0.0),
+                'fee': float(fee.get('cost') or 0.0),
+                'decision_id': fill.get('decision_id') or order.get('decision_id'),
+            }
+            if fill_payload['fill_price'] > 0 and fill_payload['fill_amount'] > 0:
+                order_id = await self._resolve_order_id(session, str(order_payload['exchange_order_id']))
+                fill_payload['order_id'] = order_id
+                duplicate = await session.scalar(
+                    select(fills.c.id)
+                    .where(
+                        fills.c.exchange_order_id == fill_payload['exchange_order_id'],
+                        fills.c.side == fill_payload['side'],
+                        fills.c.fill_price == fill_payload['fill_price'],
+                        fills.c.fill_amount == fill_payload['fill_amount'],
+                    )
+                    .limit(1)
+                )
+                if duplicate is None:
+                    await session.execute(insert(fills).values(**fill_payload))
+
+            row = dict(execution_payload)
+            row['order_id'] = await self._resolve_order_id(session, str(execution_payload.get('exchange_order_id') or ''))
+            await session.execute(insert(order_executions).values(**row))
+
+            await session.execute(
+                update(capital_reservations)
+                .where(capital_reservations.c.client_order_id == client_order_id)
+                .values(
+                    used_amount=float(max(committed_notional, 0.0)),
+                    status='committed',
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        await self._execute_in_transaction('finalize_execution_atomically', _op)
 
     async def persist_validation_event(self, payload: dict[str, Any]) -> None:
         async def _op(session: AsyncSession) -> None:

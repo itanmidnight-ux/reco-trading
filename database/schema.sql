@@ -35,6 +35,55 @@ CREATE TABLE IF NOT EXISTS portfolio_state (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS financial_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    snapshot JSONB NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS positions_ledger (
+    id BIGSERIAL PRIMARY KEY,
+    symbol VARCHAR(32) NOT NULL,
+    qty NUMERIC(24, 12) NOT NULL,
+    avg_entry NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    mark_price NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    unrealized_pnl NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    source VARCHAR(32) NOT NULL DEFAULT 'runtime',
+    snapshot_ts BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS pnl_ledger (
+    id BIGSERIAL PRIMARY KEY,
+    symbol VARCHAR(32) NOT NULL,
+    realized_pnl NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    unrealized_pnl NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    total_pnl NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    daily_pnl NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    equity NUMERIC(24, 12) NOT NULL DEFAULT 0,
+    source VARCHAR(32) NOT NULL DEFAULT 'runtime',
+    snapshot_ts BIGINT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE OR REPLACE VIEW accounting_view AS
+SELECT
+    p.snapshot_ts,
+    p.symbol,
+    p.qty,
+    p.avg_entry,
+    p.mark_price,
+    p.unrealized_pnl,
+    l.realized_pnl,
+    l.total_pnl,
+    l.daily_pnl,
+    l.equity,
+    GREATEST(p.created_at, l.created_at) AS created_at
+FROM positions_ledger p
+JOIN pnl_ledger l
+  ON p.symbol = l.symbol
+ AND p.snapshot_ts = l.snapshot_ts;
+
 CREATE TABLE IF NOT EXISTS system_config_versions (
     id BIGSERIAL PRIMARY KEY,
     version VARCHAR(64) NOT NULL UNIQUE,
@@ -139,7 +188,7 @@ CREATE TABLE IF NOT EXISTS execution_idempotency_ledger (
     symbol VARCHAR(32) NOT NULL,
     side VARCHAR(10) NOT NULL,
     qty NUMERIC(24, 12) NOT NULL,
-    status VARCHAR(32) NOT NULL CHECK (status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED','FILLED','CANCELLED','FAILED')),
+    status VARCHAR(32) NOT NULL CHECK (status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED','FILLED','CANCELLED','FAILED','SUBMISSION_UNCERTAIN')),
     exchange_order_id VARCHAR(64) NOT NULL DEFAULT '',
     decision_id VARCHAR(64),
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
