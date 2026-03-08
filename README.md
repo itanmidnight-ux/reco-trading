@@ -1,75 +1,192 @@
-# reco-trading: Minimal Binance Retail Bot
+# Reco Trading Bot (Binance Spot)
 
-This refactor replaces the institutional multi-module stack with a minimal, safety-first bot for very small accounts.
+Production-oriented algorithmic trading bot for small-capital spot trading on Binance, built around a state-machine engine, multi-factor voting signals, strict risk controls, and persistent telemetry.
 
-## New architecture
+## Overview
 
-```text
-bot/
-  config.py
-  main.py
-  exchange/
-    binance_client.py
-    websocket_manager.py
-  core/
-    market_data.py
-    strategy.py
-    risk_manager.py
-    execution_engine.py
-    portfolio.py
-  services/
-    order_manager.py
-    state_manager.py
-  utils/
-    logger.py
-    helpers.py
-```
-
-## Strategy (single low-frequency directional model)
-
-- Momentum + SMA trend confirmation (fast/slow SMA)
-- Volatility filter (minimum and maximum volatility regime)
-- RSI filter to avoid overstretched entries
-- Trade target: low-frequency operation (3–10 trades/week target with 15m bars + strict risk gates)
-
-## Risk constraints
-
-- `max_risk_per_trade = 1%`
-- `max_trades_per_day = 3`
-- `daily_loss_limit = 3%`
-- `max_open_positions = 1`
-- Trading stops for the day when daily loss limit is reached.
-
-## Execution safety
-
-Before any order, the bot validates:
-
-- LOT_SIZE-adjusted quantity
-- MIN_NOTIONAL
-- PRICE reference
-- available balance
-- expected edge > estimated fees + spread + extra safety buffer
-
-## Binance safety controls
-
-- `recvWindow` on signed order calls
-- timestamp drift sync (`fetch_time` + local offset)
-- retry with exponential backoff for API operations
-- websocket manager with auto-reconnect
-- order reconciliation through `fetch_my_trades`
-
-## Run
-
-```bash
-pip install -r requirements.txt
-export BINANCE_API_KEY="..."
-export BINANCE_API_SECRET="..."
-export BINANCE_TESTNET=true
-python -m bot.main
-```
-
-Or run the root entrypoint:
+The bot runs with:
 
 ```bash
 python main.py
 ```
+
+It is compatible with:
+
+```bash
+./install.sh
+./run.sh
+```
+
+Core goals:
+- stable autonomous loop
+- strong risk-first behavior
+- Binance filter compliance (`LOT_SIZE`, `PRICE_FILTER`, `MIN_NOTIONAL`)
+- persistent observability (trades/signals/market logs/state/errors)
+
+---
+
+## Architecture
+
+```text
+reco_trading/
+  core/
+    bot_engine.py          # Orchestration loop + cooldown + state transitions
+    state_machine.py       # Bot states
+  exchange/
+    binance_client.py      # CCXT wrapper, retries, server-time sync
+    order_manager.py       # Symbol rules, quantity/price normalization
+  strategy/
+    indicators.py          # EMA20/EMA50/RSI/ATR/volume MA
+    signal_engine.py       # Multi-factor signal generation
+    confidence_model.py    # Weighted voting confidence model
+    regime_filter.py       # ATR/price volatility regime classifier
+    order_flow.py          # Candle-based pressure estimator
+  risk/
+    risk_manager.py        # daily loss/trade count/confidence gates
+    position_manager.py    # Position lifecycle and exits
+  data/
+    market_stream.py       # OHLCV fetch layer
+    candle_builder.py      # DataFrame builder
+  database/
+    models.py              # SQLAlchemy models
+    repository.py          # Async persistence APIs
+  ui/
+    dashboard.py           # Rich terminal dashboard
+  config/
+    settings.py            # Environment-backed runtime settings
+main.py                    # Root entrypoint
+```
+
+---
+
+## Trading Strategy
+
+Signal voting combines:
+- **Trend**: EMA20 vs EMA50 (5m + 15m confirmation)
+- **Momentum**: RSI bias
+- **Volume**: current volume vs MA20
+- **Market structure**: higher-high/lower-low
+- **Order flow**: buy/sell pressure from recent candle volume
+- **Volatility regime gate**: ATR/price classification
+
+### Volatility Regime Filter
+`strategy/regime_filter.py` classifies market:
+- `LOW_VOLATILITY`: no trade
+- `NORMAL_VOLATILITY`: trade allowed
+- `HIGH_VOLATILITY`: trade allowed with **30% size reduction**
+
+### Order Flow System
+`strategy/order_flow.py` computes buy pressure:
+- `buy_pressure > 0.60` => `BUY`
+- `buy_pressure < 0.40` => `SELL`
+- otherwise => `NEUTRAL`
+
+---
+
+## Confidence Model
+
+Weighted voting from all engines:
+- trade allowed from `confidence >= 0.75`
+- `>= 0.85`: strong
+- `>= 0.90`: exceptional
+
+---
+
+## Risk Management Rules
+
+- Max trades/day
+- Daily loss limit (fraction of balance)
+- Confidence threshold gate
+- Cooldown after position close (**10 minutes**, configurable)
+- Exchange filter validation before order placement
+- Spread filter: block when `(ask-bid)/price > 0.0015`
+- Volume filter: block when `current_volume / volume_ma20 < 0.7`
+- ADX filter: block when `ADX < 20`
+- 15m trend confirmation gate for 5m signal direction
+- Trade limiter: max 3 new trades per rolling hour
+- Loss protection mode: after 3 consecutive losses, pause entries for 1 hour
+
+---
+
+## Binance API Safety
+
+- `load_markets()` and symbol-rule sync
+- `fetch_time()` synchronization to reduce timestamp drift
+- Retry/backoff on recoverable exchange/network failures
+- Quantity rounding to `stepSize`
+- Price rounding to `tickSize`
+- Notional validation vs `minNotional`
+
+---
+
+## Terminal Dashboard (Rich)
+
+Displays:
+- bot status + state
+- trading pair + timeframe + current price
+- indicator signals + confidence grade
+- volatility regime + order flow signal
+- account and available balance
+- open position details (entry/SL/TP/size)
+- daily PnL
+
+---
+
+## Database Logging
+
+Recorded entities:
+- `trades`
+- `signals`
+- `market_data`
+- `state_changes`
+- `error_logs`
+- `bot_logs`
+
+All include timestamps and metadata for auditability.
+
+---
+
+## Installation and Run
+
+### 1) Install
+```bash
+./install.sh
+```
+
+### 2) Configure environment variables
+Required:
+- `BINANCE_API_KEY`
+- `BINANCE_API_SECRET`
+- `POSTGRES_DSN` (async SQLAlchemy DSN, e.g. `postgresql+asyncpg://...`)
+
+Optional:
+- `BINANCE_TESTNET` (`true`/`false`, default `true`)
+- `ENVIRONMENT` (default `testnet`)
+- `RUNTIME_PROFILE` (default `paper`)
+- `COOLDOWN_MINUTES` (default `10`)
+- `RISK_PER_TRADE_FRACTION` (default `0.02`)
+- `MAX_TRADES_PER_HOUR` (default `3`)
+- `ADX_MIN_THRESHOLD` (default `20`)
+- `MAX_SPREAD_RATIO` (default `0.0015`)
+- `MIN_VOLUME_RATIO` (default `0.7`)
+- `LOSS_PAUSE_AFTER_CONSECUTIVE` (default `3`)
+- `LOSS_PAUSE_MINUTES` (default `60`)
+
+### 3) Run
+```bash
+./run.sh
+```
+or directly:
+```bash
+python main.py
+```
+
+---
+
+## Notes for Small Accounts
+
+The bot is optimized for conservative operation:
+- strict filters before trade entry
+- reduced exposure in high volatility
+- cooldown against overtrading
+- daily risk cutoffs to prevent cascading losses
