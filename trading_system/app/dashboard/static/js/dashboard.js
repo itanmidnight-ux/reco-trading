@@ -23,6 +23,12 @@ const fmtTs = (ts) => {
   return new Date(ms).toLocaleString();
 };
 
+const fmtTs = (ts) => {
+  const n = Number(ts ?? 0);
+  const ms = n < 10000000000 ? n * 1000 : n;
+  return new Date(ms).toLocaleString();
+};
+
 function applyClass(el, value) {
   el.classList.remove('positive', 'negative');
   el.classList.add(Number(value) >= 0 ? 'positive' : 'negative');

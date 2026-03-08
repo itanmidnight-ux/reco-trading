@@ -185,3 +185,21 @@ El sistema arranca con validaciones estrictas para evitar estados degradados sil
 - En órdenes de mercado usa métodos explícitos de CCXT:
   - `create_market_buy_order('BTC/USDT', amount)`
   - `create_market_sell_order('BTC/USDT', amount)`
+
+
+## App de escritorio (ventana emergente)
+
+Para abrir el dashboard como app nativa en ventana (sin navegador):
+
+```bash
+python -m trading_system.dashboard.desktop_app
+```
+
+Configurable con:
+
+- `API_BASE` (default `http://127.0.0.1:8000`)
+
+```bash
+API_BASE=http://127.0.0.1:8000 python -m trading_system.dashboard.desktop_app
+```
+
