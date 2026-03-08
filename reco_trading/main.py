@@ -18,7 +18,7 @@ def _run_bot(settings: Settings, state_manager: object | None) -> None:
 
 def run() -> None:
     configure_logging()
-    settings = Settings.from_env()
+    settings = Settings()
     if not settings.postgres_dsn:
         raise RuntimeError("POSTGRES_DSN is required")
 
