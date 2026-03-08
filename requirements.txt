@@ -10,3 +10,4 @@ python-dotenv
 PySide6
 psutil
 matplotlib
+await
