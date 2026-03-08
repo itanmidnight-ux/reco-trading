@@ -189,7 +189,7 @@ def test_publish_dashboard_does_not_activate_kill_switch() -> None:
     assert kernel.dashboard.updates
 
 
-def test_publish_dashboard_uses_exchange_equity_as_capital_actual() -> None:
+def test_publish_dashboard_uses_real_usdt_as_capital_and_keeps_account_equity() -> None:
     kernel = _build_kernel_for_unit()
     kernel.s = SimpleNamespace(
         kill_switch_max_rejections=1,
@@ -215,6 +215,7 @@ def test_publish_dashboard_uses_exchange_equity_as_capital_actual() -> None:
     kernel.decision_engine = SimpleNamespace(last_confidence=0.0, last_scores={}, last_reason='none')
     kernel.execution_status = 'IDLE'
     kernel.system_state = 'IDLE'
+    kernel.state.equity = 320.11
     kernel.state.exchange_equity = 470.49
     kernel.state.unrealized_pnl = 12.34
     kernel.state.realized_pnl = 0.0
@@ -225,7 +226,9 @@ def test_publish_dashboard_uses_exchange_equity_as_capital_actual() -> None:
 
     assert kernel.dashboard.updates
     snapshot = kernel.dashboard.updates[-1]
-    assert snapshot.equity == 470.49
+    assert snapshot.equity == 320.11
+    assert snapshot.capital_real_usdt == 320.11
+    assert snapshot.account_equity_usdt == 470.49
     assert snapshot.pnl == 12.34
 
 

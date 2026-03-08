@@ -40,6 +40,8 @@ from reco_trading.portfolio.exposure_model import ExposureModel
 from reco_trading.statistics.drift_detector import CUSUMDrift, DriftSignal, KLDivergenceDrift
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
+from reco_trading.kernel.risk_verdict_engine import RiskSignal, RiskVerdictEngine
+from reco_trading.reporting.operational_reporting import InstitutionalReportingService
 from reco_trading.hft.adaptive_market_maker import AdaptiveMarketMaker, MarketMakingState
 from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
 from reco_trading.ui.terminal_dashboard import TerminalDashboard
@@ -55,6 +57,8 @@ class PositionState(Enum):
 class RuntimeState:
     equity: float = 0.0
     exchange_equity: float = 0.0
+    usdt_total: float = 0.0
+    usdt_used: float = 0.0
     realized_pnl: float = 0.0
     lifetime_realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
@@ -375,6 +379,9 @@ class QuantKernel:
         self.arbitrage_engine_enabled = bool(self.s.enable_multi_exchange_arbitrage)
         self._db_persist_semaphore = asyncio.Semaphore(4)
         self._db_persist_tasks: set[asyncio.Task[Any]] = set()
+        self.risk_verdict_engine = RiskVerdictEngine()
+        self.reporting_service = InstitutionalReportingService()
+        self._last_db_net_qty = 0.0
 
     def _schedule_db_persist(self, coro: Any) -> None:
         async def _runner() -> None:
@@ -456,11 +463,13 @@ class QuantKernel:
         )
 
         await self.client.ping()
-        ok, free_usdt, exchange_equity, _, reason = await self._fetch_account_balance()
+        ok, free_usdt, exchange_equity, used_usdt, total_usdt, reason = await self._fetch_account_balance()
         if not ok:
             raise RuntimeError(f'Balance inicial inválido: {reason}')
         self.state.equity = free_usdt
         self.state.exchange_equity = exchange_equity
+        self.state.usdt_used = used_usdt
+        self.state.usdt_total = total_usdt
         self.initial_equity = exchange_equity
         self.peak_equity = exchange_equity
         self._daily_anchor_equity = exchange_equity
@@ -468,11 +477,11 @@ class QuantKernel:
         self.state.last_block_reason = 'none'
         logger.info(f'Balance REAL sincronizado: free={free_usdt:.2f} total={exchange_equity:.2f} USDT')
 
-    async def _fetch_account_balance(self) -> tuple[bool, float, float, float, str]:
+    async def _fetch_account_balance(self) -> tuple[bool, float, float, float, float, str]:
         try:
             balance = await self.client.fetch_balance()
         except Exception as exc:
-            return False, 0.0, 0.0, 0.0, f'binance_balance_error:{exc}'
+            return False, 0.0, 0.0, 0.0, 0.0, f'binance_balance_error:{exc}'
         usdt_bucket = balance.get('USDT') if isinstance(balance, dict) else {}
         free_usdt = float((usdt_bucket or {}).get('free') or 0.0)
         used_usdt = float((usdt_bucket or {}).get('used') or 0.0)
@@ -488,12 +497,12 @@ class QuantKernel:
         base_nav = max(base_qty, 0.0) * max(last_price, 0.0)
         total_nav = total_usdt + base_nav
         if not np.isfinite(total_nav) or total_nav <= 0.0:
-            return False, 0.0, 0.0, 0.0, 'invalid_usdt_total_balance'
+            return False, 0.0, 0.0, 0.0, 0.0, 'invalid_usdt_total_balance'
         if not np.isfinite(free_usdt) or free_usdt < 0.0:
-            return False, 0.0, 0.0, 0.0, 'invalid_usdt_free_balance'
+            return False, 0.0, 0.0, 0.0, 0.0, 'invalid_usdt_free_balance'
         if not np.isfinite(used_usdt) or used_usdt < 0.0:
-            return False, 0.0, 0.0, 0.0, 'invalid_usdt_used_balance'
-        return True, free_usdt, total_nav, used_usdt, 'ok'
+            return False, 0.0, 0.0, 0.0, 0.0, 'invalid_usdt_used_balance'
+        return True, free_usdt, total_nav, used_usdt, total_usdt, 'ok'
 
     async def _restore_financial_state_from_db(self) -> None:
         pnl_snapshot = await self.db.get_realized_pnl_from_fills(symbol=self.s.symbol)
@@ -507,11 +516,13 @@ class QuantKernel:
         self.state.fees_paid = fees_paid if np.isfinite(fees_paid) and fees_paid >= 0.0 else 0.0
 
     async def _startup_reconciliation(self) -> None:
-        ok, free_usdt, exchange_equity, _, reason = await self._fetch_account_balance()
+        ok, free_usdt, exchange_equity, used_usdt, total_usdt, reason = await self._fetch_account_balance()
         if not ok:
             raise RuntimeError(f'Balance de reconciliación inválido: {reason}')
         self.state.equity = free_usdt
         self.state.exchange_equity = exchange_equity
+        self.state.usdt_used = used_usdt
+        self.state.usdt_total = total_usdt
 
         service = self.execution_engine.order_service
         await service.load_from_ledger()
@@ -541,26 +552,22 @@ class QuantKernel:
             if cid in open_ids:
                 await self.db.update_idempotency_status(cid, 'SUBMITTED', str(row.get('exchange_order_id') or ''))
                 continue
-            if hasattr(self.client, 'fetch_order_by_client_order_id_detailed'):
-                lookup = await self.client.fetch_order_by_client_order_id_detailed(self.s.symbol, cid)
-                if not lookup.get('ok') and lookup.get('error_type') in {'network', 'rate_limit'}:
-                    logger.warning('startup_order_lookup_transient cid=%s error_type=%s', cid, lookup.get('error_type'))
-                    continue
-                found = lookup.get('order')
-            else:
-                found = await self.client.fetch_order_by_client_order_id(self.s.symbol, cid)
-            if not found:
+
+            lookup = await self.client.fetch_order_lookup_contract(self.s.symbol, cid)
+            if lookup.transient_error:
+                logger.warning('startup_order_lookup_transient cid=%s error_type=%s', cid, lookup.error_type)
                 continue
-            status = str(found.get('status') or '').lower()
-            exchange_order_id = str(found.get('id') or row.get('exchange_order_id') or '')
-            if status in {'closed', 'filled'}:
-                await self.db.update_idempotency_status(cid, 'FILLED', exchange_order_id)
-            elif status in {'partially_filled'}:
-                await self.db.update_idempotency_status(cid, 'PARTIALLY_FILLED', exchange_order_id)
-            elif status in {'cancelled', 'canceled'}:
-                await self.db.update_idempotency_status(cid, 'CANCELLED', exchange_order_id)
+            if not lookup.exists:
+                continue
+
+            if lookup.status in {'closed', 'filled'}:
+                await self.db.update_idempotency_status(cid, 'FILLED', lookup.exchange_order_id)
+            elif lookup.status in {'partially_filled'}:
+                await self.db.update_idempotency_status(cid, 'PARTIALLY_FILLED', lookup.exchange_order_id)
+            elif lookup.status in {'cancelled', 'canceled'}:
+                await self.db.update_idempotency_status(cid, 'CANCELLED', lookup.exchange_order_id)
             else:
-                await self.db.update_idempotency_status(cid, 'SUBMITTED', exchange_order_id)
+                await self.db.update_idempotency_status(cid, 'SUBMITTED', lookup.exchange_order_id)
 
         try:
             exchange_trades = await self.client.fetch_my_trades(self.s.symbol, limit=1000)
@@ -573,6 +580,7 @@ class QuantKernel:
         await self._restore_financial_state_from_db()
         snapshot = await self.db.restore_position_snapshot(self.s.symbol)
         net_qty = float(snapshot.get('net_qty') or 0.0)
+        self._last_db_net_qty = net_qty
         avg_entry = float(snapshot.get('avg_entry') or 0.0)
 
         base_asset = self.s.symbol.split('/', 1)[0]
@@ -805,11 +813,27 @@ class QuantKernel:
 
     def _risk_verdict(self) -> RiskVerdict:
         blocked, reason = self._check_kill_switch_state()
-        if blocked:
-            return RiskVerdict(True, reason, 'kill_switch')
-        if self.system_state == SystemState.BLOCKED_BY_RISK.value:
-            return RiskVerdict(True, self.state.last_block_reason or 'blocked_by_risk', 'risk_layer')
-        return RiskVerdict(False, 'none', 'ok')
+        signals = [
+            RiskSignal(blocked=blocked, reason=reason, source='kill_switch', priority=10),
+            RiskSignal(
+                blocked=self.system_state == SystemState.BLOCKED_BY_RISK.value,
+                reason=self.state.last_block_reason or 'blocked_by_risk',
+                source='risk_layer',
+                priority=20,
+            ),
+            RiskSignal(
+                blocked=self.state.rejection_count >= max(int(getattr(self.s, 'max_rejections_before_kill', 5)), 1),
+                reason='execution_rejections_threshold',
+                source='execution_lifecycle',
+                priority=30,
+            ),
+        ]
+        engine = getattr(self, 'risk_verdict_engine', None)
+        if engine is None:
+            engine = RiskVerdictEngine()
+            self.risk_verdict_engine = engine
+        verdict = engine.evaluate(signals)
+        return RiskVerdict(verdict.blocked, verdict.reason, verdict.source)
 
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
         self.state.rejection_count += 1
@@ -1298,7 +1322,8 @@ class QuantKernel:
         critical_error: str = '',
     ) -> None:
         total_equity = self._compute_total_equity()
-        capital_actual = max(float(self.state.exchange_equity), 0.0)
+        capital_real_usdt = max(float(self.state.equity), 0.0)
+        account_equity_usdt = max(float(self.state.exchange_equity), 0.0)
         self.peak_equity = max(float(getattr(self, 'peak_equity', 0.0)), total_equity)
         peak_drawdown = max(0.0, self.peak_equity - total_equity)
         now = datetime.now(timezone.utc)
@@ -1314,7 +1339,9 @@ class QuantKernel:
         self.dashboard.update(
             VisualSnapshot(
                 price=max(last_price, 0.0),
-                equity=capital_actual,
+                equity=capital_real_usdt,
+                capital_real_usdt=capital_real_usdt,
+                account_equity_usdt=account_equity_usdt,
                 pnl=self.state.realized_pnl + self.state.unrealized_pnl,
                 daily_pnl=total_equity - float(getattr(self, '_daily_anchor_equity', total_equity)),
                 drawdown=peak_drawdown,
@@ -1357,6 +1384,7 @@ class QuantKernel:
                 },
                 regime=regime,
                 risk_state=risk_state,
+                data_quality_status=str(binance_state),
                 execution_state=self.execution_status,
                 reason=self.state.last_block_reason if self.state.last_block_reason != 'none' else getattr(getattr(self, 'decision_engine', None), 'last_reason', ''),
                 critical_error=critical_error,
@@ -1364,10 +1392,32 @@ class QuantKernel:
         )
         db = getattr(self, 'db', None)
         if db is not None and hasattr(db, 'persist_financial_snapshot'):
+            exchange_qty = float(self.state.position_qty)
+            db_qty = float(getattr(self, '_last_db_net_qty', exchange_qty))
+            reporting_service = getattr(self, 'reporting_service', None) or InstitutionalReportingService()
+            self.reporting_service = reporting_service
+            operational_pack = [
+                {
+                    'report_type': report.report_type,
+                    'generated_at': report.generated_at,
+                    'payload': report.payload,
+                }
+                for report in reporting_service.build_operational_pack(
+                    symbol=self.s.symbol,
+                    session_realized_pnl=float(self.state.realized_pnl),
+                    lifetime_realized_pnl=float(self.state.lifetime_realized_pnl),
+                    total_equity=float(total_equity),
+                    exchange_qty=exchange_qty,
+                    db_qty=db_qty,
+                )
+            ]
+
             payload = {
                 'ts': int(now.timestamp() * 1000),
                 'symbol': self.s.symbol,
-                'equity': float(capital_actual),
+                'equity': float(capital_real_usdt),
+                'capital_real_usdt': float(capital_real_usdt),
+                'account_equity_usdt': float(account_equity_usdt),
                 'total_equity': float(total_equity),
                 'pnl_total': float(self.state.realized_pnl + self.state.unrealized_pnl),
                 'daily_pnl': float(total_equity - float(getattr(self, '_daily_anchor_equity', total_equity))),
@@ -1377,9 +1427,10 @@ class QuantKernel:
                 'system_state': str(self.system_state),
                 'risk_state': str(risk_state),
                 'reason': str(self.state.last_block_reason),
+                'operational_reporting': operational_pack,
             }
             with suppress(Exception):
-                asyncio.create_task(db.persist_financial_snapshot(payload))
+                self._schedule_db_persist(db.persist_financial_snapshot(payload))
 
     def _handle_cycle_exception(self, exc: Exception) -> bool:
         self.state.consecutive_cycle_errors += 1
@@ -1514,7 +1565,7 @@ class QuantKernel:
                                         continue
 
                                     self.system_state = SystemState.ANALYZING_MARKET.value
-                                    ok_balance, free_usdt, exchange_equity, _, reason = await self._fetch_account_balance()
+                                    ok_balance, free_usdt, exchange_equity, used_usdt, total_usdt, reason = await self._fetch_account_balance()
                                     if not ok_balance:
                                         self.system_state = SystemState.BLOCKED_BY_RISK.value
                                         self.state.last_block_reason = reason
@@ -1525,6 +1576,8 @@ class QuantKernel:
 
                                     self.state.equity = free_usdt
                                     self.state.exchange_equity = exchange_equity
+                                    self.state.usdt_used = used_usdt
+                                    self.state.usdt_total = total_usdt
                                     total_eq = max(float(self.state.exchange_equity), 1e-9)
                                     self.execution_engine.update_firewall_limits(
                                         max_total_exposure=total_eq * float(self.s.max_total_exposure),

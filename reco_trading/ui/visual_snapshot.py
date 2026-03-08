@@ -7,9 +7,11 @@ from dataclasses import dataclass, field
 class VisualSnapshot:
     price: float
     equity: float
-    pnl: float
-    decision: str
-    confidence: float
+    capital_real_usdt: float = 0.0
+    account_equity_usdt: float = 0.0
+    pnl: float = 0.0
+    decision: str = 'HOLD'
+    confidence: float = 0.0
     scores: dict[str, float] = field(default_factory=dict)
     regime: str = 'UNKNOWN'
     risk_state: str = 'OK'
@@ -30,6 +32,7 @@ class VisualSnapshot:
     regime_stability_score: float = 0.0
     model_diagnostics: dict[str, dict[str, float]] = field(default_factory=dict)
     critical_error: str = ''
+    data_quality_status: str = 'LIVE'
 
 
 __all__ = ['VisualSnapshot']
