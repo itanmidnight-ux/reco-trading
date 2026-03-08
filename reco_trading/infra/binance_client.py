@@ -354,6 +354,28 @@ class BinanceClient:
             )
             return None
 
+    async def fetch_order_by_client_order_id_detailed(self, symbol: str, client_order_id: str) -> dict[str, Any]:
+        await self.initialize()
+        try:
+            order = await self._retry(
+                self.exchange.privateGetOrder,
+                {'symbol': symbol.replace('/', ''), 'origClientOrderId': client_order_id},
+                route_type='account',
+                weight=2,
+                priority=BinanceRateGovernor.PRIORITY_ACCOUNT,
+            )
+            return {'ok': True, 'error_type': 'none', 'order': order}
+        except RateLimitExceeded as exc:
+            return {'ok': False, 'error_type': 'rate_limit', 'order': None, 'error': str(exc)}
+        except NetworkError as exc:
+            return {'ok': False, 'error_type': 'network', 'order': None, 'error': str(exc)}
+        except ExchangeError as exc:
+            message = str(exc)
+            error_type = 'not_found' if ('-2013' in message or 'Order does not exist' in message) else 'exchange'
+            return {'ok': False, 'error_type': error_type, 'order': None, 'error': message}
+        except Exception as exc:
+            return {'ok': False, 'error_type': 'unknown', 'order': None, 'error': str(exc)}
+
     async def fetch_open_orders(self, symbol: str) -> Any:
         await self.initialize()
         return await self._retry(
