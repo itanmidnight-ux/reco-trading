@@ -111,4 +111,12 @@ class DashboardService:
             state_data = state.__dict__
 
         state_data['signal'] = state_data.get('signal') or await self.get_last_signal()
-        return {**metrics, **state_data}
+
+        capital_real_usdt = float(state_data.get('capital_real_usdt', state_data.get('balance_real', metrics.get('capital', 0.0))) or 0.0)
+        account_equity_usdt = float(state_data.get('account_equity_usdt', metrics.get('capital', capital_real_usdt)) or 0.0)
+        merged = {**metrics, **state_data}
+        merged['capital'] = capital_real_usdt
+        merged['balance_real'] = capital_real_usdt
+        merged['capital_real_usdt'] = capital_real_usdt
+        merged['account_equity_usdt'] = account_equity_usdt
+        return merged

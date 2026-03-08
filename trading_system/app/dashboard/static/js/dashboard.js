@@ -2,6 +2,8 @@ let equityChart;
 let tradesTable;
 
 const fmt = (v, d = 4) => Number(v ?? 0).toFixed(d);
+const money = (v) => `${fmt(v, 2)} USDT`;
+
 const pct = (v) => `${(Number(v ?? 0) * 100).toFixed(2)}%`;
 
 function applyClass(el, value) {
@@ -10,7 +12,8 @@ function applyClass(el, value) {
 }
 
 function updateMetrics(data) {
-  document.getElementById('capital').textContent = fmt(data.capital);
+  document.getElementById('capital').textContent = money(data.capital_real_usdt ?? data.capital);
+  document.getElementById('account-equity').textContent = money(data.account_equity_usdt ?? data.capital);
   const pnlTotal = document.getElementById('pnl-total');
   pnlTotal.textContent = fmt(data.pnl_total);
   applyClass(pnlTotal, data.pnl_total);
@@ -25,8 +28,8 @@ function updateMetrics(data) {
   document.getElementById('signal').textContent = data.signal ?? '-';
   document.getElementById('regime').textContent = data.regime ?? '-';
   document.getElementById('risk-active').textContent = data.risk_active ? 'ON' : 'OFF';
-  document.getElementById('exposure').textContent = fmt(data.active_exposure);
-  document.getElementById('latest-price').textContent = fmt(data.latest_price, 2);
+  document.getElementById('exposure').textContent = money(data.active_exposure);
+  document.getElementById('latest-price').textContent = money(data.latest_price);
   document.getElementById('binance-status').textContent = data.binance_status ?? 'unknown';
   document.getElementById('latency').textContent = `${fmt(data.latency_ms, 0)} ms`;
 }

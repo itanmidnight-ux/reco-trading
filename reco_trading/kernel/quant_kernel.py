@@ -57,6 +57,8 @@ class PositionState(Enum):
 class RuntimeState:
     equity: float = 0.0
     exchange_equity: float = 0.0
+    usdt_total: float = 0.0
+    usdt_used: float = 0.0
     realized_pnl: float = 0.0
     lifetime_realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
@@ -461,11 +463,13 @@ class QuantKernel:
         )
 
         await self.client.ping()
-        ok, free_usdt, exchange_equity, _, reason = await self._fetch_account_balance()
+        ok, free_usdt, exchange_equity, used_usdt, total_usdt, reason = await self._fetch_account_balance()
         if not ok:
             raise RuntimeError(f'Balance inicial inválido: {reason}')
         self.state.equity = free_usdt
         self.state.exchange_equity = exchange_equity
+        self.state.usdt_used = used_usdt
+        self.state.usdt_total = total_usdt
         self.initial_equity = exchange_equity
         self.peak_equity = exchange_equity
         self._daily_anchor_equity = exchange_equity
@@ -473,11 +477,11 @@ class QuantKernel:
         self.state.last_block_reason = 'none'
         logger.info(f'Balance REAL sincronizado: free={free_usdt:.2f} total={exchange_equity:.2f} USDT')
 
-    async def _fetch_account_balance(self) -> tuple[bool, float, float, float, str]:
+    async def _fetch_account_balance(self) -> tuple[bool, float, float, float, float, str]:
         try:
             balance = await self.client.fetch_balance()
         except Exception as exc:
-            return False, 0.0, 0.0, 0.0, f'binance_balance_error:{exc}'
+            return False, 0.0, 0.0, 0.0, 0.0, f'binance_balance_error:{exc}'
         usdt_bucket = balance.get('USDT') if isinstance(balance, dict) else {}
         free_usdt = float((usdt_bucket or {}).get('free') or 0.0)
         used_usdt = float((usdt_bucket or {}).get('used') or 0.0)
@@ -493,12 +497,12 @@ class QuantKernel:
         base_nav = max(base_qty, 0.0) * max(last_price, 0.0)
         total_nav = total_usdt + base_nav
         if not np.isfinite(total_nav) or total_nav <= 0.0:
-            return False, 0.0, 0.0, 0.0, 'invalid_usdt_total_balance'
+            return False, 0.0, 0.0, 0.0, 0.0, 'invalid_usdt_total_balance'
         if not np.isfinite(free_usdt) or free_usdt < 0.0:
-            return False, 0.0, 0.0, 0.0, 'invalid_usdt_free_balance'
+            return False, 0.0, 0.0, 0.0, 0.0, 'invalid_usdt_free_balance'
         if not np.isfinite(used_usdt) or used_usdt < 0.0:
-            return False, 0.0, 0.0, 0.0, 'invalid_usdt_used_balance'
-        return True, free_usdt, total_nav, used_usdt, 'ok'
+            return False, 0.0, 0.0, 0.0, 0.0, 'invalid_usdt_used_balance'
+        return True, free_usdt, total_nav, used_usdt, total_usdt, 'ok'
 
     async def _restore_financial_state_from_db(self) -> None:
         pnl_snapshot = await self.db.get_realized_pnl_from_fills(symbol=self.s.symbol)
@@ -512,11 +516,13 @@ class QuantKernel:
         self.state.fees_paid = fees_paid if np.isfinite(fees_paid) and fees_paid >= 0.0 else 0.0
 
     async def _startup_reconciliation(self) -> None:
-        ok, free_usdt, exchange_equity, _, reason = await self._fetch_account_balance()
+        ok, free_usdt, exchange_equity, used_usdt, total_usdt, reason = await self._fetch_account_balance()
         if not ok:
             raise RuntimeError(f'Balance de reconciliación inválido: {reason}')
         self.state.equity = free_usdt
         self.state.exchange_equity = exchange_equity
+        self.state.usdt_used = used_usdt
+        self.state.usdt_total = total_usdt
 
         service = self.execution_engine.order_service
         await service.load_from_ledger()
@@ -1312,7 +1318,8 @@ class QuantKernel:
         critical_error: str = '',
     ) -> None:
         total_equity = self._compute_total_equity()
-        capital_actual = max(float(self.state.exchange_equity), 0.0)
+        capital_real_usdt = max(float(self.state.equity), 0.0)
+        account_equity_usdt = max(float(self.state.exchange_equity), 0.0)
         self.peak_equity = max(float(getattr(self, 'peak_equity', 0.0)), total_equity)
         peak_drawdown = max(0.0, self.peak_equity - total_equity)
         now = datetime.now(timezone.utc)
@@ -1328,7 +1335,9 @@ class QuantKernel:
         self.dashboard.update(
             VisualSnapshot(
                 price=max(last_price, 0.0),
-                equity=capital_actual,
+                equity=capital_real_usdt,
+                capital_real_usdt=capital_real_usdt,
+                account_equity_usdt=account_equity_usdt,
                 pnl=self.state.realized_pnl + self.state.unrealized_pnl,
                 daily_pnl=total_equity - float(getattr(self, '_daily_anchor_equity', total_equity)),
                 drawdown=peak_drawdown,
@@ -1371,6 +1380,7 @@ class QuantKernel:
                 },
                 regime=regime,
                 risk_state=risk_state,
+                data_quality_status=str(binance_state),
                 execution_state=self.execution_status,
                 reason=self.state.last_block_reason if self.state.last_block_reason != 'none' else getattr(getattr(self, 'decision_engine', None), 'last_reason', ''),
                 critical_error=critical_error,
@@ -1399,7 +1409,9 @@ class QuantKernel:
             payload = {
                 'ts': int(now.timestamp() * 1000),
                 'symbol': self.s.symbol,
-                'equity': float(capital_actual),
+                'equity': float(capital_real_usdt),
+                'capital_real_usdt': float(capital_real_usdt),
+                'account_equity_usdt': float(account_equity_usdt),
                 'total_equity': float(total_equity),
                 'pnl_total': float(self.state.realized_pnl + self.state.unrealized_pnl),
                 'daily_pnl': float(total_equity - float(getattr(self, '_daily_anchor_equity', total_equity))),
@@ -1547,7 +1559,7 @@ class QuantKernel:
                                         continue
 
                                     self.system_state = SystemState.ANALYZING_MARKET.value
-                                    ok_balance, free_usdt, exchange_equity, _, reason = await self._fetch_account_balance()
+                                    ok_balance, free_usdt, exchange_equity, used_usdt, total_usdt, reason = await self._fetch_account_balance()
                                     if not ok_balance:
                                         self.system_state = SystemState.BLOCKED_BY_RISK.value
                                         self.state.last_block_reason = reason
@@ -1558,6 +1570,8 @@ class QuantKernel:
 
                                     self.state.equity = free_usdt
                                     self.state.exchange_equity = exchange_equity
+                                    self.state.usdt_used = used_usdt
+                                    self.state.usdt_total = total_usdt
                                     total_eq = max(float(self.state.exchange_equity), 1e-9)
                                     self.execution_engine.update_firewall_limits(
                                         max_total_exposure=total_eq * float(self.s.max_total_exposure),
