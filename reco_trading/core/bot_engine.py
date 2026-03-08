@@ -53,7 +53,7 @@ class BotEngine:
                 try:
                     self._roll_day()
                     market_data = await self.fetch_market_data()
-                    analysis = self.analyze_market(market_data)
+                    analysis = await self.analyze_market(market_data)
 
                     bundle: SignalBundle = analysis["bundle"]
                     side, confidence, grade = self.confidence_model.evaluate(bundle)
@@ -110,7 +110,7 @@ class BotEngine:
             await self._refresh(price=price, bid=bid, ask=ask, spread=spread, atr=float(last_candle["atr"]))
             return
 
-    def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
+    async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         frame5: pd.DataFrame = market_data["frame5"]
         frame15: pd.DataFrame = market_data["frame15"]
         bundle = self.signal_engine.generate(frame5, frame15)
