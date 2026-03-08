@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     broker_retention_ms: int = Field(default=86_400_000, ge=60_000, le=2_592_000_000)
     broker_idempotency_ttl_seconds: int = Field(default=86_400, ge=60, le=2_592_000)
     startup_safety_seconds: int = Field(default=10, ge=0, le=600)
+    disable_trading: bool = Field(default=False, validation_alias='DISABLE_TRADING')
 
     risk_per_trade: float = Field(default=0.01, ge=0.001, le=0.05, validation_alias='RISK_PER_TRADE')
     max_daily_drawdown: float = Field(default=0.03, ge=0.01, le=0.2)
