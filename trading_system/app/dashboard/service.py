@@ -159,7 +159,4 @@ class DashboardService:
         merged['balance_real'] = capital_real_usdt
         merged['capital_real_usdt'] = capital_real_usdt
         merged['account_equity_usdt'] = account_equity_usdt
-        merged['pnl_total'] = float(merged.get('pnl_total') or 0.0)
-        merged['pnl_daily'] = float(merged.get('pnl_daily') or 0.0)
-        merged['drawdown'] = float(merged.get('drawdown') or 0.0)
         return merged
