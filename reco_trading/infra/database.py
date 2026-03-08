@@ -61,6 +61,14 @@ validation_history = Table(
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
+financial_snapshots = Table(
+    'financial_snapshots',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('snapshot', JSON, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
 candles = Table(
     'candles',
     metadata,
@@ -326,12 +334,44 @@ class Database:
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """,
+            'financial_snapshots': """
+                CREATE TABLE IF NOT EXISTS financial_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    snapshot JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """,
         }
 
         for table_name, ddl in table_ddls.items():
             if not await self._table_exists(conn, table_name):
                 await conn.execute(text(ddl))
                 created_tables.append(table_name)
+
+        # Alinear estados permitidos del ledger de idempotencia en despliegues antiguos.
+        await conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = 'execution_idempotency_ledger'::regclass
+                          AND contype = 'c'
+                          AND conname = 'execution_idempotency_ledger_status_check'
+                    ) THEN
+                        ALTER TABLE execution_idempotency_ledger DROP CONSTRAINT execution_idempotency_ledger_status_check;
+                    END IF;
+                    ALTER TABLE execution_idempotency_ledger
+                    ADD CONSTRAINT execution_idempotency_ledger_status_check
+                    CHECK (status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED','FILLED','CANCELLED','FAILED','SUBMISSION_UNCERTAIN'));
+                EXCEPTION WHEN undefined_table THEN
+                    NULL;
+                END
+                $$;
+                """
+            )
+        )
 
         column_repairs = (
             ('orders', 'decision_id', 'VARCHAR(64)'),
@@ -815,6 +855,12 @@ class Database:
             await session.execute(insert(portfolio_state).values(snapshot=asdict(state)))
 
         await self._execute_in_transaction('snapshot_portfolio', _op)
+
+    async def persist_financial_snapshot(self, payload: dict[str, Any]) -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(insert(financial_snapshots).values(snapshot=payload))
+
+        await self._execute_in_transaction('persist_financial_snapshot', _op)
 
     async def persist_validation_event(self, payload: dict[str, Any]) -> None:
         async def _op(session: AsyncSession) -> None:
