@@ -828,11 +828,7 @@ class QuantKernel:
                 priority=30,
             ),
         ]
-        engine = getattr(self, 'risk_verdict_engine', None)
-        if engine is None:
-            engine = RiskVerdictEngine()
-            self.risk_verdict_engine = engine
-        verdict = engine.evaluate(signals)
+        verdict = self.risk_verdict_engine.evaluate(signals)
         return RiskVerdict(verdict.blocked, verdict.reason, verdict.source)
 
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
@@ -1394,15 +1390,13 @@ class QuantKernel:
         if db is not None and hasattr(db, 'persist_financial_snapshot'):
             exchange_qty = float(self.state.position_qty)
             db_qty = float(getattr(self, '_last_db_net_qty', exchange_qty))
-            reporting_service = getattr(self, 'reporting_service', None) or InstitutionalReportingService()
-            self.reporting_service = reporting_service
             operational_pack = [
                 {
                     'report_type': report.report_type,
                     'generated_at': report.generated_at,
                     'payload': report.payload,
                 }
-                for report in reporting_service.build_operational_pack(
+                for report in self.reporting_service.build_operational_pack(
                     symbol=self.s.symbol,
                     session_realized_pnl=float(self.state.realized_pnl),
                     lifetime_realized_pnl=float(self.state.lifetime_realized_pnl),
