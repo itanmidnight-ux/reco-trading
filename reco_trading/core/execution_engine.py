@@ -69,6 +69,29 @@ class ExecutionEngine:
         except Exception:
             self._redis = None
 
+    @property
+    def order_service(self) -> IdempotentOrderService:
+        return self._idempotent_order_service
+
+    async def get_exchange_min_size(self) -> float:
+        return await self._firewall._min_size(self.client, self.symbol)
+
+    def update_firewall_limits(
+        self,
+        *,
+        max_total_exposure: float | None = None,
+        max_asset_exposure: float | None = None,
+        max_daily_loss: float | None = None,
+        max_daily_notional: float | None = None,
+    ) -> None:
+        if hasattr(self._firewall, 'update_limits'):
+            self._firewall.update_limits(
+                max_total_exposure=max_total_exposure,
+                max_asset_exposure=max_asset_exposure,
+                max_daily_loss=max_daily_loss,
+                max_daily_notional=max_daily_notional,
+            )
+
     async def initialize(self) -> None:
         if not self._redis:
             return
@@ -226,7 +249,8 @@ class ExecutionEngine:
         await self._idempotent_order_service.start()
         decision_timestamp_ms = int(time.time() * 1000)
         decision_bucket = int(decision_timestamp_ms // 1000)
-        decision_context_hash = f'{self.symbol}:{side}:{amount:.8f}:{decision_bucket}:{decision_tag}'
+        decision_id = str(self._active_execution_context.get('decision_id') or '')
+        decision_context_hash = f'{self.symbol}:{side}:{amount:.8f}:{decision_bucket}:{decision_tag}:{decision_id}'
         client_order_id = self._idempotent_order_service._build_client_order_id(
             side=side,
             amount=amount,
@@ -261,7 +285,7 @@ class ExecutionEngine:
                     decision_timestamp_ms=decision_timestamp_ms,
                     client_order_id=client_order_id,
                     decision_context_hash=decision_context_hash,
-                    decision_id=str(self._active_execution_context.get('decision_id') or ''),
+                    decision_id=decision_id,
                 )
             except asyncio.TimeoutError:
                 self.last_rejection_reason = 'order_timeout'

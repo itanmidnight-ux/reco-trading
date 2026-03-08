@@ -333,6 +333,31 @@ class Database:
                 await conn.execute(text(ddl))
                 created_tables.append(table_name)
 
+        # Alinear estados permitidos del ledger de idempotencia en despliegues antiguos.
+        await conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conrelid = 'execution_idempotency_ledger'::regclass
+                          AND contype = 'c'
+                          AND conname = 'execution_idempotency_ledger_status_check'
+                    ) THEN
+                        ALTER TABLE execution_idempotency_ledger DROP CONSTRAINT execution_idempotency_ledger_status_check;
+                    END IF;
+                    ALTER TABLE execution_idempotency_ledger
+                    ADD CONSTRAINT execution_idempotency_ledger_status_check
+                    CHECK (status IN ('PENDING_SUBMIT','SUBMITTED','PARTIALLY_FILLED','FILLED','CANCELLED','FAILED','SUBMISSION_UNCERTAIN'));
+                EXCEPTION WHEN undefined_table THEN
+                    NULL;
+                END
+                $$;
+                """
+            )
+        )
+
         column_repairs = (
             ('orders', 'decision_id', 'VARCHAR(64)'),
             ('fills', 'decision_id', 'VARCHAR(64)'),
