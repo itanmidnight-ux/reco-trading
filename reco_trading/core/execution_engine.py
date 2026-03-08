@@ -74,9 +74,7 @@ class ExecutionEngine:
         return self._idempotent_order_service
 
     async def get_exchange_min_size(self) -> float:
-        if hasattr(self._firewall, 'get_min_size'):
-            return await self._firewall.get_min_size(client=self.client, symbol=self.symbol)
-        return 0.0
+        return await self._firewall._min_size(self.client, self.symbol)
 
     def update_firewall_limits(
         self,
