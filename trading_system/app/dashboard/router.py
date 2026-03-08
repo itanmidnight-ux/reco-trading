@@ -63,6 +63,13 @@ async def dashboard_equity(request: Request) -> dict:
     return {'equity': equity}
 
 
+@router.get('/dashboard/activity')
+async def dashboard_activity(request: Request) -> dict:
+    _enforce_local_request(request.client.host if request.client else None)
+    activity = await _service().get_activity_feed(limit=150)
+    return {'activity': activity}
+
+
 @router.websocket('/ws/dashboard')
 async def dashboard_ws(websocket: WebSocket) -> None:
     host = websocket.client.host if websocket.client else None
