@@ -40,6 +40,8 @@ from reco_trading.portfolio.exposure_model import ExposureModel
 from reco_trading.statistics.drift_detector import CUSUMDrift, DriftSignal, KLDivergenceDrift
 from reco_trading.infra.binance_client import BinanceClient
 from reco_trading.infra.database import Database
+from reco_trading.kernel.risk_verdict_engine import RiskSignal, RiskVerdictEngine
+from reco_trading.reporting.operational_reporting import InstitutionalReportingService
 from reco_trading.hft.adaptive_market_maker import AdaptiveMarketMaker, MarketMakingState
 from reco_trading.monitoring.metrics import MetricsExporter, TradingMetrics
 from reco_trading.ui.terminal_dashboard import TerminalDashboard
@@ -375,6 +377,9 @@ class QuantKernel:
         self.arbitrage_engine_enabled = bool(self.s.enable_multi_exchange_arbitrage)
         self._db_persist_semaphore = asyncio.Semaphore(4)
         self._db_persist_tasks: set[asyncio.Task[Any]] = set()
+        self.risk_verdict_engine = RiskVerdictEngine()
+        self.reporting_service = InstitutionalReportingService()
+        self._last_db_net_qty = 0.0
 
     def _schedule_db_persist(self, coro: Any) -> None:
         async def _runner() -> None:
@@ -541,26 +546,22 @@ class QuantKernel:
             if cid in open_ids:
                 await self.db.update_idempotency_status(cid, 'SUBMITTED', str(row.get('exchange_order_id') or ''))
                 continue
-            if hasattr(self.client, 'fetch_order_by_client_order_id_detailed'):
-                lookup = await self.client.fetch_order_by_client_order_id_detailed(self.s.symbol, cid)
-                if not lookup.get('ok') and lookup.get('error_type') in {'network', 'rate_limit'}:
-                    logger.warning('startup_order_lookup_transient cid=%s error_type=%s', cid, lookup.get('error_type'))
-                    continue
-                found = lookup.get('order')
-            else:
-                found = await self.client.fetch_order_by_client_order_id(self.s.symbol, cid)
-            if not found:
+
+            lookup = await self.client.fetch_order_lookup_contract(self.s.symbol, cid)
+            if lookup.transient_error:
+                logger.warning('startup_order_lookup_transient cid=%s error_type=%s', cid, lookup.error_type)
                 continue
-            status = str(found.get('status') or '').lower()
-            exchange_order_id = str(found.get('id') or row.get('exchange_order_id') or '')
-            if status in {'closed', 'filled'}:
-                await self.db.update_idempotency_status(cid, 'FILLED', exchange_order_id)
-            elif status in {'partially_filled'}:
-                await self.db.update_idempotency_status(cid, 'PARTIALLY_FILLED', exchange_order_id)
-            elif status in {'cancelled', 'canceled'}:
-                await self.db.update_idempotency_status(cid, 'CANCELLED', exchange_order_id)
+            if not lookup.exists:
+                continue
+
+            if lookup.status in {'closed', 'filled'}:
+                await self.db.update_idempotency_status(cid, 'FILLED', lookup.exchange_order_id)
+            elif lookup.status in {'partially_filled'}:
+                await self.db.update_idempotency_status(cid, 'PARTIALLY_FILLED', lookup.exchange_order_id)
+            elif lookup.status in {'cancelled', 'canceled'}:
+                await self.db.update_idempotency_status(cid, 'CANCELLED', lookup.exchange_order_id)
             else:
-                await self.db.update_idempotency_status(cid, 'SUBMITTED', exchange_order_id)
+                await self.db.update_idempotency_status(cid, 'SUBMITTED', lookup.exchange_order_id)
 
         try:
             exchange_trades = await self.client.fetch_my_trades(self.s.symbol, limit=1000)
@@ -573,6 +574,7 @@ class QuantKernel:
         await self._restore_financial_state_from_db()
         snapshot = await self.db.restore_position_snapshot(self.s.symbol)
         net_qty = float(snapshot.get('net_qty') or 0.0)
+        self._last_db_net_qty = net_qty
         avg_entry = float(snapshot.get('avg_entry') or 0.0)
 
         base_asset = self.s.symbol.split('/', 1)[0]
@@ -805,11 +807,23 @@ class QuantKernel:
 
     def _risk_verdict(self) -> RiskVerdict:
         blocked, reason = self._check_kill_switch_state()
-        if blocked:
-            return RiskVerdict(True, reason, 'kill_switch')
-        if self.system_state == SystemState.BLOCKED_BY_RISK.value:
-            return RiskVerdict(True, self.state.last_block_reason or 'blocked_by_risk', 'risk_layer')
-        return RiskVerdict(False, 'none', 'ok')
+        signals = [
+            RiskSignal(blocked=blocked, reason=reason, source='kill_switch', priority=10),
+            RiskSignal(
+                blocked=self.system_state == SystemState.BLOCKED_BY_RISK.value,
+                reason=self.state.last_block_reason or 'blocked_by_risk',
+                source='risk_layer',
+                priority=20,
+            ),
+            RiskSignal(
+                blocked=self.state.rejection_count >= max(int(getattr(self.s, 'max_rejections_before_kill', 5)), 1),
+                reason='execution_rejections_threshold',
+                source='execution_lifecycle',
+                priority=30,
+            ),
+        ]
+        verdict = self.risk_verdict_engine.evaluate(signals)
+        return RiskVerdict(verdict.blocked, verdict.reason, verdict.source)
 
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
         self.state.rejection_count += 1
@@ -1364,6 +1378,24 @@ class QuantKernel:
         )
         db = getattr(self, 'db', None)
         if db is not None and hasattr(db, 'persist_financial_snapshot'):
+            exchange_qty = float(self.state.position_qty)
+            db_qty = float(getattr(self, '_last_db_net_qty', exchange_qty))
+            operational_pack = [
+                {
+                    'report_type': report.report_type,
+                    'generated_at': report.generated_at,
+                    'payload': report.payload,
+                }
+                for report in self.reporting_service.build_operational_pack(
+                    symbol=self.s.symbol,
+                    session_realized_pnl=float(self.state.realized_pnl),
+                    lifetime_realized_pnl=float(self.state.lifetime_realized_pnl),
+                    total_equity=float(total_equity),
+                    exchange_qty=exchange_qty,
+                    db_qty=db_qty,
+                )
+            ]
+
             payload = {
                 'ts': int(now.timestamp() * 1000),
                 'symbol': self.s.symbol,
@@ -1377,9 +1409,10 @@ class QuantKernel:
                 'system_state': str(self.system_state),
                 'risk_state': str(risk_state),
                 'reason': str(self.state.last_block_reason),
+                'operational_reporting': operational_pack,
             }
             with suppress(Exception):
-                asyncio.create_task(db.persist_financial_snapshot(payload))
+                self._schedule_db_persist(db.persist_financial_snapshot(payload))
 
     def _handle_cycle_exception(self, exc: Exception) -> bool:
         self.state.consecutive_cycle_errors += 1
