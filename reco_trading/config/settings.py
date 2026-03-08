@@ -5,6 +5,8 @@ from typing import Optional
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
+from reco_trading.config.symbols import normalize_symbol
+
 
 class Settings(BaseSettings):
     """Runtime configuration loaded from .env and environment variables."""

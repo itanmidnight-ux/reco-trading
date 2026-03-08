@@ -8,6 +8,7 @@ import time
 import ccxt
 
 from reco_trading.config.settings import Settings
+from reco_trading.config.symbols import normalize_symbol
 from reco_trading.core.state_machine import BotState
 from reco_trading.data.market_stream import MarketStream
 from reco_trading.database.repository import Repository
@@ -30,8 +31,9 @@ class BotEngine:
         self.state = BotState.STARTING
 
         self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
-        self.order_manager = OrderManager(self.client, settings.symbol)
-        self.market_stream = MarketStream(self.client, settings.symbol, settings.history_limit)
+        self.symbol = normalize_symbol(settings.trading_symbol)
+        self.order_manager = OrderManager(self.client, self.symbol)
+        self.market_stream = MarketStream(self.client, self.symbol, settings.history_limit)
         self.repository = Repository(settings.postgres_dsn)
         self.signal_engine = SignalEngine()
         self.confidence_model = ConfidenceModel()
@@ -84,8 +86,8 @@ class BotEngine:
 
         frame5 = apply_indicators(await self.market_stream.fetch_frame(self.settings.primary_timeframe))
         frame15 = apply_indicators(await self.market_stream.fetch_frame(self.settings.confirmation_timeframe))
-        ticker = await self.client.fetch_ticker(self.settings.symbol)
-        order_book = await self.client.fetch_order_book(self.settings.symbol)
+        ticker = await self.client.fetch_ticker(self.symbol)
+        order_book = await self.client.fetch_order_book(self.symbol)
 
         last_candle = frame5.iloc[-1]
         price = float(ticker.get("last") or last_candle["close"])
@@ -93,7 +95,7 @@ class BotEngine:
         best_ask = float(order_book.get("asks", [[price]])[0][0])
 
         await self.repository.record_market_candle(
-            self.settings.symbol,
+            self.symbol,
             self.settings.primary_timeframe,
             {
                 "open": float(last_candle["open"]),
@@ -116,7 +118,7 @@ class BotEngine:
         bundle = self.signal_engine.generate(frame5, frame15)
         side, confidence, _grade = self.confidence_model.evaluate(bundle)
         await self.repository.record_signal(
-            self.settings.symbol,
+            self.symbol,
             {
                 "trend": bundle.trend,
                 "momentum": bundle.momentum,
@@ -170,7 +172,7 @@ class BotEngine:
         cooldown_ok = self._is_cooldown_complete()
 
         self._push_state(
-            pair=self.settings.symbol,
+            pair=self.symbol,
             timeframe=f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
             current_price=price,
             bid=bid,
@@ -236,7 +238,7 @@ class BotEngine:
             return
 
         try:
-            order = await self.client.create_market_order(self.settings.symbol, side.lower(), qty)
+            order = await self.client.create_market_order(self.symbol, side.lower(), qty)
         except ccxt.BaseError as exc:
             await self._log("ERROR", f"order_rejected error={exc}")
             await self.repository.record_error(self.state.value, "order", str(exc))
@@ -247,7 +249,7 @@ class BotEngine:
         take_profit = self.order_manager.normalize_price(entry + (2.0 * atr))
 
         trade = await self.repository.create_trade(
-            symbol=self.settings.symbol,
+            symbol=self.symbol,
             side=side,
             quantity=quantity,
             entry_price=entry,
@@ -273,7 +275,7 @@ class BotEngine:
         trade_payload = {
             "trade_id": trade.id,
             "time": datetime.utcnow().isoformat(timespec="seconds"),
-            "pair": self.settings.symbol,
+            "pair": self.symbol,
             "side": side,
             "entry": entry,
             "size": qty,
@@ -285,7 +287,7 @@ class BotEngine:
         }
         if self.state_manager:
             self.state_manager.add_trade(trade_payload)
-            self.state_manager.notify("Trade executed", f"{side} {self.settings.symbol} @ {entry:.2f}")
+            self.state_manager.notify("Trade executed", f"{side} {self.symbol} @ {entry:.2f}")
         await self._set_state(BotState.ORDER_FILLED)
         await self._log("INFO", f"order_filled side={side} qty={qty:.8f} entry={entry:.2f}")
 
@@ -299,7 +301,7 @@ class BotEngine:
                 continue
             await self._set_state(BotState.CLOSING_POSITION)
             close_side = "sell" if position.side == "BUY" else "buy"
-            order = await self.client.create_market_order(self.settings.symbol, close_side, position.quantity)
+            order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
             exit_price = float(order.get("average") or order.get("price") or price)
 
             if position.side == "BUY":
@@ -329,7 +331,7 @@ class BotEngine:
 
     async def _persist_signal(self, bundle: SignalBundle, side: str, confidence: float) -> None:
         await self.repository.record_signal(
-            self.settings.symbol,
+            self.symbol,
             {
                 "trend": bundle.trend,
                 "momentum": bundle.momentum,
