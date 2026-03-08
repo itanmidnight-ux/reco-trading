@@ -50,6 +50,33 @@ class DashboardService:
             for row in rows
         ]
 
+    async def get_activity_feed(self, limit: int = 100) -> list[dict[str, Any]]:
+        trades = await self.get_recent_trades(limit=limit)
+        signals_rows = await self._fetch_all(select(TradeSignal).order_by(TradeSignal.ts.desc()).limit(limit))
+
+        entries: list[dict[str, Any]] = []
+        for trade in trades:
+            entries.append(
+                {
+                    'ts': int(trade['ts']),
+                    'type': 'execution',
+                    'title': f"{trade['status']} {trade['side']} {trade['symbol']}",
+                    'detail': f"qty={float(trade['qty']):.6f} price={float(trade['price']):.6f} pnl={float(trade['pnl']):+.6f}",
+                }
+            )
+        for signal in signals_rows:
+            entries.append(
+                {
+                    'ts': int(signal.ts),
+                    'type': 'signal',
+                    'title': f"signal {signal.signal} {signal.symbol}",
+                    'detail': f"score={float(signal.score):.4f} ev={float(signal.expected_value):+.6f} reason={str(signal.reason)[:120]}",
+                }
+            )
+
+        entries.sort(key=lambda item: int(item['ts']), reverse=True)
+        return entries[:limit]
+
     async def get_equity_curve(self, limit: int = 500) -> list[dict[str, float | int]]:
         rows = await self._fetch_all(select(EquitySnapshot).order_by(EquitySnapshot.ts.asc()).limit(limit))
         return [

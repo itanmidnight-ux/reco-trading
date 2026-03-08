@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
-  <div class="dashboard">
+  <div class="dashboard-app">
     <header class="topbar panel">
       <div class="metric"><span>Capital real disponible</span><strong id="capital">-</strong></div>
       <div class="metric"><span>Equity total cuenta</span><strong id="account-equity">-</strong></div>
@@ -17,30 +17,31 @@
       <div class="metric"><span>Drawdown</span><strong id="drawdown">-</strong></div>
       <div class="metric"><span>Win Rate</span><strong id="win-rate">-</strong></div>
       <div class="metric"><span>Sharpe</span><strong id="sharpe">-</strong></div>
-    </header>
+    </section>
 
     <aside class="left panel">
-      <h3>Señal & Régimen</h3>
+      <h3>Señal y Régimen</h3>
       <p>Última señal: <strong id="signal">-</strong></p>
       <p>Régimen: <strong id="regime">-</strong></p>
       <p>Risk activo: <strong id="risk-active">-</strong></p>
       <p>Exposición: <strong id="exposure">-</strong></p>
+      <p>Estado Binance: <strong id="binance-status">-</strong></p>
+      <p>Latencia: <strong id="latency">-</strong></p>
+      <p>Último BTCUSDT: <strong id="latest-price">-</strong></p>
     </aside>
 
     <main class="center panel">
-      <h3>Equity Curve</h3>
+      <h3>Curva de Equity</h3>
       <canvas id="equity-chart"></canvas>
     </main>
 
-    <aside class="right panel">
-      <h3>Mercado</h3>
-      <p>Último BTCUSDT: <strong id="latest-price">-</strong></p>
-      <p>Estado Binance: <strong id="binance-status">-</strong></p>
-      <p>Latencia: <strong id="latency">-</strong></p>
-    </aside>
+    <section class="activity panel">
+      <h3>Actividad del sistema (señales + ejecuciones)</h3>
+      <ul id="activity-feed" class="activity-feed"></ul>
+    </section>
 
     <section class="bottom panel">
-      <h3>Últimos Trades</h3>
+      <h3>Operaciones ejecutadas</h3>
       <table id="trades-table" class="display">
         <thead>
           <tr>

@@ -192,7 +192,18 @@ class TradingSystem:
         if (now - self._last_snapshot_ts) < 60:
             return
         self._last_snapshot_ts = now
-        drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+
+        account_equity = float(self._last_account_balance.get('account_equity_usdt') or 0.0)
+        if account_equity > 0.0 and self._initial_account_equity_usdt is not None:
+            self._peak_account_equity_usdt = max(self._peak_account_equity_usdt, account_equity)
+            drawdown = (self._peak_account_equity_usdt - account_equity) / max(self._peak_account_equity_usdt, 1e-9)
+            pnl_total = account_equity - self._initial_account_equity_usdt
+            snapshot_equity = account_equity
+        else:
+            drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+            pnl_total = self.monitoring.metrics.pnl
+            snapshot_equity = self.risk.equity
+
         await self.db_writer.submit(
             WriteTask(
                 fn=self.db.save,
@@ -200,9 +211,9 @@ class TradingSystem:
                     'table': 'equity_snapshots',
                     'payload': {
                         'ts': int(now * 1000),
-                        'equity': self.risk.equity,
+                        'equity': snapshot_equity,
                         'drawdown': drawdown,
-                        'pnl_total': self.monitoring.metrics.pnl,
+                        'pnl_total': pnl_total,
                     },
                 },
             )
