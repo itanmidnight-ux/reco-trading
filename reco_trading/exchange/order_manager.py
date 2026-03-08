@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
+from decimal import Decimal, ROUND_DOWN
 
 from reco_trading.exchange.binance_client import BinanceClient
 
@@ -25,18 +25,19 @@ class OrderManager:
     async def sync_rules(self) -> SymbolRules:
         markets = await self.client.load_markets()
         market = markets[self.symbol]
-        limits = market.get("limits", {})
-        amount = limits.get("amount", {})
-        cost = limits.get("cost", {})
-        precision = market.get("precision", {})
+        filters = {flt.get("filterType"): flt for flt in market.get("info", {}).get("filters", [])}
 
-        step = 10 ** (-int(precision.get("amount", 6)))
-        tick = 10 ** (-int(precision.get("price", 2)))
+        lot_size = filters.get("LOT_SIZE", {})
+        min_notional_filter = filters.get("MIN_NOTIONAL", {})
+        price_filter = filters.get("PRICE_FILTER", {})
+
+        step_size = float(lot_size.get("stepSize") or (10 ** (-int(market.get("precision", {}).get("amount", 6)))))
+        tick_size = float(price_filter.get("tickSize") or (10 ** (-int(market.get("precision", {}).get("price", 2)))))
         self.rules = SymbolRules(
-            min_qty=float(amount.get("min") or step),
-            step_size=float(step),
-            min_notional=float(cost.get("min") or 5.0),
-            tick_size=float(tick),
+            min_qty=float(lot_size.get("minQty") or market.get("limits", {}).get("amount", {}).get("min") or step_size),
+            step_size=step_size,
+            min_notional=float(min_notional_filter.get("minNotional") or market.get("limits", {}).get("cost", {}).get("min") or 5.0),
+            tick_size=tick_size,
         )
         return self.rules
 
@@ -45,10 +46,23 @@ class OrderManager:
             raise RuntimeError("symbol_rules_not_loaded")
         if quantity < self.rules.min_qty:
             return 0.0
-        steps = math.floor(quantity / self.rules.step_size)
-        return round(steps * self.rules.step_size, 8)
+        return self._round_to_step(quantity, self.rules.step_size)
+
+    def normalize_price(self, price: float) -> float:
+        if not self.rules:
+            raise RuntimeError("symbol_rules_not_loaded")
+        return self._round_to_step(price, self.rules.tick_size)
 
     def validate_notional(self, quantity: float, price: float) -> bool:
         if not self.rules:
             raise RuntimeError("symbol_rules_not_loaded")
         return quantity * price >= self.rules.min_notional
+
+    @staticmethod
+    def _round_to_step(value: float, step: float) -> float:
+        if step <= 0:
+            return value
+        dec_value = Decimal(str(value))
+        dec_step = Decimal(str(step))
+        rounded = (dec_value / dec_step).quantize(Decimal("1"), rounding=ROUND_DOWN) * dec_step
+        return float(rounded)
