@@ -15,6 +15,7 @@ from ccxt.base.errors import DDoSProtection, ExchangeError, NetworkError, RateLi
 from reco_trading.core.rate_limit_controller import AdaptiveRateLimitController
 from reco_trading.infra.binance_rate_governor import BinanceRateGovernor
 from reco_trading.infra.time_sync_service import TimeSyncService
+from reco_trading.infra.exchange_lookup_contract import ExchangeOrderLookup
 
 
 logger = logging.getLogger(__name__)
@@ -375,6 +376,30 @@ class BinanceClient:
             return {'ok': False, 'error_type': error_type, 'order': None, 'error': message}
         except Exception as exc:
             return {'ok': False, 'error_type': 'unknown', 'order': None, 'error': str(exc)}
+
+
+    async def fetch_order_lookup_contract(self, symbol: str, client_order_id: str) -> ExchangeOrderLookup:
+        lookup = await self.fetch_order_by_client_order_id_detailed(symbol, client_order_id)
+        if not lookup.get('ok'):
+            error_type = str(lookup.get('error_type') or 'unknown')
+            return ExchangeOrderLookup(
+                ok=False,
+                transient_error=error_type in {'network', 'rate_limit'},
+                error_type=error_type,
+                status='',
+                exchange_order_id='',
+            )
+
+        order = lookup.get('order') or {}
+        status = str(order.get('status') or '').lower()
+        exchange_order_id = str(order.get('id') or order.get('orderId') or '')
+        return ExchangeOrderLookup(
+            ok=True,
+            transient_error=False,
+            error_type='none',
+            status=status,
+            exchange_order_id=exchange_order_id,
+        )
 
     async def fetch_open_orders(self, symbol: str) -> Any:
         await self.initialize()
