@@ -608,6 +608,18 @@ class QuantKernel:
             return 'HIGH_VOL'
         return 'RANGE'
 
+    def _regime_probability(self, *, mapped_regime: str, detector_confidence: float, stability_score: float = 0.0) -> float:
+        base = {
+            'TREND': 0.62,
+            'RANGE': 0.57,
+            'HIGH_VOL': 0.54,
+            'LOW_VOL': 0.56,
+        }.get(mapped_regime, 0.56)
+        conf = float(np.clip(detector_confidence, 0.0, 1.0))
+        stability = float(np.clip(stability_score, 0.0, 1.0))
+        adjusted = base * 0.6 + conf * 0.3 + stability * 0.1
+        return float(np.clip(adjusted, 0.50, 0.95))
+
     def _validate_market_quality_contract(self, market_quality: MarketQualityContract) -> None:
         if market_quality is None:
             raise ValueError('market_quality is required')
@@ -1134,9 +1146,14 @@ class QuantKernel:
             if len(mtf_ohlcv) < self.MIN_WARMUP_BARS:
                 return 'HOLD', 'mtf_insufficient_data'
             mtf_signal = self.signal_engine.generate(mtf_ohlcv, self._last_market_quality.spread_bps)
-            mtf_regime_raw = self.regime_detector.predict(mtf_signal['returns'], mtf_signal['prices']).get('regime', 'range')
+            mtf_regime_data = self.regime_detector.predict(mtf_signal['returns'], mtf_signal['prices'])
+            mtf_regime_raw = mtf_regime_data.get('regime', 'range')
             mtf_regime = self._map_regime(mtf_regime_raw)
-            mtf_regime_prob = 0.78 if mtf_regime == 'TREND' else (0.62 if mtf_regime == 'RANGE' else 0.55)
+            mtf_regime_prob = self._regime_probability(
+                mapped_regime=mtf_regime,
+                detector_confidence=float(mtf_regime_data.get('confidence') or 0.5),
+                stability_score=float(getattr(self, '_latest_regime_snapshot', {}).get('regime_stability_score', 0.0)),
+            )
             mtf_breakdown = self.signal_combiner.combine(
                 mtf_signal['model_scores']['momentum'],
                 mtf_signal['model_scores']['mean_reversion'],
@@ -1313,6 +1330,24 @@ class QuantKernel:
                 critical_error=critical_error,
             )
         )
+        db = getattr(self, 'db', None)
+        if db is not None and hasattr(db, 'persist_financial_snapshot'):
+            payload = {
+                'ts': int(now.timestamp() * 1000),
+                'symbol': self.s.symbol,
+                'equity': float(capital_actual),
+                'total_equity': float(total_equity),
+                'pnl_total': float(self.state.realized_pnl + self.state.unrealized_pnl),
+                'daily_pnl': float(total_equity - float(getattr(self, '_daily_anchor_equity', total_equity))),
+                'drawdown_abs': float(peak_drawdown),
+                'decision': str(decision),
+                'regime': str(regime),
+                'system_state': str(self.system_state),
+                'risk_state': str(risk_state),
+                'reason': str(self.state.last_block_reason),
+            }
+            with suppress(Exception):
+                asyncio.create_task(db.persist_financial_snapshot(payload))
 
     def _handle_cycle_exception(self, exc: Exception) -> bool:
         self.state.consecutive_cycle_errors += 1
@@ -1498,7 +1533,8 @@ class QuantKernel:
                                         await asyncio.sleep(self.s.loop_interval_seconds)
                                         continue
 
-                                    regime_raw = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
+                                    regime_data = self.regime_detector.predict(sig['returns'], sig['prices'])
+                                    regime_raw = regime_data.get('regime', 'range')
                                     regime = self._map_regime(regime_raw)
                                     returns_series = pd.Series(sig['returns'], dtype=float)
                                     autocorr = float(returns_series.tail(80).autocorr(lag=1) or 0.0)
@@ -1515,7 +1551,11 @@ class QuantKernel:
                                     }
                                     self._current_extended_regime = regime_snapshot.current_regime
 
-                                    regime_prob = 0.78 if regime == 'TREND' else (0.62 if regime == 'RANGE' else 0.55)
+                                    regime_prob = self._regime_probability(
+                                        mapped_regime=regime,
+                                        detector_confidence=float(regime_data.get('confidence') or 0.5),
+                                        stability_score=float(regime_snapshot.regime_stability_score),
+                                    )
                                     breakdown = self.signal_combiner.combine(
                                         sig['model_scores']['momentum'],
                                         sig['model_scores']['mean_reversion'],

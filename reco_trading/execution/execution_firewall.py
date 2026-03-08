@@ -90,6 +90,10 @@ class ExecutionFirewall:
         amount_limit = limits.get('amount', {}).get('min')
         return float(amount_limit or 0.0)
 
+    async def get_min_size(self, *, client: Any, symbol: str) -> float:
+        """Interfaz pública para evitar acoplamiento a métodos internos."""
+        return await self._min_size(client, symbol)
+
 
     @staticmethod
     def _extract_free_balance(balance: dict[str, Any], asset: str) -> float:

@@ -345,7 +345,13 @@ class BinanceClient:
                 weight=2,
                 priority=BinanceRateGovernor.PRIORITY_ACCOUNT,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                'fetch_order_by_client_order_id_failed symbol=%s client_order_id=%s error=%s',
+                symbol,
+                client_order_id,
+                exc,
+            )
             return None
 
     async def fetch_open_orders(self, symbol: str) -> Any:

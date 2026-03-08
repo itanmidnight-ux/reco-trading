@@ -61,6 +61,14 @@ validation_history = Table(
     Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
 )
 
+financial_snapshots = Table(
+    'financial_snapshots',
+    metadata,
+    Column('id', BigInteger, primary_key=True),
+    Column('snapshot', JSON, nullable=False),
+    Column('created_at', DateTime(timezone=True), server_default=func.now(), nullable=False),
+)
+
 candles = Table(
     'candles',
     metadata,
@@ -324,6 +332,13 @@ class Database:
                     status VARCHAR(32) NOT NULL DEFAULT 'active',
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """,
+            'financial_snapshots': """
+                CREATE TABLE IF NOT EXISTS financial_snapshots (
+                    id BIGSERIAL PRIMARY KEY,
+                    snapshot JSONB NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
             """,
         }
@@ -840,6 +855,12 @@ class Database:
             await session.execute(insert(portfolio_state).values(snapshot=asdict(state)))
 
         await self._execute_in_transaction('snapshot_portfolio', _op)
+
+    async def persist_financial_snapshot(self, payload: dict[str, Any]) -> None:
+        async def _op(session: AsyncSession) -> None:
+            await session.execute(insert(financial_snapshots).values(snapshot=payload))
+
+        await self._execute_in_transaction('persist_financial_snapshot', _op)
 
     async def persist_validation_event(self, payload: dict[str, Any]) -> None:
         async def _op(session: AsyncSession) -> None:
