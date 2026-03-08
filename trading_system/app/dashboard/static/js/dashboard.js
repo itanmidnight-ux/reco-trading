@@ -2,7 +2,14 @@ let equityChart;
 let tradesTable;
 
 const fmt = (v, d = 4) => Number(v ?? 0).toFixed(d);
+const money = (v) => `${fmt(v, 2)} USDT`;
+
 const pct = (v) => `${(Number(v ?? 0) * 100).toFixed(2)}%`;
+const fmtTs = (ts) => {
+  const n = Number(ts ?? 0);
+  const ms = n < 10000000000 ? n * 1000 : n;
+  return new Date(ms).toLocaleString();
+};
 
 function applyClass(el, value) {
   el.classList.remove('positive', 'negative');
@@ -10,7 +17,8 @@ function applyClass(el, value) {
 }
 
 function updateMetrics(data) {
-  document.getElementById('capital').textContent = fmt(data.capital);
+  document.getElementById('capital').textContent = money(data.capital_real_usdt ?? data.capital);
+  document.getElementById('account-equity').textContent = money(data.account_equity_usdt ?? data.capital);
   const pnlTotal = document.getElementById('pnl-total');
   pnlTotal.textContent = fmt(data.pnl_total);
   applyClass(pnlTotal, data.pnl_total);
@@ -25,8 +33,8 @@ function updateMetrics(data) {
   document.getElementById('signal').textContent = data.signal ?? '-';
   document.getElementById('regime').textContent = data.regime ?? '-';
   document.getElementById('risk-active').textContent = data.risk_active ? 'ON' : 'OFF';
-  document.getElementById('exposure').textContent = fmt(data.active_exposure);
-  document.getElementById('latest-price').textContent = fmt(data.latest_price, 2);
+  document.getElementById('exposure').textContent = money(data.active_exposure);
+  document.getElementById('latest-price').textContent = money(data.latest_price);
   document.getElementById('binance-status').textContent = data.binance_status ?? 'unknown';
   document.getElementById('latency').textContent = `${fmt(data.latency_ms, 0)} ms`;
 }
@@ -68,7 +76,7 @@ async function loadInitialData() {
 
   if (!tradesTable) {
     tradesTable = $('#trades-table').DataTable({ data: trades, columns: [
-      { data: 'ts' }, { data: 'symbol' }, { data: 'side' }, { data: 'qty' },
+      { data: 'ts', render: (v) => fmtTs(v) }, { data: 'symbol' }, { data: 'side' }, { data: 'qty' },
       { data: 'price' }, { data: 'status' }, { data: 'pnl' },
     ] });
   } else {
@@ -77,7 +85,8 @@ async function loadInitialData() {
 }
 
 function connectWebsocket() {
-  const ws = new WebSocket('ws://localhost:8000/ws/dashboard');
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${scheme}://${window.location.host}/ws/dashboard`);
   ws.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
     updateMetrics(payload);

@@ -22,7 +22,7 @@ body {
   padding: 12px;
 }
 
-.topbar { grid-area: topbar; display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.topbar { grid-area: topbar; display: grid; grid-template-columns: repeat(7, 1fr); gap: 8px; }
 .left { grid-area: left; }
 .center { grid-area: center; min-height: 320px; }
 .right { grid-area: right; }
@@ -37,3 +37,7 @@ body {
 table.dataTable { color: #d8dee9 !important; }
 .dataTables_wrapper .dataTables_filter input,
 .dataTables_wrapper .dataTables_length select { background: #0b0e11; color: #d8dee9; border: 1px solid #2e3742; }
+
+.metric strong { color: #eaf2ff; font-weight: 700; }
+.panel h3 { margin-top: 0; color: #8ab4ff; letter-spacing: .2px; }
+.topbar { border: 1px solid #26313d; box-shadow: 0 0 0 1px rgba(59,130,246,.15) inset; }

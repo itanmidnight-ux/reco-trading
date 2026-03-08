@@ -60,6 +60,12 @@ class TradingSystem:
         self.last_market_event_ts = time.time()
         self.last_entry_price = 0.0
         self._last_snapshot_ts = 0.0
+        self._last_account_refresh_ts = 0.0
+        self._last_account_balance: dict[str, float] = {
+            'capital_real_usdt': 0.0,
+            'account_equity_usdt': 0.0,
+            'active_exposure': 0.0,
+        }
 
     def _enforce_startup_security(self) -> None:
         if not self.settings.binance_testnet and not self.settings.confirm_mainnet:
@@ -124,15 +130,62 @@ class TradingSystem:
 
     def dashboard_state(self) -> DashboardState:
         drawdown = 1 - self.risk.equity / self.risk.peak if self.risk.peak else 0.0
+        ws_stale = (time.time() - self.last_market_event_ts) >= 8
         return DashboardState(
             latest_price=self.state.close[-1] if self.state.close else 0.0,
             regime=str(self.last_status.get('regime', 'UNKNOWN')),
             signal=str(self.last_status.get('signal', 'HOLD')),
-            binance_status='connected' if (time.time() - self.last_market_event_ts) < 8 else 'stale',
+            binance_status='stale' if ws_stale else 'connected',
             latency_ms=max(0.0, (time.time() - self.last_market_event_ts) * 1000),
-            risk_active=drawdown < self.settings.max_drawdown,
-            active_exposure=self.risk.equity,
+            risk_active=drawdown >= self.settings.max_drawdown,
+            active_exposure=float(self._last_account_balance.get('active_exposure', 0.0)),
+            capital_real_usdt=float(self._last_account_balance.get('capital_real_usdt', 0.0)),
+            account_equity_usdt=float(self._last_account_balance.get('account_equity_usdt', 0.0)),
         )
+
+    async def _refresh_account_state_if_due(self) -> None:
+        now = time.time()
+        if (now - self._last_account_refresh_ts) < 5.0:
+            return
+        self._last_account_refresh_ts = now
+        try:
+            account = await self.binance.get_account()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning('No se pudo refrescar balance de cuenta para dashboard: %s', exc)
+            return
+
+        balances = account.get('balances') if isinstance(account, dict) else None
+        if not isinstance(balances, list):
+            return
+
+        symbol = str(self.settings.symbol or 'BTCUSDT').upper()
+        if symbol.endswith('USDT') and len(symbol) > 4:
+            base_asset = symbol[:-4]
+            quote_asset = 'USDT'
+        else:
+            base_asset = symbol
+            quote_asset = 'USDT'
+
+        free_quote = 0.0
+        used_quote = 0.0
+        base_total = 0.0
+        for item in balances:
+            asset = str(item.get('asset') or '').upper()
+            free = float(item.get('free') or 0.0)
+            locked = float(item.get('locked') or 0.0)
+            if asset == quote_asset:
+                free_quote = free
+                used_quote = locked
+            elif asset == base_asset:
+                base_total = free + locked
+
+        last_price = float(self.state.close[-1]) if self.state.close else 0.0
+        base_nav = base_total * max(last_price, 0.0)
+        self._last_account_balance = {
+            'capital_real_usdt': float(max(free_quote, 0.0)),
+            'account_equity_usdt': float(max(free_quote + used_quote + base_nav, 0.0)),
+            'active_exposure': float(max(base_nav, 0.0)),
+        }
 
     async def _snapshot_equity_if_due(self) -> None:
         now = time.time()
@@ -158,6 +211,7 @@ class TradingSystem:
     async def on_kline(self, event: Event) -> None:
         self.last_market_event_ts = time.time()
         self.state.ingest_kline(event.payload)
+        await self._refresh_account_state_if_due()
         if len(self.state.close) < 80:
             return
 
