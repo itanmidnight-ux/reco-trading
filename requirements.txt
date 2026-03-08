@@ -1,8 +1,9 @@
-aiohttp
 ccxt
-numpy
 pandas
-pydantic
-pydantic-settings
-loguru
-pytest
+numpy
+ta
+sqlalchemy
+asyncpg
+websockets
+rich
+python-dotenv
