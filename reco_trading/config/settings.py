@@ -1,262 +1,42 @@
 from __future__ import annotations
 
-from functools import lru_cache
-
-from pydantic import Field, SecretStr, computed_field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
-
-ALLOWED_STRATEGIES: tuple[str, str, str] = (
-    'directional',
-    'adaptive_market_making',
-    'multi_exchange_arbitrage',
-)
+from dataclasses import dataclass
+import os
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8', case_sensitive=False, extra='ignore')
+@dataclass(slots=True)
+class Settings:
+    """Runtime configuration loaded from environment variables."""
 
-    environment: str = Field(default='production')
-    runtime_profile: str = Field(default='production')
-    symbol: str = Field(default='BTC/USDT', validation_alias='BASE_SYMBOL')
-    timeframe: str = Field(default='5m', validation_alias='TIMEFRAME')
-    operating_mode: str = Field(default='MINIMAL', validation_alias='OPERATING_MODE')
+    binance_api_key: str
+    binance_api_secret: str
+    postgres_dsn: str
+    binance_testnet: bool
+    environment: str
+    runtime_profile: str
+    symbol: str = "BTC/USDT"
+    primary_timeframe: str = "5m"
+    confirmation_timeframe: str = "15m"
+    loop_sleep_seconds: int = 15
+    history_limit: int = 300
+    max_trades_per_day: int = 10
+    max_trade_balance_fraction: float = 0.20
+    confidence_threshold: float = 0.75
+    daily_loss_limit_fraction: float = 0.03
 
-    binance_api_key: SecretStr = Field(validation_alias='BINANCE_API_KEY')
-    binance_api_secret: SecretStr = Field(validation_alias='BINANCE_API_SECRET')
-    encrypted_api_key: str | None = None
-    encrypted_api_secret: str | None = None
-    encryption_key: SecretStr | None = None
-    binance_testnet: bool = Field(default=True, validation_alias='BINANCE_TESTNET')
-    confirm_mainnet: bool = False
-
-    postgres_dsn: str = Field(
-        ...,
-        description='Cadena de conexión PostgreSQL obligatoria. Defínela vía POSTGRES_DSN en .env.',
-    )
-    postgres_admin_dsn: str | None = Field(default=None)
-    redis_url: str = Field(default='redis://localhost:6379/0')
-    broker_backend: str = Field(default='redis')
-    broker_stream_prefix: str = Field(default='reco:broker')
-    broker_topic_prefix: str = Field(default='reco.broker')
-    kafka_bootstrap_servers: str = Field(default='localhost:9092')
-    broker_max_retries: int = Field(default=3, ge=0, le=20)
-    broker_retry_backoff_seconds: float = Field(default=0.5, ge=0.0, le=60.0)
-    broker_retry_backoff_max_seconds: float = Field(default=30.0, ge=0.1, le=600.0)
-    broker_consume_block_ms: int = Field(default=5000, ge=1, le=60000)
-    broker_operation_timeout_seconds: float = Field(default=5.0, ge=0.1, le=120.0)
-    execution_order_timeout_seconds: float = Field(default=30.0, ge=0.1, le=300.0)
-    broker_stream_maxlen: int = Field(default=50_000, ge=100, le=5_000_000)
-    broker_dlq_maxlen: int = Field(default=20_000, ge=100, le=5_000_000)
-    broker_retention_ms: int = Field(default=86_400_000, ge=60_000, le=2_592_000_000)
-    broker_idempotency_ttl_seconds: int = Field(default=86_400, ge=60, le=2_592_000)
-    startup_safety_seconds: int = Field(default=10, ge=0, le=600)
-    disable_trading: bool = Field(default=False, validation_alias='DISABLE_TRADING')
-
-    risk_per_trade: float = Field(default=0.01, ge=0.001, le=0.05, validation_alias='RISK_PER_TRADE')
-    max_daily_drawdown: float = Field(default=0.03, ge=0.01, le=0.2)
-    max_daily_loss: float = Field(default=0.02, ge=0.005, le=0.2)
-    max_global_drawdown: float = Field(default=0.12, ge=0.02, le=0.6)
-    max_total_exposure: float = Field(default=0.7, ge=0.1, le=1.0)
-    max_asset_exposure: float = Field(default=0.35, ge=0.05, le=1.0)
-    correlation_threshold: float = Field(default=0.75, ge=0.1, le=0.99)
-
-    max_consecutive_losses: int = Field(default=3, ge=1, le=10)
-    atr_stop_multiplier: float = Field(default=2.0, ge=1.0, le=6.0)
-    volatility_target: float = Field(default=0.20, ge=0.01, le=2.0)
-    circuit_breaker_volatility: float = Field(default=0.08, ge=0.01, le=1.0)
-
-    maker_fee: float = Field(default=0.001)
-    taker_fee: float = Field(default=0.001)
-    slippage_bps: float = Field(default=5.0)
-
-    conservative_mode_enabled: bool = Field(default=True)
-    enable_directional_strategy: bool = Field(default=True)
-    enable_adaptive_market_making: bool = Field(default=True)
-    enable_multi_exchange_arbitrage: bool = Field(default=False)
-
-    learning_phase_seconds: int = Field(default=300, ge=60, le=3600)
-    confidence_hold_threshold: float = Field(default=0.60, ge=0.50, le=0.95)
-    confidence_tier_1: float = Field(default=0.65, ge=0.50, le=0.99)
-    confidence_tier_2: float = Field(default=0.70, ge=0.50, le=0.99)
-    confidence_tier_3: float = Field(default=0.80, ge=0.50, le=0.99)
-    confidence_tier_4: float = Field(default=0.90, ge=0.50, le=0.99)
-    confidence_alloc_tier_1: float = Field(default=0.0025, ge=0.0, le=0.05)
-    confidence_alloc_tier_2: float = Field(default=0.0050, ge=0.0, le=0.05)
-    confidence_alloc_tier_3: float = Field(default=0.0100, ge=0.0, le=0.05)
-    confidence_alloc_tier_4: float = Field(default=0.0200, ge=0.0, le=0.05)
-    max_confidence_allocation: float = Field(default=0.02, ge=0.001, le=0.05)
-    minimal_fixed_position_notional: float = Field(default=25.0, ge=5.0, le=500.0)
-    minimal_absolute_risk_usdt: float = Field(default=10.0, ge=1.0, le=200.0)
-    minimal_mode_min_edge_floor: float = Field(default=0.00015, ge=0.00001, le=0.01)
-    minimal_mode_regime_uncertain_floor: float = Field(default=0.58, ge=0.50, le=0.95)
-    minimal_economic_notional: float = Field(default=8.0, ge=1.0, le=1000.0)
-    operational_edge_floor: float = Field(default=0.0035, ge=0.0005, le=0.05)
-    friction_safety_multiplier: float = Field(default=2.2, ge=1.0, le=6.0)
-    decision_audit_history_size: int = Field(default=100, ge=10, le=500)
-    edge_monitor_window: int = Field(default=120, ge=20, le=1000)
-    conditional_performance_window: int = Field(default=180, ge=20, le=1000)
-    edge_confidence_threshold: float = Field(default=0.45, ge=0.05, le=0.95)
-    regime_stability_threshold: float = Field(default=0.40, ge=0.05, le=0.95)
-    risk_of_ruin_threshold: float = Field(default=0.30, ge=0.01, le=0.99)
-    target_scalp_seconds: int = Field(default=20, ge=5, le=120)
-    max_position_seconds: int = Field(default=30, ge=10, le=300)
-
-    market_max_spread_bps: float = Field(default=15.0, ge=0.1, le=500.0)
-    market_max_realized_volatility: float = Field(default=0.05, ge=0.001, le=1.0)
-    market_min_avg_volume: float = Field(default=1.0, ge=0.0, le=1_000_000_000.0)
-    market_max_gap_ratio: float = Field(default=0.20, ge=0.0, le=1.0)
-
-    kill_switch_max_rejections: int = Field(default=5, ge=1, le=100)
-    kill_switch_max_latency_ms: float = Field(default=2500.0, ge=10.0, le=60000.0)
-
-    loop_interval_seconds: int = Field(default=5, ge=1, le=60)
-
-    enable_mtf_confirmation: bool = Field(default=False)
-    mtf_timeframe: str = Field(default='15m')
-    mtf_confirmation_mode: str = Field(default='confirm')
-
-    enable_volatility_sizing: bool = Field(default=False)
-    vol_target_risk: float = Field(default=0.20, ge=0.0001, le=5.0)
-    vol_max_multiplier: float = Field(default=1.50, ge=0.10, le=10.0)
-    vol_min_multiplier: float = Field(default=0.25, ge=0.01, le=10.0)
-
-    enable_partial_exits: bool = Field(default=False)
-    partial_exit_levels: list[float] = Field(default_factory=lambda: [0.5, 1.0])
-    partial_exit_fractions: list[float] = Field(default_factory=lambda: [0.3, 0.3])
-
-    enable_session_filter: bool = Field(default=False)
-    allowed_sessions_utc: list[tuple[int, int]] = Field(default_factory=list)
-
-    monitoring_metrics_enabled: bool = Field(default=True)
-    monitoring_metrics_host: str = Field(default='0.0.0.0')
-    monitoring_metrics_port: int = Field(default=8001, ge=1, le=65535)
-
-    runtime_enable_uvloop: bool = Field(default=True)
-    runtime_min_nofile: int = Field(default=4096, ge=256, le=1_048_576)
-    runtime_target_nofile: int = Field(default=65_535, ge=1024, le=1_048_576)
-    runtime_cpu_affinity: str | None = Field(default=None, description='Lista de CPUs separada por comas, ejemplo: 0,1,2')
-
-
-
-    @field_validator('binance_api_key', 'binance_api_secret')
     @classmethod
-    def non_empty_binance_credentials(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
-            raise ValueError('Las credenciales de Binance no pueden estar vacías.')
-        return value
+    def from_env(cls) -> "Settings":
+        def _bool(name: str, default: bool) -> bool:
+            raw = os.getenv(name)
+            if raw is None:
+                return default
+            return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
-    @field_validator('broker_backend')
-    @classmethod
-    def validate_broker_backend(cls, value: str) -> str:
-        normalized = value.lower()
-        if normalized not in {'redis', 'kafka'}:
-            raise ValueError('broker_backend debe ser "redis" o "kafka".')
-        return normalized
-
-    @field_validator('symbol')
-    @classmethod
-    def validate_symbol_format(cls, value: str) -> str:
-        normalized = value.strip().upper()
-        if '/' not in normalized:
-            raise ValueError('symbol/base_symbol debe tener formato BASE/QUOTE (ej: BTC/USDT).')
-        base, quote = normalized.split('/', 1)
-        if not base or not quote:
-            raise ValueError('symbol/base_symbol inválido.')
-        return normalized
-
-    @field_validator('timeframe')
-    @classmethod
-    def validate_timeframe(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        allowed = {'1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'}
-        if normalized not in allowed:
-            raise ValueError(f'timeframe inválido: {normalized}.')
-        return normalized
-
-    @field_validator('operating_mode')
-    @classmethod
-    def validate_operating_mode(cls, value: str) -> str:
-        normalized = value.strip().upper()
-        if normalized not in {'MINIMAL', 'NORMAL', 'INSTITUTIONAL'}:
-            raise ValueError('operating_mode debe ser MINIMAL, NORMAL o INSTITUTIONAL.')
-        return normalized
-
-    @field_validator('mtf_confirmation_mode')
-    @classmethod
-    def validate_mtf_confirmation_mode(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized not in {'confirm', 'veto'}:
-            raise ValueError('mtf_confirmation_mode debe ser "confirm" o "veto".')
-        return normalized
-
-    @field_validator('mtf_timeframe')
-    @classmethod
-    def validate_mtf_timeframe(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        allowed = {'1m', '3m', '5m', '15m', '30m', '1h', '4h', '1d'}
-        if normalized not in allowed:
-            raise ValueError(f'mtf_timeframe inválido: {normalized}.')
-        return normalized
-
-    @model_validator(mode='after')
-    def validate_mainnet_guardrail(self) -> 'Settings':
-        if not self.binance_testnet and not self.confirm_mainnet:
-            raise ValueError('Mainnet requiere confirm_mainnet=true explícito por seguridad institucional.')
-        return self
-
-    @model_validator(mode='after')
-    def validate_strategy_toggles(self) -> 'Settings':
-        if not self.enabled_strategies:
-            raise ValueError('Debe existir al menos una estrategia habilitada en el kernel.')
-        return self
-
-    @model_validator(mode='after')
-    def validate_quant_enhancement_guards(self) -> 'Settings':
-        if self.vol_min_multiplier > self.vol_max_multiplier:
-            raise ValueError('vol_min_multiplier no puede ser mayor a vol_max_multiplier.')
-
-        if len(self.partial_exit_levels) != len(self.partial_exit_fractions):
-            raise ValueError('partial_exit_levels y partial_exit_fractions deben tener el mismo tamaño.')
-        if any(level <= 0.0 for level in self.partial_exit_levels):
-            raise ValueError('partial_exit_levels debe contener valores positivos.')
-        if any(fraction <= 0.0 or fraction >= 1.0 for fraction in self.partial_exit_fractions):
-            raise ValueError('partial_exit_fractions debe contener fracciones en (0, 1).')
-        if sum(self.partial_exit_fractions) >= 1.0:
-            raise ValueError('La suma de partial_exit_fractions debe ser menor a 1.0.')
-
-        for session in self.allowed_sessions_utc:
-            if len(session) != 2:
-                raise ValueError('Cada sesión UTC debe tener formato (inicio, fin).')
-            start, end = int(session[0]), int(session[1])
-            if start < 0 or start > 23 or end < 0 or end > 24:
-                raise ValueError('Las sesiones UTC deben estar en rango horario [0, 24].')
-            if start >= end:
-                raise ValueError('Cada sesión UTC debe cumplir inicio < fin.')
-        return self
-
-    @computed_field
-    @property
-    def enabled_strategies(self) -> tuple[str, ...]:
-        enabled: list[str] = []
-        if self.enable_directional_strategy:
-            enabled.append('directional')
-        if self.enable_adaptive_market_making:
-            enabled.append('adaptive_market_making')
-        if self.enable_multi_exchange_arbitrage:
-            enabled.append('multi_exchange_arbitrage')
-        return tuple(enabled)
-
-    @property
-    def max_gap_ratio(self) -> float:
-        # Compatibilidad retroactiva para referencias legacy del kernel.
-        return float(self.market_max_gap_ratio)
-
-    @computed_field
-    @property
-    def symbol_rest(self) -> str:
-        return self.symbol.replace('/', '')
-
-
-@lru_cache(maxsize=1)
-def get_settings() -> Settings:
-    return Settings()
+        return cls(
+            binance_api_key=os.getenv("BINANCE_API_KEY", ""),
+            binance_api_secret=os.getenv("BINANCE_API_SECRET", ""),
+            postgres_dsn=os.getenv("POSTGRES_DSN", ""),
+            binance_testnet=_bool("BINANCE_TESTNET", True),
+            environment=os.getenv("ENVIRONMENT", "testnet"),
+            runtime_profile=os.getenv("RUNTIME_PROFILE", "paper"),
+        )
