@@ -5,6 +5,11 @@ const fmt = (v, d = 4) => Number(v ?? 0).toFixed(d);
 const money = (v) => `${fmt(v, 2)} USDT`;
 
 const pct = (v) => `${(Number(v ?? 0) * 100).toFixed(2)}%`;
+const fmtTs = (ts) => {
+  const n = Number(ts ?? 0);
+  const ms = n < 10000000000 ? n * 1000 : n;
+  return new Date(ms).toLocaleString();
+};
 
 function applyClass(el, value) {
   el.classList.remove('positive', 'negative');
@@ -71,7 +76,7 @@ async function loadInitialData() {
 
   if (!tradesTable) {
     tradesTable = $('#trades-table').DataTable({ data: trades, columns: [
-      { data: 'ts' }, { data: 'symbol' }, { data: 'side' }, { data: 'qty' },
+      { data: 'ts', render: (v) => fmtTs(v) }, { data: 'symbol' }, { data: 'side' }, { data: 'qty' },
       { data: 'price' }, { data: 'status' }, { data: 'pnl' },
     ] });
   } else {
@@ -80,7 +85,8 @@ async function loadInitialData() {
 }
 
 function connectWebsocket() {
-  const ws = new WebSocket('ws://localhost:8000/ws/dashboard');
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  const ws = new WebSocket(`${scheme}://${window.location.host}/ws/dashboard`);
   ws.onmessage = async (event) => {
     const payload = JSON.parse(event.data);
     updateMetrics(payload);

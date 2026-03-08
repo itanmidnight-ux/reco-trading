@@ -21,6 +21,8 @@ class DashboardState:
     latency_ms: float = 0.0
     risk_active: bool = False
     active_exposure: float = 0.0
+    capital_real_usdt: float = 0.0
+    account_equity_usdt: float = 0.0
 
 
 class DashboardService:
@@ -68,15 +70,26 @@ class DashboardService:
         trades = await self.get_recent_trades(limit=1000)
         equity_curve = await self.get_equity_curve(limit=2000)
 
+        def _normalize_ts_ms(value: int | float | str | None) -> int:
+            ts = int(float(value or 0))
+            # Compatibilidad histórica: algunos productores usan segundos y otros milisegundos.
+            return ts * 1000 if ts < 10_000_000_000 else ts
+
         total_trades = len(trades)
         wins = sum(1 for trade in trades if trade['pnl'] > 0)
         losses = sum(1 for trade in trades if trade['pnl'] < 0)
         win_rate = (wins / total_trades) if total_trades else 0.0
-        pnl_total = sum(float(trade['pnl']) for trade in trades)
+        pnl_total_from_trades = sum(float(trade['pnl']) for trade in trades)
 
         now_ms = int(time.time() * 1000)
         day_ms = 24 * 60 * 60 * 1000
-        pnl_daily = sum(float(trade['pnl']) for trade in trades if (now_ms - int(trade['ts'])) <= day_ms)
+        pnl_daily = sum(
+            float(trade['pnl'])
+            for trade in trades
+            if (now_ms - _normalize_ts_ms(trade['ts'])) <= day_ms
+        )
+
+        pnl_total = float(equity_curve[-1]['pnl_total']) if equity_curve else pnl_total_from_trades
 
         returns = [float(trade['pnl']) for trade in trades if float(trade['pnl']) != 0.0]
         expectancy = pnl_total / total_trades if total_trades else 0.0
@@ -85,7 +98,7 @@ class DashboardService:
         else:
             sharpe = 0.0
 
-        capital = equity_curve[-1]['equity'] if equity_curve else 1.0
+        capital = float(equity_curve[-1]['equity']) if equity_curve else 0.0
         drawdown = max((float(point['drawdown']) for point in equity_curve), default=0.0)
 
         return {
