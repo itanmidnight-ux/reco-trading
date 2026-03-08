@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN
 
+from reco_trading.config.symbols import normalize_symbol
 from reco_trading.exchange.binance_client import BinanceClient
 
 
@@ -19,12 +20,16 @@ class OrderManager:
 
     def __init__(self, client: BinanceClient, symbol: str) -> None:
         self.client = client
-        self.symbol = symbol
+        self.symbol = normalize_symbol(symbol)
         self.rules: SymbolRules | None = None
 
     async def sync_rules(self) -> SymbolRules:
         markets = await self.client.load_markets()
-        market = markets[self.symbol]
+        normalized_symbol = normalize_symbol(self.symbol)
+        self.symbol = normalized_symbol
+        market = markets.get(normalized_symbol)
+        if market is None:
+            raise KeyError("Trading symbol not found in exchange markets.")
         filters = {flt.get("filterType"): flt for flt in market.get("info", {}).get("filters", [])}
 
         lot_size = filters.get("LOT_SIZE", {})
