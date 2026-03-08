@@ -24,13 +24,6 @@ class Settings:
     confidence_threshold: float = 0.75
     daily_loss_limit_fraction: float = 0.03
     cooldown_minutes: int = 10
-    risk_per_trade_fraction: float = 0.02
-    max_trades_per_hour: int = 3
-    adx_min_threshold: float = 20.0
-    max_spread_ratio: float = 0.0015
-    min_volume_ratio: float = 0.7
-    loss_pause_after_consecutive: int = 3
-    loss_pause_minutes: int = 60
 
     @classmethod
     def from_env(cls) -> "Settings":

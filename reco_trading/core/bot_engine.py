@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import deque
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 import ccxt
-import pandas as pd
 from rich.live import Live
 
 from reco_trading.config.settings import Settings
@@ -44,14 +41,12 @@ class BotEngine:
         self.trades_today = 0
         self.day_marker = datetime.now(timezone.utc).date()
         self.last_close_time: datetime | None = None
-        self.trade_timestamps: deque[datetime] = deque()
-        self.consecutive_losses = 0
-        self.pause_trading_until: datetime | None = None
-
         self.snapshot = DashboardSnapshot(pair=settings.symbol.replace("/", ""), timeframe="5m / 15m")
 
     async def run(self) -> None:
-        await self.initialize()
+        await self.repository.setup()
+        await self.client.sync_time()
+        await self.order_manager.sync_rules()
         with Live(TerminalDashboard().render(self.snapshot), refresh_per_second=2, transient=False) as live:
             while True:
                 try:
@@ -82,14 +77,10 @@ class BotEngine:
                     await self.repository.record_error(self.state.value, "runtime", str(exc))
                     await asyncio.sleep(self.settings.loop_sleep_seconds)
 
-    async def initialize(self) -> None:
-        await self.repository.setup()
-        await self.client.sync_time()
-        await self.order_manager.sync_rules()
-        await self._set_state(BotState.SYNCING_MARKET, "initialized")
-
-    async def fetch_market_data(self) -> dict[str, Any]:
+    async def _tick(self, live: Live) -> None:
+        self._roll_day()
         await self._set_state(BotState.ANALYZING)
+
         frame5 = apply_indicators(await self.market_stream.fetch_frame(self.settings.primary_timeframe))
         frame15 = apply_indicators(await self.market_stream.fetch_frame(self.settings.confirmation_timeframe))
         ticker = await self.client.fetch_ticker(self.settings.symbol)
@@ -112,21 +103,44 @@ class BotEngine:
             },
         )
 
-        return {
-            "frame5": frame5,
-            "frame15": frame15,
-            "price": price,
-            "bid": best_bid,
-            "ask": best_ask,
-            "timestamp": datetime.now(timezone.utc),
-        }
+        if self.signal_engine.is_sideways(frame5):
+            await self._set_state(BotState.WAITING_SIGNAL, "sideways_market")
+            await self._log("INFO", "sideways_market_detected")
+            await self._refresh(live)
+            return
 
     def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         frame5: pd.DataFrame = market_data["frame5"]
         frame15: pd.DataFrame = market_data["frame15"]
         bundle = self.signal_engine.generate(frame5, frame15)
-        candle = frame5.iloc[-1]
-        htf = frame15.iloc[-1]
+        side, confidence, grade = self.confidence_model.evaluate(bundle)
+        await self.repository.record_signal(
+            self.settings.symbol,
+            {
+                "trend": bundle.trend,
+                "momentum": bundle.momentum,
+                "volume": bundle.volume,
+                "volatility": bundle.volatility,
+                "structure": bundle.structure,
+                "order_flow": bundle.order_flow,
+                "regime": bundle.regime,
+            },
+            confidence,
+            side,
+        )
+        self.snapshot.trend = bundle.trend
+        self.snapshot.signals = {
+            "trend": bundle.trend,
+            "momentum": bundle.momentum,
+            "volume": bundle.volume,
+            "volatility": bundle.volatility,
+            "structure": bundle.structure,
+            "order_flow": bundle.order_flow,
+        }
+        self.snapshot.confidence = confidence
+        self.snapshot.signal_grade = grade
+        self.snapshot.volatility_regime = bundle.regime
+        self.snapshot.order_flow_signal = bundle.order_flow
 
         return {
             "bundle": bundle,
@@ -157,6 +171,7 @@ class BotEngine:
             await self._log("WARNING", f"trading_paused_until={self.pause_trading_until.isoformat()}")
             return False
 
+        await self._set_state(BotState.CHECKING_RISK)
         risk = self.risk_manager.validate(
             balance=balance,
             daily_pnl=daily_pnl,
@@ -164,90 +179,45 @@ class BotEngine:
             confidence=confidence,
             confidence_threshold=self.settings.confidence_threshold,
         )
-        if not risk.approved:
-            await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_SIGNAL, risk.reason)
-            await self._log("INFO", f"blocked_by_risk reason={risk.reason}")
-            return False
-
-        if self.signal_engine.is_sideways(market_data["frame5"]):
-            await self._set_state(BotState.WAITING_SIGNAL, "sideways_market")
-            return False
-
+        cooldown_ok = self._is_cooldown_complete()
         if not bundle.regime_trade_allowed:
-            await self._set_state(BotState.WAITING_SIGNAL, "low_volatility_regime")
-            return False
-
-        if spread_ratio > self.settings.max_spread_ratio:
-            await self._log("INFO", f"blocked_by_spread spread_ratio={spread_ratio:.6f}")
-            return False
-
-        if float(analysis["volume_ratio"]) < self.settings.min_volume_ratio:
-            await self._log("INFO", f"blocked_by_volume volume_ratio={analysis['volume_ratio']:.4f}")
-            return False
-
-        if float(analysis["adx"]) < self.settings.adx_min_threshold:
-            await self._log("INFO", f"blocked_by_adx adx={analysis['adx']:.2f}")
-            return False
-
-        if side == "BUY" and not analysis["htf_bullish"]:
-            await self._log("INFO", "blocked_by_htf_confirmation")
-            return False
-        if side == "SELL" and not analysis["htf_bearish"]:
-            await self._log("INFO", "blocked_by_htf_confirmation")
-            return False
-
-        if not self._is_cooldown_complete():
+            await self._log("INFO", "blocked_by_low_volatility_regime")
+        if not cooldown_ok:
             await self._log("INFO", "blocked_by_trade_cooldown")
-            return False
 
-        self._cleanup_trade_timestamps()
-        if len(self.trade_timestamps) >= self.settings.max_trades_per_hour:
-            await self._log("INFO", "blocked_by_hourly_trade_limit")
-            return False
-
-        return self.position_manager.can_open(confidence)
-
-    def calculate_position_size(self, analysis: dict[str, Any], market_data: dict[str, Any]) -> float:
-        balance = self.snapshot.balance
-        price = float(market_data["price"])
-        atr = max(float(analysis["atr"]), 1e-9)
-        stop_distance = 1.5 * atr
-        risk_per_trade = balance * self.settings.risk_per_trade_fraction
-
-        raw_qty = risk_per_trade / stop_distance
-        cap_qty = (self.snapshot.available_capital * analysis["bundle"].size_multiplier) / max(price, 1e-9)
-        qty = min(raw_qty, cap_qty)
-        qty = self.order_manager.normalize_quantity(qty)
-
-        if qty <= 0:
-            return 0.0
-        if not self.order_manager.validate_notional(qty, price):
-            return 0.0
-        return qty
-
-    async def execute_trade(self, side: str, quantity: float, analysis: dict[str, Any]) -> None:
-        if quantity <= 0:
-            await self._log("WARNING", "position_size_invalid")
+        if not risk.approved or not bundle.regime_trade_allowed or not cooldown_ok:
+            await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_SIGNAL, risk.reason)
+            await self._monitor_positions(price)
+            await self._refresh(live)
             return
 
+        if self.position_manager.can_open(confidence):
+            await self._open_trade(side, price, float(last_candle["atr"]), bundle.size_multiplier)
+
+        await self._monitor_positions(price)
+        await self._refresh(live)
+
+    async def _open_trade(self, side: str, price: float, atr: float, size_multiplier: float) -> None:
         await self._set_state(BotState.PLACING_ORDER)
-        price = self.snapshot.price
-        atr = float(analysis["atr"])
+        base_capital = self.snapshot.available_capital * size_multiplier
+        qty = self.order_manager.normalize_quantity(base_capital / price)
+        if qty <= 0:
+            await self._log("WARNING", "quantity_below_minimum")
+            return
+        if not self.order_manager.validate_notional(qty, price):
+            await self._log("WARNING", "notional_below_minimum")
+            return
 
         try:
-            order = await self.client.create_market_order(self.settings.symbol, side.lower(), quantity)
+            order = await self.client.create_market_order(self.settings.symbol, side.lower(), qty)
         except ccxt.BaseError as exc:
             await self._log("ERROR", f"order_rejected error={exc}")
             await self.repository.record_error(self.state.value, "order", str(exc))
             return
 
         entry = float(order.get("average") or order.get("price") or price)
-        if side == "BUY":
-            stop_loss = self.order_manager.normalize_price(entry - (1.5 * atr))
-            take_profit = self.order_manager.normalize_price(entry + (2.0 * atr))
-        else:
-            stop_loss = self.order_manager.normalize_price(entry + (1.5 * atr))
-            take_profit = self.order_manager.normalize_price(entry - (2.0 * atr))
+        stop_loss = self.order_manager.normalize_price(entry - (1.5 * atr))
+        take_profit = self.order_manager.normalize_price(entry + (2.0 * atr))
 
         trade = await self.repository.create_trade(
             symbol=self.settings.symbol,
@@ -272,22 +242,17 @@ class BotEngine:
         )
 
         self.trades_today += 1
-        self.trade_timestamps.append(datetime.now(timezone.utc))
         await self._set_state(BotState.ORDER_FILLED)
-        await self._log("INFO", f"order_filled side={side} qty={quantity:.8f} entry={entry:.4f}")
+        await self._log("INFO", f"order_filled side={side} qty={qty:.8f} entry={entry:.2f}")
 
     async def manage_open_position(self, market_data: dict[str, Any]) -> None:
         if not self.position_manager.positions:
             return
-
-        price = float(market_data["price"])
         await self._set_state(BotState.MONITORING_POSITION)
-
         for position in list(self.position_manager.positions):
             exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
-
             await self._set_state(BotState.CLOSING_POSITION)
             close_side = "sell" if position.side == "BUY" else "buy"
             order = await self.client.create_market_order(self.settings.symbol, close_side, position.quantity)
@@ -301,12 +266,7 @@ class BotEngine:
             await self.repository.close_trade(position.trade_id, exit_price, pnl, exit_reason)
             self.position_manager.close(position.trade_id)
             self.last_close_time = datetime.now(timezone.utc)
-            pause_triggered = self._update_loss_protection(pnl)
-            if pause_triggered and self.pause_trading_until:
-                await self._log("WARNING", f"loss_protection_activated consecutive_losses={self.consecutive_losses} pause_until={self.pause_trading_until.isoformat()}")
-
-            next_state = BotState.TAKE_PROFIT_HIT if "TAKE_PROFIT" in exit_reason else BotState.STOP_LOSS_HIT
-            await self._set_state(next_state)
+            await self._set_state(BotState.TAKE_PROFIT_HIT if "TAKE_PROFIT" in exit_reason else BotState.STOP_LOSS_HIT)
             await self._log("INFO", f"position_closed reason={exit_reason} pnl={pnl:.4f}")
 
     def _update_loss_protection(self, pnl: float) -> bool:
@@ -382,17 +342,12 @@ class BotEngine:
             return True
         return datetime.now(timezone.utc) - self.last_close_time >= timedelta(minutes=self.settings.cooldown_minutes)
 
-    def _cleanup_trade_timestamps(self) -> None:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
-        while self.trade_timestamps and self.trade_timestamps[0] < cutoff:
-            self.trade_timestamps.popleft()
-
     async def _refresh(self, live: Live) -> None:
-        self._update_dashboard_position()
+        self._update_dashboard()
         live.update(TerminalDashboard().render(self.snapshot), refresh=True)
         await asyncio.sleep(self.settings.loop_sleep_seconds)
 
-    def _update_dashboard_position(self) -> None:
+    def _update_dashboard(self) -> None:
         self.snapshot.state = self.state.value
         if self.position_manager.positions:
             position = self.position_manager.positions[0]

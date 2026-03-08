@@ -99,12 +99,6 @@ Weighted voting from all engines:
 - Confidence threshold gate
 - Cooldown after position close (**10 minutes**, configurable)
 - Exchange filter validation before order placement
-- Spread filter: block when `(ask-bid)/price > 0.0015`
-- Volume filter: block when `current_volume / volume_ma20 < 0.7`
-- ADX filter: block when `ADX < 20`
-- 15m trend confirmation gate for 5m signal direction
-- Trade limiter: max 3 new trades per rolling hour
-- Loss protection mode: after 3 consecutive losses, pause entries for 1 hour
 
 ---
 
@@ -163,14 +157,6 @@ Optional:
 - `BINANCE_TESTNET` (`true`/`false`, default `true`)
 - `ENVIRONMENT` (default `testnet`)
 - `RUNTIME_PROFILE` (default `paper`)
-- `COOLDOWN_MINUTES` (default `10`)
-- `RISK_PER_TRADE_FRACTION` (default `0.02`)
-- `MAX_TRADES_PER_HOUR` (default `3`)
-- `ADX_MIN_THRESHOLD` (default `20`)
-- `MAX_SPREAD_RATIO` (default `0.0015`)
-- `MIN_VOLUME_RATIO` (default `0.7`)
-- `LOSS_PAUSE_AFTER_CONSECUTIVE` (default `3`)
-- `LOSS_PAUSE_MINUTES` (default `60`)
 
 ### 3) Run
 ```bash
