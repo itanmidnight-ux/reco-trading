@@ -433,7 +433,7 @@ class QuantKernel:
         )
         self.capital_protection_controller = CapitalProtectionController(
             client=self.client,
-            order_service=self.execution_engine._idempotent_order_service,
+            order_service=self.execution_engine.order_service,
         )
 
         await self.client.ping()
@@ -458,13 +458,23 @@ class QuantKernel:
         free_usdt = float((usdt_bucket or {}).get('free') or 0.0)
         used_usdt = float((usdt_bucket or {}).get('used') or 0.0)
         total_usdt = float((usdt_bucket or {}).get('total') or (free_usdt + used_usdt))
-        if not np.isfinite(total_usdt) or total_usdt <= 0.0:
+        base_asset = self.s.symbol.split('/', 1)[0]
+        base_bucket = balance.get(base_asset) if isinstance(balance, dict) else {}
+        base_qty = float((base_bucket or {}).get('free') or 0.0) + float((base_bucket or {}).get('used') or 0.0)
+        try:
+            ticker = await self.client.fetch_ticker(self.s.symbol)
+            last_price = float(ticker.get('last') or ticker.get('close') or 0.0)
+        except Exception:
+            last_price = 0.0
+        base_nav = max(base_qty, 0.0) * max(last_price, 0.0)
+        total_nav = total_usdt + base_nav
+        if not np.isfinite(total_nav) or total_nav <= 0.0:
             return False, 0.0, 0.0, 0.0, 'invalid_usdt_total_balance'
         if not np.isfinite(free_usdt) or free_usdt < 0.0:
             return False, 0.0, 0.0, 0.0, 'invalid_usdt_free_balance'
         if not np.isfinite(used_usdt) or used_usdt < 0.0:
             return False, 0.0, 0.0, 0.0, 'invalid_usdt_used_balance'
-        return True, free_usdt, total_usdt, used_usdt, 'ok'
+        return True, free_usdt, total_nav, used_usdt, 'ok'
 
     async def _restore_financial_state_from_db(self) -> None:
         pnl_snapshot = await self.db.get_realized_pnl_from_fills(symbol=self.s.symbol)
@@ -484,7 +494,7 @@ class QuantKernel:
         self.state.equity = free_usdt
         self.state.exchange_equity = exchange_equity
 
-        service = self.execution_engine._idempotent_order_service
+        service = self.execution_engine.order_service
         await service.load_from_ledger()
         await service.start()
         try:
@@ -542,17 +552,8 @@ class QuantKernel:
         base_asset = self.s.symbol.split('/', 1)[0]
         exchange_qty = 0.0
         try:
-            balance = await self.client.fetch_balance()
-            asset_bucket = balance.get(base_asset) if isinstance(balance, dict) else None
-            if isinstance(asset_bucket, dict):
-                exchange_qty = float(asset_bucket.get('free') or 0.0) + float(asset_bucket.get('used') or 0.0)
-            free_bucket = balance.get('free') if isinstance(balance, dict) else None
-            used_bucket = balance.get('used') if isinstance(balance, dict) else None
-            if isinstance(free_bucket, dict) or isinstance(used_bucket, dict):
-                exchange_qty = max(
-                    exchange_qty,
-                    float((free_bucket or {}).get(base_asset) or 0.0) + float((used_bucket or {}).get(base_asset) or 0.0),
-                )
+            position = await self.client.fetch_positions(self.s.symbol)
+            exchange_qty = float(position.get('qty') or 0.0)
         except Exception as exc:
             logger.warning('startup_exchange_balance_reconciliation_failed: %s', exc)
 
@@ -706,6 +707,8 @@ class QuantKernel:
         return True, 'ok'
 
     def _check_kill_switch_state(self) -> tuple[bool, str]:
+        if bool(getattr(self.s, 'disable_trading', False)):
+            return True, 'disable_trading_env'
         if self.shutdown_event.is_set():
             return True, 'shutdown_requested'
         if self.state.kill_switch:
@@ -1455,6 +1458,13 @@ class QuantKernel:
 
                                     self.state.equity = free_usdt
                                     self.state.exchange_equity = exchange_equity
+                                    total_eq = max(float(self.state.exchange_equity), 1e-9)
+                                    self.execution_engine.update_firewall_limits(
+                                        max_total_exposure=total_eq * float(self.s.max_total_exposure),
+                                        max_asset_exposure=total_eq * float(self.s.max_asset_exposure),
+                                        max_daily_loss=total_eq * float(self.s.max_daily_loss),
+                                        max_daily_notional=max(total_eq * 4.0, total_eq),
+                                    )
                                     self.capital_governor.update_state(
                                         strategy='directional',
                                         exchange='binance',
@@ -1842,7 +1852,7 @@ class QuantKernel:
                                             self.state.final_order_notional = float(max(order_qty * last_price, 0.0))
                                         # --- MINIMAL MODE: enforce exchange minimums ---
                                         if decision == 'BUY':
-                                            exchange_min_qty = await self.execution_engine._firewall._min_size(self.client, self.s.symbol)
+                                            exchange_min_qty = await self.execution_engine.get_exchange_min_size()
                                             if exchange_min_qty is not None and order_qty < exchange_min_qty:
                                                 logger.info(
                                                     "Order qty %.10f < exchange_min_qty %.10f, adjusting to minimum",
