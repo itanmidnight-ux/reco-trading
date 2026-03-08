@@ -75,7 +75,7 @@ class Settings(BaseSettings):
 
     @property
     def symbol(self) -> str:
-        return normalize_symbol(self.trading_symbol)
+        return self.trading_symbol
 
     @property
     def primary_timeframe(self) -> str:
