@@ -164,14 +164,7 @@ class IdempotentOrderService:
 
         max_checks = max(int(timeout_seconds // 2), 3)
         for _ in range(max_checks):
-            if hasattr(self.client, 'fetch_order_by_client_order_id_detailed'):
-                lookup = await self.client.fetch_order_by_client_order_id_detailed(entry.symbol, entry.client_order_id)
-                recovered_order = lookup.get('order')
-                if not lookup.get('ok') and lookup.get('error_type') in {'network', 'rate_limit'}:
-                    await asyncio.sleep(1)
-                    continue
-            else:
-                recovered_order = await self.client.fetch_order_by_client_order_id(entry.symbol, entry.client_order_id)
+            recovered_order = await self.client.fetch_order_by_client_order_id(entry.symbol, entry.client_order_id)
             if recovered_order:
                 entry.exchange_order_id = str(recovered_order.get('id') or '')
                 entry.state = JournalState.SUBMITTED

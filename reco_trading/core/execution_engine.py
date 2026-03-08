@@ -76,9 +76,7 @@ class ExecutionEngine:
         return self._idempotent_order_service
 
     async def get_exchange_min_size(self) -> float:
-        if hasattr(self._firewall, 'get_min_size'):
-            return await self._firewall.get_min_size(client=self.client, symbol=self.symbol)
-        return 0.0
+        return await self._firewall._min_size(self.client, self.symbol)
 
     def update_firewall_limits(
         self,
@@ -363,12 +361,6 @@ class ExecutionEngine:
                 'decision_id': str(self._active_execution_context.get('decision_id') or ''),
                 'exchange_order_id': str(fill.get('id') or order_id),
             }
-            if self._require_atomic_finalization and not hasattr(self.db, 'finalize_execution_atomically'):
-                self.last_rejection_reason = 'atomic_finalization_unavailable'
-                if hasattr(self.db, 'finalize_capital_reservation'):
-                    await self.db.finalize_capital_reservation(client_order_id, 0.0, 'released')
-                return None
-
             if hasattr(self.db, 'finalize_execution_atomically'):
                 await self.db.finalize_execution_atomically(
                     order=order,

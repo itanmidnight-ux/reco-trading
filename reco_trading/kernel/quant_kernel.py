@@ -1379,23 +1379,7 @@ class QuantKernel:
                 'reason': str(self.state.last_block_reason),
             }
             with suppress(Exception):
-                self._schedule_db_persist(db.persist_financial_snapshot(payload))
-            if hasattr(db, 'persist_position_and_pnl_snapshot'):
-                ledger_payload = {
-                    'ts': payload['ts'],
-                    'symbol': self.s.symbol,
-                    'position_qty': float(self.state.position_qty),
-                    'entry_price': float(self.state.entry_price),
-                    'mark_price': float(max(last_price, 0.0)),
-                    'realized_pnl': float(self.state.realized_pnl),
-                    'unrealized_pnl': float(self.state.unrealized_pnl),
-                    'total_pnl': float(self.state.realized_pnl + self.state.unrealized_pnl),
-                    'daily_pnl': float(payload['daily_pnl']),
-                    'equity': float(capital_actual),
-                    'source': 'runtime_dashboard',
-                }
-                with suppress(Exception):
-                    self._schedule_db_persist(db.persist_position_and_pnl_snapshot(ledger_payload))
+                asyncio.create_task(db.persist_financial_snapshot(payload))
 
     def _handle_cycle_exception(self, exc: Exception) -> bool:
         self.state.consecutive_cycle_errors += 1
