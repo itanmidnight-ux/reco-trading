@@ -37,8 +37,9 @@ class MeanReversionModel:
 
 
     def predict_from_snapshot(self, snapshot: MarketSnapshot) -> float:
-        magnitude = abs(snapshot.vwap_distance) + abs(snapshot.bollinger_deviation)
-        if magnitude < 1e-9:
+        # score direccional: distancia positiva sobre VWAP/BB implica sesgo bajista
+        directional = -0.7 * float(snapshot.vwap_distance) - 0.3 * float(snapshot.bollinger_deviation)
+        if abs(directional) < 1e-9:
             return 0.5
-        score = min(magnitude * 2.5, 6.0)
+        score = max(min(directional * 3.0, 6.0), -6.0)
         return float(1.0 / (1.0 + pow(2.718281828, -score)))

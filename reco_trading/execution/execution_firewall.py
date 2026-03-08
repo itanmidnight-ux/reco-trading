@@ -57,6 +57,26 @@ class ExecutionFirewall:
             self._daily_notional = 0.0
             self._daily_realized_pnl = 0.0
 
+    def update_limits(
+        self,
+        *,
+        max_total_exposure: float | None = None,
+        max_asset_exposure: float | None = None,
+        max_exchange_exposure: float | None = None,
+        max_daily_loss: float | None = None,
+        max_daily_notional: float | None = None,
+    ) -> None:
+        if max_total_exposure is not None:
+            self.max_total_exposure = float(max(max_total_exposure, 0.0))
+        if max_asset_exposure is not None:
+            self.max_asset_exposure = float(max(max_asset_exposure, 0.0))
+        if max_exchange_exposure is not None:
+            self.max_exchange_exposure = float(max(max_exchange_exposure, 0.0))
+        if max_daily_loss is not None:
+            self.max_daily_loss = float(max(max_daily_loss, 0.0))
+        if max_daily_notional is not None:
+            self.max_daily_notional = float(max(max_daily_notional, 0.0))
+
     async def _min_size(self, client: Any, symbol: str) -> float:
         if hasattr(client, 'get_symbol_rules'):
             rules = await client.get_symbol_rules(symbol)
