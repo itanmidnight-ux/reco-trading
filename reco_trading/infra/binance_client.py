@@ -345,8 +345,36 @@ class BinanceClient:
                 weight=2,
                 priority=BinanceRateGovernor.PRIORITY_ACCOUNT,
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                'fetch_order_by_client_order_id_failed symbol=%s client_order_id=%s error=%s',
+                symbol,
+                client_order_id,
+                exc,
+            )
             return None
+
+    async def fetch_order_by_client_order_id_detailed(self, symbol: str, client_order_id: str) -> dict[str, Any]:
+        await self.initialize()
+        try:
+            order = await self._retry(
+                self.exchange.privateGetOrder,
+                {'symbol': symbol.replace('/', ''), 'origClientOrderId': client_order_id},
+                route_type='account',
+                weight=2,
+                priority=BinanceRateGovernor.PRIORITY_ACCOUNT,
+            )
+            return {'ok': True, 'error_type': 'none', 'order': order}
+        except RateLimitExceeded as exc:
+            return {'ok': False, 'error_type': 'rate_limit', 'order': None, 'error': str(exc)}
+        except NetworkError as exc:
+            return {'ok': False, 'error_type': 'network', 'order': None, 'error': str(exc)}
+        except ExchangeError as exc:
+            message = str(exc)
+            error_type = 'not_found' if ('-2013' in message or 'Order does not exist' in message) else 'exchange'
+            return {'ok': False, 'error_type': error_type, 'order': None, 'error': message}
+        except Exception as exc:
+            return {'ok': False, 'error_type': 'unknown', 'order': None, 'error': str(exc)}
 
     async def fetch_open_orders(self, symbol: str) -> Any:
         await self.initialize()
@@ -369,6 +397,33 @@ class BinanceClient:
             weight=5,
             priority=BinanceRateGovernor.PRIORITY_ACCOUNT,
         )
+
+    async def fetch_positions(self, symbol: str) -> dict[str, float]:
+        """Posición spot reconciliada por balance libre+usado del activo base."""
+        await self.initialize()
+        balance = await self.fetch_balance()
+        base_asset = symbol.split('/', 1)[0] if '/' in symbol else symbol
+
+        free_bucket = balance.get('free') if isinstance(balance, dict) else None
+        used_bucket = balance.get('used') if isinstance(balance, dict) else None
+        asset_bucket = balance.get(base_asset) if isinstance(balance, dict) else None
+
+        qty = 0.0
+        if isinstance(asset_bucket, dict):
+            qty += float(asset_bucket.get('free') or 0.0)
+            qty += float(asset_bucket.get('used') or 0.0)
+        if isinstance(free_bucket, dict) or isinstance(used_bucket, dict):
+            qty = max(
+                qty,
+                float((free_bucket or {}).get(base_asset) or 0.0) + float((used_bucket or {}).get(base_asset) or 0.0),
+            )
+
+        return {
+            'symbol': symbol,
+            'base_asset': base_asset,
+            'qty': float(max(qty, 0.0)),
+            'side': 'LONG' if qty > 0 else 'FLAT',
+        }
 
     async def wait_for_fill(self, symbol: str, order_id: str, timeout: int = 45) -> Any:
         for _ in range(timeout):

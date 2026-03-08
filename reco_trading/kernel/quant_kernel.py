@@ -91,6 +91,13 @@ class StrategyVote:
     reason: str
 
 
+@dataclass(slots=True)
+class RiskVerdict:
+    blocked: bool
+    reason: str
+    source: str
+
+
 
 class SignalEngine:
     def __init__(self) -> None:
@@ -366,6 +373,17 @@ class QuantKernel:
         }
         self.market_making_engine = AdaptiveMarketMaker(MarketMakingState())
         self.arbitrage_engine_enabled = bool(self.s.enable_multi_exchange_arbitrage)
+        self._db_persist_semaphore = asyncio.Semaphore(4)
+        self._db_persist_tasks: set[asyncio.Task[Any]] = set()
+
+    def _schedule_db_persist(self, coro: Any) -> None:
+        async def _runner() -> None:
+            async with self._db_persist_semaphore:
+                await coro
+
+        task = asyncio.create_task(_runner())
+        self._db_persist_tasks.add(task)
+        task.add_done_callback(lambda t: self._db_persist_tasks.discard(t))
 
     @staticmethod
     def _timeframe_to_seconds(timeframe: str) -> int:
@@ -418,6 +436,7 @@ class QuantKernel:
             ),
             quant_kernel=self,
             capital_governor=self.capital_governor,
+            require_atomic_finalization=True,
         )
         self.institutional_risk_manager = InstitutionalRiskManager(
             limits=RiskLimits(
@@ -433,7 +452,7 @@ class QuantKernel:
         )
         self.capital_protection_controller = CapitalProtectionController(
             client=self.client,
-            order_service=self.execution_engine._idempotent_order_service,
+            order_service=self.execution_engine.order_service,
         )
 
         await self.client.ping()
@@ -458,13 +477,23 @@ class QuantKernel:
         free_usdt = float((usdt_bucket or {}).get('free') or 0.0)
         used_usdt = float((usdt_bucket or {}).get('used') or 0.0)
         total_usdt = float((usdt_bucket or {}).get('total') or (free_usdt + used_usdt))
-        if not np.isfinite(total_usdt) or total_usdt <= 0.0:
+        base_asset = self.s.symbol.split('/', 1)[0]
+        base_bucket = balance.get(base_asset) if isinstance(balance, dict) else {}
+        base_qty = float((base_bucket or {}).get('free') or 0.0) + float((base_bucket or {}).get('used') or 0.0)
+        try:
+            ticker = await self.client.fetch_ticker(self.s.symbol)
+            last_price = float(ticker.get('last') or ticker.get('close') or 0.0)
+        except Exception:
+            last_price = 0.0
+        base_nav = max(base_qty, 0.0) * max(last_price, 0.0)
+        total_nav = total_usdt + base_nav
+        if not np.isfinite(total_nav) or total_nav <= 0.0:
             return False, 0.0, 0.0, 0.0, 'invalid_usdt_total_balance'
         if not np.isfinite(free_usdt) or free_usdt < 0.0:
             return False, 0.0, 0.0, 0.0, 'invalid_usdt_free_balance'
         if not np.isfinite(used_usdt) or used_usdt < 0.0:
             return False, 0.0, 0.0, 0.0, 'invalid_usdt_used_balance'
-        return True, free_usdt, total_usdt, used_usdt, 'ok'
+        return True, free_usdt, total_nav, used_usdt, 'ok'
 
     async def _restore_financial_state_from_db(self) -> None:
         pnl_snapshot = await self.db.get_realized_pnl_from_fills(symbol=self.s.symbol)
@@ -484,7 +513,7 @@ class QuantKernel:
         self.state.equity = free_usdt
         self.state.exchange_equity = exchange_equity
 
-        service = self.execution_engine._idempotent_order_service
+        service = self.execution_engine.order_service
         await service.load_from_ledger()
         await service.start()
         try:
@@ -512,7 +541,14 @@ class QuantKernel:
             if cid in open_ids:
                 await self.db.update_idempotency_status(cid, 'SUBMITTED', str(row.get('exchange_order_id') or ''))
                 continue
-            found = await self.client.fetch_order_by_client_order_id(self.s.symbol, cid)
+            if hasattr(self.client, 'fetch_order_by_client_order_id_detailed'):
+                lookup = await self.client.fetch_order_by_client_order_id_detailed(self.s.symbol, cid)
+                if not lookup.get('ok') and lookup.get('error_type') in {'network', 'rate_limit'}:
+                    logger.warning('startup_order_lookup_transient cid=%s error_type=%s', cid, lookup.get('error_type'))
+                    continue
+                found = lookup.get('order')
+            else:
+                found = await self.client.fetch_order_by_client_order_id(self.s.symbol, cid)
             if not found:
                 continue
             status = str(found.get('status') or '').lower()
@@ -542,17 +578,8 @@ class QuantKernel:
         base_asset = self.s.symbol.split('/', 1)[0]
         exchange_qty = 0.0
         try:
-            balance = await self.client.fetch_balance()
-            asset_bucket = balance.get(base_asset) if isinstance(balance, dict) else None
-            if isinstance(asset_bucket, dict):
-                exchange_qty = float(asset_bucket.get('free') or 0.0) + float(asset_bucket.get('used') or 0.0)
-            free_bucket = balance.get('free') if isinstance(balance, dict) else None
-            used_bucket = balance.get('used') if isinstance(balance, dict) else None
-            if isinstance(free_bucket, dict) or isinstance(used_bucket, dict):
-                exchange_qty = max(
-                    exchange_qty,
-                    float((free_bucket or {}).get(base_asset) or 0.0) + float((used_bucket or {}).get(base_asset) or 0.0),
-                )
+            position = await self.client.fetch_positions(self.s.symbol)
+            exchange_qty = float(position.get('qty') or 0.0)
         except Exception as exc:
             logger.warning('startup_exchange_balance_reconciliation_failed: %s', exc)
 
@@ -606,6 +633,18 @@ class QuantKernel:
         if r in {'high_volatility', 'volatile'}:
             return 'HIGH_VOL'
         return 'RANGE'
+
+    def _regime_probability(self, *, mapped_regime: str, detector_confidence: float, stability_score: float = 0.0) -> float:
+        base = {
+            'TREND': 0.62,
+            'RANGE': 0.57,
+            'HIGH_VOL': 0.54,
+            'LOW_VOL': 0.56,
+        }.get(mapped_regime, 0.56)
+        conf = float(np.clip(detector_confidence, 0.0, 1.0))
+        stability = float(np.clip(stability_score, 0.0, 1.0))
+        adjusted = base * 0.6 + conf * 0.3 + stability * 0.1
+        return float(np.clip(adjusted, 0.50, 0.95))
 
     def _validate_market_quality_contract(self, market_quality: MarketQualityContract) -> None:
         if market_quality is None:
@@ -706,6 +745,8 @@ class QuantKernel:
         return True, 'ok'
 
     def _check_kill_switch_state(self) -> tuple[bool, str]:
+        if bool(getattr(self.s, 'disable_trading', False)):
+            return True, 'disable_trading_env'
         if self.shutdown_event.is_set():
             return True, 'shutdown_requested'
         if self.state.kill_switch:
@@ -761,6 +802,14 @@ class QuantKernel:
             self.state.last_block_reason = reason
             self.system_state = 'KILL_SWITCH_ACTIVE'
         return blocked
+
+    def _risk_verdict(self) -> RiskVerdict:
+        blocked, reason = self._check_kill_switch_state()
+        if blocked:
+            return RiskVerdict(True, reason, 'kill_switch')
+        if self.system_state == SystemState.BLOCKED_BY_RISK.value:
+            return RiskVerdict(True, self.state.last_block_reason or 'blocked_by_risk', 'risk_layer')
+        return RiskVerdict(False, 'none', 'ok')
 
     def on_firewall_rejection(self, reason: str, risk_snapshot: dict[str, Any]) -> None:
         self.state.rejection_count += 1
@@ -1131,9 +1180,14 @@ class QuantKernel:
             if len(mtf_ohlcv) < self.MIN_WARMUP_BARS:
                 return 'HOLD', 'mtf_insufficient_data'
             mtf_signal = self.signal_engine.generate(mtf_ohlcv, self._last_market_quality.spread_bps)
-            mtf_regime_raw = self.regime_detector.predict(mtf_signal['returns'], mtf_signal['prices']).get('regime', 'range')
+            mtf_regime_data = self.regime_detector.predict(mtf_signal['returns'], mtf_signal['prices'])
+            mtf_regime_raw = mtf_regime_data.get('regime', 'range')
             mtf_regime = self._map_regime(mtf_regime_raw)
-            mtf_regime_prob = 0.78 if mtf_regime == 'TREND' else (0.62 if mtf_regime == 'RANGE' else 0.55)
+            mtf_regime_prob = self._regime_probability(
+                mapped_regime=mtf_regime,
+                detector_confidence=float(mtf_regime_data.get('confidence') or 0.5),
+                stability_score=float(getattr(self, '_latest_regime_snapshot', {}).get('regime_stability_score', 0.0)),
+            )
             mtf_breakdown = self.signal_combiner.combine(
                 mtf_signal['model_scores']['momentum'],
                 mtf_signal['model_scores']['mean_reversion'],
@@ -1254,11 +1308,8 @@ class QuantKernel:
         if last_trade_ts:
             cooldown = max(self._cooldown_seconds() - (now.timestamp() - float(last_trade_ts)), 0.0)
 
-        if hasattr(self, '_check_kill_switch_state') and hasattr(self, 's'):
-            risk_blocked, risk_reason = self._check_kill_switch_state()
-        else:
-            risk_blocked, risk_reason = False, 'none'
-        risk_state = 'BLOCKED' if risk_blocked or self.system_state == SystemState.BLOCKED_BY_RISK.value else 'OK'
+        verdict = self._risk_verdict() if hasattr(self, '_risk_verdict') else RiskVerdict(False, 'none', 'ok')
+        risk_state = 'BLOCKED' if verdict.blocked else 'OK'
         current_regime_perf = self.conditional_performance.summary(getattr(self, '_current_extended_regime', 'UNKNOWN')) if hasattr(self, 'conditional_performance') else {'expectancy': 0.0}
         self.dashboard.update(
             VisualSnapshot(
@@ -1289,7 +1340,8 @@ class QuantKernel:
                     'binance_min_notional': float(self.state.binance_min_notional),
                     'final_order_notional': float(self.state.final_order_notional),
                     'last_kill_switch_trigger': str(self.state.last_kill_switch_trigger or 'none'),
-                    'kill_switch_reason': str(risk_reason),
+                    'kill_switch_reason': str(verdict.reason),
+                    'risk_verdict_source': str(verdict.source),
                 },
                 model_diagnostics={
                     'momentum': {
@@ -1310,6 +1362,40 @@ class QuantKernel:
                 critical_error=critical_error,
             )
         )
+        db = getattr(self, 'db', None)
+        if db is not None and hasattr(db, 'persist_financial_snapshot'):
+            payload = {
+                'ts': int(now.timestamp() * 1000),
+                'symbol': self.s.symbol,
+                'equity': float(capital_actual),
+                'total_equity': float(total_equity),
+                'pnl_total': float(self.state.realized_pnl + self.state.unrealized_pnl),
+                'daily_pnl': float(total_equity - float(getattr(self, '_daily_anchor_equity', total_equity))),
+                'drawdown_abs': float(peak_drawdown),
+                'decision': str(decision),
+                'regime': str(regime),
+                'system_state': str(self.system_state),
+                'risk_state': str(risk_state),
+                'reason': str(self.state.last_block_reason),
+            }
+            with suppress(Exception):
+                self._schedule_db_persist(db.persist_financial_snapshot(payload))
+            if hasattr(db, 'persist_position_and_pnl_snapshot'):
+                ledger_payload = {
+                    'ts': payload['ts'],
+                    'symbol': self.s.symbol,
+                    'position_qty': float(self.state.position_qty),
+                    'entry_price': float(self.state.entry_price),
+                    'mark_price': float(max(last_price, 0.0)),
+                    'realized_pnl': float(self.state.realized_pnl),
+                    'unrealized_pnl': float(self.state.unrealized_pnl),
+                    'total_pnl': float(self.state.realized_pnl + self.state.unrealized_pnl),
+                    'daily_pnl': float(payload['daily_pnl']),
+                    'equity': float(capital_actual),
+                    'source': 'runtime_dashboard',
+                }
+                with suppress(Exception):
+                    self._schedule_db_persist(db.persist_position_and_pnl_snapshot(ledger_payload))
 
     def _handle_cycle_exception(self, exc: Exception) -> bool:
         self.state.consecutive_cycle_errors += 1
@@ -1455,6 +1541,13 @@ class QuantKernel:
 
                                     self.state.equity = free_usdt
                                     self.state.exchange_equity = exchange_equity
+                                    total_eq = max(float(self.state.exchange_equity), 1e-9)
+                                    self.execution_engine.update_firewall_limits(
+                                        max_total_exposure=total_eq * float(self.s.max_total_exposure),
+                                        max_asset_exposure=total_eq * float(self.s.max_asset_exposure),
+                                        max_daily_loss=total_eq * float(self.s.max_daily_loss),
+                                        max_daily_notional=max(total_eq * 4.0, total_eq),
+                                    )
                                     self.capital_governor.update_state(
                                         strategy='directional',
                                         exchange='binance',
@@ -1488,7 +1581,8 @@ class QuantKernel:
                                         await asyncio.sleep(self.s.loop_interval_seconds)
                                         continue
 
-                                    regime_raw = self.regime_detector.predict(sig['returns'], sig['prices']).get('regime', 'range')
+                                    regime_data = self.regime_detector.predict(sig['returns'], sig['prices'])
+                                    regime_raw = regime_data.get('regime', 'range')
                                     regime = self._map_regime(regime_raw)
                                     returns_series = pd.Series(sig['returns'], dtype=float)
                                     autocorr = float(returns_series.tail(80).autocorr(lag=1) or 0.0)
@@ -1505,7 +1599,11 @@ class QuantKernel:
                                     }
                                     self._current_extended_regime = regime_snapshot.current_regime
 
-                                    regime_prob = 0.78 if regime == 'TREND' else (0.62 if regime == 'RANGE' else 0.55)
+                                    regime_prob = self._regime_probability(
+                                        mapped_regime=regime,
+                                        detector_confidence=float(regime_data.get('confidence') or 0.5),
+                                        stability_score=float(regime_snapshot.regime_stability_score),
+                                    )
                                     breakdown = self.signal_combiner.combine(
                                         sig['model_scores']['momentum'],
                                         sig['model_scores']['mean_reversion'],
@@ -1842,7 +1940,7 @@ class QuantKernel:
                                             self.state.final_order_notional = float(max(order_qty * last_price, 0.0))
                                         # --- MINIMAL MODE: enforce exchange minimums ---
                                         if decision == 'BUY':
-                                            exchange_min_qty = await self.execution_engine._firewall._min_size(self.client, self.s.symbol)
+                                            exchange_min_qty = await self.execution_engine.get_exchange_min_size()
                                             if exchange_min_qty is not None and order_qty < exchange_min_qty:
                                                 logger.info(
                                                     "Order qty %.10f < exchange_min_qty %.10f, adjusting to minimum",
@@ -1948,6 +2046,10 @@ class QuantKernel:
             await self._shutdown_resources()
 
     async def _shutdown_resources(self) -> None:
+        pending = list(getattr(self, '_db_persist_tasks', set()))
+        if pending:
+            with suppress(Exception):
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=3.0)
         with suppress(Exception):
             self.dashboard.stop()
         with suppress(Exception):
