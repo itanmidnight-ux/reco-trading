@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import platform
 from typing import Any
 
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QListWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from reco_trading.ui.widgets.stat_card import StatCard
 
@@ -12,52 +11,36 @@ class SystemTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         root = QVBoxLayout(self)
-        title = QLabel("System Health")
+        title = QLabel("System")
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
-        subtitle = QLabel("Runtime, connectivity and infrastructure status")
-        subtitle.setObjectName("metricLabel")
-        root.addWidget(subtitle)
-
         panel = QFrame()
         panel.setObjectName("panelCard")
-        root.addWidget(panel)
-        panel_layout = QGridLayout(panel)
-        panel_layout.setContentsMargins(12, 12, 12, 12)
+        root.addWidget(panel, 1)
+        layout = QGridLayout(panel)
 
         self.cards = {
-            "version": StatCard("Bot Version", compact=True),
-            "python": StatCard("Python Version", compact=True),
-            "api": StatCard("API Connectivity", compact=True),
-            "database": StatCard("Database Status", compact=True),
-            "latency": StatCard("Latency", compact=True),
+            "cpu": StatCard("CPU Usage", compact=True),
             "memory": StatCard("Memory Usage", compact=True),
-            "redis": StatCard("Redis", compact=True),
+            "uptime": StatCard("Uptime", compact=True),
+            "loop": StatCard("Loop Frequency", compact=True),
+            "latency": StatCard("Exchange Latency", compact=True),
         }
-        self.cards["version"].set_value("reco-trading")
         for i, card in enumerate(self.cards.values()):
-            panel_layout.addWidget(card, i // 3, i % 3)
-        self.cards["python"].set_value(platform.python_version())
-        self.events = QListWidget()
-        self.events.addItems(["System diagnostics pending..."])
-        panel_layout.addWidget(self.events, 3, 0, 1, 3)
+            layout.addWidget(card, i // 2, i % 2)
+        layout.setRowStretch(3, 1)
 
     def update_state(self, state: dict[str, Any]) -> None:
-        system = state.get("system", {})
-        self.cards["version"].set_value(str(state.get("bot_version", "-")))
-        self.cards["api"].set_value(str(system.get("exchange_status", "UNKNOWN")))
-        self.cards["database"].set_value(str(system.get("database_status", "UNKNOWN")))
-        self.cards["latency"].set_value(f"{system.get('api_latency_ms', '-') } ms")
-        self.cards["memory"].set_value(f"{system.get('memory_usage_mb', '-') } MB")
-        self.cards["redis"].set_value(str(system.get("redis_status", "UNKNOWN")))
+        system = state.get("system", {}) or {}
+        self.cards["cpu"].set_value(_safe(system.get("cpu_usage_pct", state.get("cpu_usage_pct")), "%"))
+        self.cards["memory"].set_value(_safe(system.get("memory_usage_mb", state.get("memory_usage_mb")), " MB"))
+        self.cards["uptime"].set_value(_safe(system.get("uptime", system.get("uptime_seconds", "-"))))
+        self.cards["loop"].set_value(_safe(system.get("loop_frequency_hz", state.get("loop_frequency_hz")), " Hz"))
+        self.cards["latency"].set_value(_safe(system.get("api_latency_ms", state.get("api_latency_ms")), " ms"))
 
-        self.events.clear()
-        self.events.addItems(
-            [
-                f"Uptime: {system.get('uptime_seconds', 0)}s",
-                f"Last server sync: {system.get('last_server_sync', '-')}",
-                f"Exchange: {system.get('exchange_status', 'UNKNOWN')}",
-                f"Database: {system.get('database_status', 'UNKNOWN')}",
-            ]
-        )
+
+def _safe(value: Any, suffix: str = "") -> str:
+    if value in (None, ""):
+        return "-"
+    return f"{value}{suffix}"

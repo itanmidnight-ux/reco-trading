@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget, QWidget, QVBoxLayout
 
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
@@ -19,7 +19,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Reco Trading Professional Terminal")
         self.resize(1520, 940)
+        self.setMinimumSize(1100, 720)
         self.state_manager = state_manager
+
         try:
             from reco_trading.ui.theme import app_stylesheet
 
@@ -27,7 +29,10 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             print(f"Theme loading failed: {exc}")
 
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
+        self.tabs.setMovable(True)
+        self.tabs.setDocumentMode(True)
+
         self.dashboard_tab = DashboardTab(state_manager=state_manager)
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
@@ -37,17 +42,21 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
 
-        tabs.addTab(self.dashboard_tab, "Dashboard")
-        tabs.addTab(self.trades_tab, "Trades")
-        tabs.addTab(self.market_tab, "Market")
-        tabs.addTab(self.analytics_tab, "Analytics")
-        tabs.addTab(self.logs_tab, "Logs")
-        tabs.addTab(self.risk_tab, "Risk")
-        tabs.addTab(self.settings_tab, "Settings")
-        tabs.addTab(self.system_tab, "System")
-        self.setCentralWidget(tabs)
-        self.tabs = tabs
-        self.tab_fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self.tabs.addTab(self.dashboard_tab, "Dashboard")
+        self.tabs.addTab(self.trades_tab, "Trades")
+        self.tabs.addTab(self.market_tab, "Market")
+        self.tabs.addTab(self.analytics_tab, "Analytics")
+        self.tabs.addTab(self.logs_tab, "Logs")
+        self.tabs.addTab(self.risk_tab, "Risk")
+        self.tabs.addTab(self.settings_tab, "Settings")
+        self.tabs.addTab(self.system_tab, "System")
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.addWidget(self.tabs)
+        self.setCentralWidget(central)
+
         self.tabs.currentChanged.connect(self._animate_current_tab)
 
         state_manager.state_changed.connect(self._on_state)
@@ -71,12 +80,12 @@ class MainWindow(QMainWindow):
             self.system_tab,
         ):
             try:
-                tab.update_state(state)
+                tab.update_state(state or {})
             except Exception:
                 continue
 
     def _refresh_from_snapshot(self) -> None:
-        self._on_state(self.state_manager.snapshot())
+        self._on_state(self.state_manager.snapshot() or {})
 
     def _on_ui_settings(self, settings: dict) -> None:
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
@@ -92,8 +101,8 @@ class MainWindow(QMainWindow):
         effect = QGraphicsOpacityEffect(widget)
         widget.setGraphicsEffect(effect)
         animation = QPropertyAnimation(effect, b"opacity", widget)
-        animation.setDuration(260)
-        animation.setStartValue(0.45)
+        animation.setDuration(220)
+        animation.setStartValue(0.55)
         animation.setEndValue(1.0)
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         animation.start()

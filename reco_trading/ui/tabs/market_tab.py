@@ -57,8 +57,8 @@ class MarketTab(QWidget):
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
     def update_state(self, state: dict) -> None:
-        spread = float(state.get("spread", 0) or 0)
-        adx = float(state.get("adx", 0) or 0)
+        spread = _to_float(state.get("spread", 0))
+        adx = _to_float(state.get("adx", 0))
         trend = str(state.get("trend", "-"))
         self.cards["spread"].set_value(f"{spread:.6f}")
         self.cards["volatility"].set_value(str(state.get("volatility_regime", "-")))
@@ -73,11 +73,11 @@ class MarketTab(QWidget):
         self._anim.setEndValue(max(0, min(100, int(adx))))
         self._anim.start()
 
-        bid = float(state.get("bid", 0) or 0)
-        ask = float(state.get("ask", 0) or 0)
-        price = float(state.get("current_price", state.get("price", 0)) or 0)
-        volume = float(state.get("volume", 0) or 0)
-        atr = float(state.get("atr", 0) or 0)
+        bid = _to_float(state.get("bid", 0))
+        ask = _to_float(state.get("ask", 0))
+        price = _to_float(state.get("current_price", state.get("price", 0)))
+        volume = _to_float(state.get("volume", 0))
+        atr = _to_float(state.get("atr", 0))
         self.orderbook.clear()
         self.orderbook.addItems(
             [
@@ -97,3 +97,10 @@ class MarketTab(QWidget):
                 f"Volume: {volume:.2f}",
             ]
         )
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
