@@ -16,6 +16,7 @@ dependencies = [
   "pandas",
   "pydantic",
   "pydantic-settings",
+  "pyqtgraph",
 ]
 
 [project.optional-dependencies]

@@ -15,6 +15,7 @@ class StateManager(QObject):
     trade_added = Signal(dict)
     log_added = Signal(dict)
     notification = Signal(str, str)
+    control_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -85,3 +86,15 @@ class StateManager(QObject):
 
     def notify(self, title: str, message: str) -> None:
         self.notification.emit(title, message)
+
+    def request_start(self) -> None:
+        self.control_requested.emit("start")
+
+    def request_pause(self) -> None:
+        self.control_requested.emit("pause")
+
+    def request_resume(self) -> None:
+        self.control_requested.emit("resume")
+
+    def request_emergency_stop(self) -> None:
+        self.control_requested.emit("emergency_stop")
