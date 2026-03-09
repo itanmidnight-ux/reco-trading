@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import psutil
 from PySide6.QtCore import QTimer
@@ -28,13 +29,20 @@ class SystemTab(QWidget):
         self.timer.timeout.connect(self.update_system)
         self.timer.start(2000)
 
-    def update_state(self, state: dict) -> None:
-        system = state.get("system", {})
+    def update_state(self, state: dict[str, Any]) -> None:
+        system = state.get("system") or {}
         self.cards["db"].set_value(str(system.get("database_status", "UNKNOWN")))
-        self.cards["latency"].set_value(f"{system.get('api_latency_ms', 0.0):.2f} ms")
+        self.cards["latency"].set_value(f"{_fmt_num(system.get('api_latency_ms'), 2)} ms")
         self.cards["sync"].set_value(str(system.get("last_server_sync", "-")))
 
     def update_system(self) -> None:
         self.cards["cpu"].set_value(f"{psutil.cpu_percent(interval=None):.1f}%")
         self.cards["ram"].set_value(f"{psutil.virtual_memory().percent:.1f}%")
         self.cards["uptime"].set_value(f"{int(time.time() - self.start)} s")
+
+
+def _fmt_num(value: Any, digits: int) -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "-"

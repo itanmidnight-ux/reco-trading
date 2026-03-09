@@ -25,6 +25,9 @@ class DashboardTab(QWidget):
     def update_state(self, state: dict) -> None:
         for key, card in self.cards.items():
             value = state.get(key, "-")
+            if value is None:
+                card.set_value("-")
+                continue
             if isinstance(value, float):
                 if key == "confidence" or key == "win_rate":
                     card.set_value(f"{value:.2%}")

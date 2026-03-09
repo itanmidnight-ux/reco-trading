@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
 
 
@@ -10,19 +12,26 @@ class TradeTable(QTableWidget):
         super().__init__(0, len(self.HEADERS))
         self.setHorizontalHeaderLabels(self.HEADERS)
 
-    def add_trade(self, trade: dict) -> None:
+    def add_trade(self, trade: dict[str, Any]) -> None:
         row = self.rowCount()
         self.insertRow(row)
         values = [
             str(trade.get("trade_id", "-")),
-            trade.get("time", "-"),
-            trade.get("pair", "-"),
-            trade.get("side", "-"),
-            f"{trade.get('entry', 0.0):.4f}",
-            f"{trade.get('exit', 0.0):.4f}" if trade.get("exit") else "-",
-            f"{trade.get('size', 0.0):.6f}",
-            f"{trade.get('pnl', 0.0):.4f}" if trade.get("pnl") is not None else "-",
-            trade.get("status", "OPEN"),
+            str(trade.get("time", "-")),
+            str(trade.get("pair", "-")),
+            str(trade.get("side", "-")),
+            _fmt_num(trade.get("entry"), 4),
+            _fmt_num(trade.get("exit"), 4) if trade.get("exit") is not None else "-",
+            _fmt_num(trade.get("size"), 6),
+            _fmt_num(trade.get("pnl"), 4) if trade.get("pnl") is not None else "-",
+            str(trade.get("status", "OPEN")),
         ]
         for col, value in enumerate(values):
             self.setItem(row, col, QTableWidgetItem(value))
+
+
+def _fmt_num(value: Any, digits: int) -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "-"
