@@ -2,391 +2,208 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation
-from PySide6.QtWidgets import (
-    QFrame,
-    QGridLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QProgressBar,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QScrollArea, QSplitter, QVBoxLayout, QWidget
 
 from reco_trading.ui.chart_widget import CandlestickChartWidget
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
 
-
-class AnimatedButton(QPushButton):
-    def __init__(self, label: str, parent: QWidget | None = None) -> None:
-        super().__init__(label, parent)
-        self._base_min_width = 118
-        self.setMinimumWidth(self._base_min_width)
-        self._hover_anim = QPropertyAnimation(self, b"minimumWidth", self)
-        self._hover_anim.setDuration(140)
-        self._hover_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-
-    def enterEvent(self, event) -> None:  # type: ignore[override]
-        self._animate_width(self._base_min_width + 10)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event) -> None:  # type: ignore[override]
-        self._animate_width(self._base_min_width)
-        super().leaveEvent(event)
-
-    def _animate_width(self, target: int) -> None:
-        self._hover_anim.stop()
-        self._hover_anim.setStartValue(self.minimumWidth())
-        self._hover_anim.setEndValue(target)
-        self._hover_anim.start()
-
 class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
         self.state_manager = state_manager
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
 
-        title = QLabel("Executive Dashboard")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        title = QLabel("Dashboard")
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
-        self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
-        self.top_bar.setObjectName("metricValue")
-        root.addWidget(self.top_bar)
+        splitter = QSplitter()
+        splitter.setChildrenCollapsible(False)
+        root.addWidget(splitter, 1)
 
-        controls = self._build_controls()
-        root.addWidget(controls)
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
-        body = QGridLayout()
-        body.setSpacing(10)
-        root.addLayout(body)
-
-        self.market_panel = self._panel()
-        self.market_cards = {
-            "spread": StatCard("Spread", compact=True),
-            "adx": StatCard("ADX", compact=True),
-            "volatility_regime": StatCard("Volatility Regime", compact=True),
-            "order_flow": StatCard("Order Flow", compact=True),
-        }
-        market_layout = QGridLayout(self.market_panel)
-        market_layout.setContentsMargins(10, 10, 10, 10)
-        market_layout.addWidget(self._title("Market Information"), 0, 0, 1, 2)
-        for i, card in enumerate(self.market_cards.values()):
-            market_layout.addWidget(card, (i // 2) + 1, i % 2)
-        self.signal_badge = QLabel("NEUTRAL")
-        self.confidence_label = QLabel("Confidence")
-        self.confidence_bar = QProgressBar()
-        self.confidence_bar.setRange(0, 100)
-        self.confidence_anim = QPropertyAnimation(self.confidence_bar, b"value", self)
-        self.confidence_anim.setDuration(300)
-        self.confidence_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        market_layout.addWidget(self.signal_badge, 3, 0)
-        market_layout.addWidget(self.confidence_label, 3, 1)
-        market_layout.addWidget(self.confidence_bar, 4, 0, 1, 2)
-
-        self.account_panel = self._panel()
-        self.account_cards = {
-            "balance": StatCard("Balance", compact=True),
-            "equity": StatCard("Equity", compact=True),
-            "btc_balance": StatCard("BTC Balance", compact=True),
-            "btc_value": StatCard("BTC Value", compact=True),
-            "total_equity": StatCard("Total Equity", compact=True),
-            "daily_pnl": StatCard("Daily PnL", compact=True),
-            "trades_today": StatCard("Trades Today", compact=True),
-            "win_rate": StatCard("Win Rate", compact=True),
-        }
-        account_layout = QGridLayout(self.account_panel)
-        account_layout.setContentsMargins(10, 10, 10, 10)
-        account_layout.addWidget(self._title("Account Performance"), 0, 0, 1, 2)
-        for i, card in enumerate(self.account_cards.values()):
-            account_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.position_panel = self._panel()
-        self.position_cards = {
-            "position_side": StatCard("Position Side", compact=True),
-            "entry_price": StatCard("Entry Price", compact=True),
-            "current_price": StatCard("Current Price", compact=True),
-            "position_size_btc": StatCard("Position Size (BTC)", compact=True),
-            "position_value": StatCard("Position Value (USDT)", compact=True),
-            "unrealized_pnl": StatCard("Unrealized PnL", compact=True),
-            "unrealized_pnl_pct": StatCard("Unrealized PnL %", compact=True),
-            "stop_loss": StatCard("Stop Loss", compact=True),
-            "take_profit": StatCard("Take Profit", compact=True),
-        }
-        position_layout = QGridLayout(self.position_panel)
-        position_layout.setContentsMargins(10, 10, 10, 10)
-        position_layout.addWidget(self._title("Position Status"), 0, 0, 1, 2)
-        for i, card in enumerate(self.position_cards.values()):
-            position_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.exposure_panel = self._panel()
-        self.exposure_cards = {
-            "btc_exposure": StatCard("BTC Exposure", compact=True),
-            "usdt_exposure": StatCard("USDT Exposure", compact=True),
-        }
-        exposure_layout = QGridLayout(self.exposure_panel)
-        exposure_layout.setContentsMargins(10, 10, 10, 10)
-        exposure_layout.addWidget(self._title("Portfolio Exposure"), 0, 0, 1, 2)
-        for i, card in enumerate(self.exposure_cards.values()):
-            exposure_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.risk_panel = self._panel()
-        self.risk_cards = {
-            "risk_per_trade": StatCard("Risk per Trade", compact=True),
-            "max_concurrent_trades": StatCard("Max Concurrent Trades", compact=True),
-            "current_exposure": StatCard("Current Exposure", compact=True),
-            "daily_drawdown": StatCard("Daily Drawdown", compact=True),
-        }
-        risk_layout = QGridLayout(self.risk_panel)
-        risk_layout.setContentsMargins(10, 10, 10, 10)
-        risk_layout.addWidget(self._title("Risk Metrics"), 0, 0, 1, 2)
-        for i, card in enumerate(self.risk_cards.values()):
-            risk_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.system_panel = self._panel()
-        self.system_cards = {
-            "bot_mode": StatCard("Bot Mode", compact=True),
-            "engine_state": StatCard("Engine State", compact=True),
-            "api_latency": StatCard("API Latency", compact=True),
-            "exchange_status": StatCard("Exchange Connection", compact=True),
-            "database_status": StatCard("Database Connection", compact=True),
-        }
-        system_layout = QGridLayout(self.system_panel)
-        system_layout.setContentsMargins(10, 10, 10, 10)
-        system_layout.addWidget(self._title("System Status"), 0, 0, 1, 2)
-        for i, card in enumerate(self.system_cards.values()):
-            system_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.chart_panel = self._panel()
-        chart_layout = QVBoxLayout(self.chart_panel)
-        chart_layout.setContentsMargins(10, 10, 10, 10)
-        chart_layout.addWidget(self._title("Realtime Chart"))
+        self.chart_panel = self._panel("Realtime Candlestick Chart")
         self.chart = CandlestickChartWidget()
-        chart_layout.addWidget(self.chart)
+        self.chart_panel.layout().addWidget(self.chart)
+        left_layout.addWidget(self.chart_panel, 2)
 
-        self.activity_panel = self._panel()
-        activity_layout = QVBoxLayout(self.activity_panel)
-        activity_layout.setContentsMargins(10, 10, 10, 10)
-        activity_layout.addWidget(self._title("Bot Activity Log"))
+        self.activity_panel = self._panel("System Activity")
         self.feed = QLabel("[--:--] Waiting for events")
-        self.feed.setWordWrap(True)
         self.feed.setObjectName("smallMetricValue")
-        activity_layout.addWidget(self.feed)
+        self.feed.setWordWrap(True)
+        self.activity_panel.layout().addWidget(self.feed)
+        left_layout.addWidget(self.activity_panel, 1)
 
-        body.addWidget(self.market_panel, 0, 0)
-        body.addWidget(self.account_panel, 0, 1)
-        body.addWidget(self.position_panel, 1, 0)
-        body.addWidget(self.exposure_panel, 1, 1)
-        body.addWidget(self.risk_panel, 2, 0)
-        body.addWidget(self.system_panel, 2, 1)
-        body.addWidget(self.chart_panel, 3, 0)
-        body.addWidget(self.activity_panel, 3, 1)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_content = QWidget()
+        right_grid = QGridLayout(right_content)
+        right_grid.setSpacing(8)
 
-    def _build_controls(self) -> QFrame:
-        panel = self._panel()
-        layout = QHBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        self.market_cards = self._make_cards(
+            "Market Overview",
+            ["pair", "price", "spread", "trend", "adx", "volatility_regime", "order_flow"],
+            ["Pair", "Price", "Spread", "Trend", "ADX", "Volatility Regime", "Order Flow"],
+        )
+        self.account_cards = self._make_cards(
+            "Account Performance",
+            ["usdt_balance", "btc_balance", "btc_value", "total_equity", "daily_pnl", "trades_today", "win_rate"],
+            ["USDT Balance", "BTC Balance", "BTC Value", "Total Equity", "Daily PnL", "Trades Today", "Win Rate"],
+        )
+        self.position_cards = self._make_cards(
+            "Position Status",
+            ["position_side", "entry_price", "current_price", "position_size", "position_value", "unrealized_pnl"],
+            ["Position Side", "Entry Price", "Current Price", "Position Size", "Position Value", "Unrealized PnL"],
+        )
+        self.exposure_cards = self._make_cards(
+            "Portfolio Exposure", ["btc_exposure", "usdt_exposure"], ["BTC Exposure %", "USDT Exposure %"]
+        )
+        self.risk_cards = self._make_cards(
+            "Risk Metrics",
+            ["risk_per_trade", "current_exposure", "max_concurrent_trades", "daily_drawdown"],
+            ["Risk Per Trade", "Current Exposure", "Max Concurrent Trades", "Daily Drawdown"],
+        )
+        self.system_cards = self._make_cards(
+            "System Status",
+            ["bot_mode", "engine_state", "exchange_status", "database_status", "api_latency"],
+            ["Bot Mode", "Engine State", "Exchange Status", "Database Status", "API Latency"],
+        )
 
-        title = self._title("Bot Controls")
-        layout.addWidget(title)
-        layout.addStretch()
+        panels = [
+            self.market_cards,
+            self.account_cards,
+            self.position_cards,
+            self.exposure_cards,
+            self.risk_cards,
+            self.system_cards,
+        ]
+        for i, group in enumerate(panels):
+            right_grid.addWidget(group["panel"], i // 2, i % 2)
 
-        self.start_btn = AnimatedButton("Start Bot")
-        self.pause_btn = AnimatedButton("Pause Bot")
-        self.resume_btn = AnimatedButton("Resume Bot")
-        self.emergency_btn = AnimatedButton("Emergency Stop")
-        self.emergency_btn.setStyleSheet("QPushButton { background:#ea3943; color:#e6e8ee; }")
+        right_grid.setColumnStretch(0, 1)
+        right_grid.setColumnStretch(1, 1)
+        right_grid.setRowStretch(3, 1)
+        right_scroll.setWidget(right_content)
 
-        layout.addWidget(self.start_btn)
-        layout.addWidget(self.pause_btn)
-        layout.addWidget(self.resume_btn)
-        layout.addWidget(self.emergency_btn)
+        splitter.addWidget(left_container)
+        splitter.addWidget(right_scroll)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
 
-        if self.state_manager:
-            self.start_btn.clicked.connect(self.state_manager.request_start)
-            self.pause_btn.clicked.connect(self.state_manager.request_pause)
-            self.resume_btn.clicked.connect(self.state_manager.request_resume)
-            self.emergency_btn.clicked.connect(self.state_manager.request_emergency_stop)
-
-        self._sync_control_buttons("INITIALIZING")
-        return panel
-
-    def _sync_control_buttons(self, status: str) -> None:
-        normalized = status.upper()
-        running = normalized in {"RUNNING", "ACTIVE", "TRADING"}
-
-        self.pause_btn.setVisible(running)
-        self.start_btn.setVisible(not running)
-        self.resume_btn.setVisible(False)
-
-    def _panel(self) -> QFrame:
+    def _panel(self, name: str) -> QFrame:
         panel = QFrame()
         panel.setObjectName("panelCard")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        head = QLabel(name)
+        head.setObjectName("metricLabel")
+        layout.addWidget(head)
         return panel
 
-    def _title(self, title: str) -> QLabel:
-        label = QLabel(title)
-        label.setObjectName("metricLabel")
-        return label
+    def _make_cards(self, title: str, keys: list[str], labels: list[str]) -> dict[str, Any]:
+        panel = self._panel(title)
+        grid = QGridLayout()
+        cards: dict[str, StatCard] = {}
+        for i, (key, label) in enumerate(zip(keys, labels)):
+            card = StatCard(label, compact=True)
+            cards[key] = card
+            grid.addWidget(card, i // 2, i % 2)
+        panel.layout().addLayout(grid)
+        return {"panel": panel, "cards": cards}
 
     def update_state(self, state: dict[str, Any]) -> None:
-        pair = state.get("pair", "BTC/USDT")
-        price = _fmt_num(state.get("current_price", state.get("price")), 2)
-        trend = str(state.get("trend", "NEUTRAL"))
-        status = str(state.get("status", "-"))
-        self._sync_control_buttons(status)
-        self.top_bar.setText(f"{pair} | {price} | {trend} | {status}")
-        self.top_bar.setStyleSheet(f"color: {status_color(status)};")
+        try:
+            self._update_market(state)
+            self._update_account(state)
+            self._update_position(state)
+            self._update_exposure(state)
+            self._update_risk(state)
+            self._update_system(state)
+            logs = state.get("logs", [])[-6:]
+            self.feed.setText("\n".join(f"[{log.get('time', '--:--')}] {log.get('message', '-')}" for log in logs) or "-")
+            self.chart.update_from_snapshot(state)
+        except Exception:
+            return
 
-        self.market_cards["spread"].set_value(_fmt_num(state.get("spread"), 6))
-        self.market_cards["adx"].set_value(_fmt_num(state.get("adx"), 2))
-        self.market_cards["volatility_regime"].set_value(str(state.get("volatility_regime", "-")))
-        self.market_cards["order_flow"].set_value(str(state.get("order_flow", "-")))
+    def _set(self, group: dict[str, Any], key: str, value: Any) -> None:
+        group["cards"][key].set_value("-" if value in (None, "") else str(value))
 
-        signal = str(state.get("signal", "NEUTRAL")).upper()
-        self.signal_badge.setText(f"Signal: {signal}")
-        self.signal_badge.setStyleSheet(
-            f"padding:4px 10px; border-radius:10px; background:{signal_color(signal)}; color:#e6e8ee;"
-        )
+    def _update_market(self, state: dict[str, Any]) -> None:
+        self._set(self.market_cards, "pair", state.get("pair", "BTC/USDT"))
+        self._set(self.market_cards, "price", _fmt(state.get("current_price", state.get("price")), 2))
+        self._set(self.market_cards, "spread", _fmt(state.get("spread"), 6))
+        self._set(self.market_cards, "trend", state.get("trend", "-"))
+        self._set(self.market_cards, "adx", _fmt(state.get("adx"), 2))
+        self._set(self.market_cards, "volatility_regime", state.get("volatility_regime", "-"))
+        self._set(self.market_cards, "order_flow", state.get("order_flow", "-"))
 
-        confidence = max(0, min(100, int(_to_float(state.get("confidence"), 0.0) * 100)))
-        self.confidence_label.setText(f"Confidence {confidence}%")
-        self.confidence_anim.stop()
-        self.confidence_anim.setStartValue(self.confidence_bar.value())
-        self.confidence_anim.setEndValue(confidence)
-        self.confidence_anim.start()
+    def _update_account(self, state: dict[str, Any]) -> None:
+        self._set(self.account_cards, "usdt_balance", _fmt(state.get("balance", state.get("usdt_balance")), 2))
+        self._set(self.account_cards, "btc_balance", _fmt(state.get("btc_balance"), 6))
+        self._set(self.account_cards, "btc_value", _fmt(state.get("btc_value"), 2))
+        self._set(self.account_cards, "total_equity", _fmt(state.get("total_equity", state.get("equity")), 2))
+        self._set(self.account_cards, "daily_pnl", _fmt(state.get("daily_pnl"), 2))
+        self._set(self.account_cards, "trades_today", state.get("trades_today", "-"))
+        win_rate = _to_float(state.get("win_rate"))
+        self._set(self.account_cards, "win_rate", f"{win_rate * 100:.2f}%" if win_rate is not None else "-")
 
-        self.account_cards["balance"].set_value(f"{_fmt_num(state.get('balance'), 2)} USDT")
-        self.account_cards["equity"].set_value(f"{_fmt_num(state.get('equity'), 2)} USDT")
-        self.account_cards["btc_balance"].set_value(f"{_fmt_num(state.get('btc_balance'), 6)} BTC")
-        self.account_cards["btc_value"].set_value(f"{_fmt_num(state.get('btc_value'), 2)} USDT")
-        self.account_cards["total_equity"].set_value(f"{_fmt_num(state.get('total_equity'), 2)} USDT")
-        daily_pnl = _to_float(state.get("daily_pnl"), 0.0)
-        self.account_cards["daily_pnl"].set_value(f"{daily_pnl:.2f} USDT")
-        self.account_cards["daily_pnl"].value.setStyleSheet(
-            f"color: {'#16c784' if daily_pnl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
-        )
-        self.account_cards["trades_today"].set_value(str(state.get("trades_today", "-")))
-        self.account_cards["win_rate"].set_value(f"{_to_float(state.get('win_rate'), 0.0)*100:.1f}%")
+    def _update_position(self, state: dict[str, Any]) -> None:
+        self._set(self.position_cards, "position_side", state.get("position_side", state.get("open_position", "-")))
+        entry = _to_float(state.get("entry_price"))
+        current = _to_float(state.get("current_price", state.get("price")))
+        size = _to_float(state.get("position_size", state.get("position_size_btc")))
+        value = size * current if size is not None and current is not None else state.get("position_value")
+        upnl = (current - entry) * size if entry is not None and current is not None and size is not None else None
+        self._set(self.position_cards, "entry_price", _fmt(entry, 2))
+        self._set(self.position_cards, "current_price", _fmt(current, 2))
+        self._set(self.position_cards, "position_size", _fmt(size, 6))
+        self._set(self.position_cards, "position_value", _fmt(value, 2))
+        self._set(self.position_cards, "unrealized_pnl", _fmt(upnl, 2))
 
-        self._update_position_panel(state)
-        self._update_exposure_panel(state)
-        self._update_risk_panel(state)
-        self._update_system_panel(state)
+    def _update_exposure(self, state: dict[str, Any]) -> None:
+        total = _to_float(state.get("total_equity", state.get("equity")))
+        btc = _to_float(state.get("btc_value"))
+        usdt = _to_float(state.get("balance", state.get("usdt_balance")))
+        btc_pct = (btc / total) * 100 if total and btc is not None else None
+        usdt_pct = (usdt / total) * 100 if total and usdt is not None else None
+        self._set(self.exposure_cards, "btc_exposure", _fmt(btc_pct, 2))
+        self._set(self.exposure_cards, "usdt_exposure", _fmt(usdt_pct, 2))
 
-        logs = state.get("logs", [])[-8:]
-        lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-') }" for entry in logs] or ["[--:--] Waiting for events"]
-        self.feed.setText("\n".join(lines))
-        self.chart.update_from_snapshot(state)
+    def _update_risk(self, state: dict[str, Any]) -> None:
+        risk = state.get("risk_metrics", {}) or {}
+        self._set(self.risk_cards, "risk_per_trade", risk.get("risk_per_trade", "-"))
+        self._set(self.risk_cards, "current_exposure", risk.get("current_exposure", "-"))
+        self._set(self.risk_cards, "max_concurrent_trades", risk.get("max_concurrent_trades", "-"))
+        self._set(self.risk_cards, "daily_drawdown", risk.get("daily_drawdown", "-"))
 
-    def _update_position_panel(self, state: dict[str, Any]) -> None:
-        side = str(state.get("position_side", state.get("open_position", "NONE")) or "NONE")
-        entry_price = _to_float(state.get("entry_price"))
-        current_price = _to_float(state.get("current_price", state.get("price")))
-        position_size = _to_float(state.get("position_size", state.get("position_size_btc")))
-        position_value = _to_float(state.get("position_value"))
-
-        if position_value is None and position_size is not None and current_price is not None:
-            position_value = position_size * current_price
-
-        unrealized_pnl = None
-        unrealized_pnl_pct = None
-        if entry_price is not None and current_price is not None and position_size is not None:
-            unrealized_pnl = (current_price - entry_price) * position_size
-            if entry_price != 0:
-                unrealized_pnl_pct = ((current_price - entry_price) / entry_price) * 100
-
-        self.position_cards["position_side"].set_value(side)
-        self.position_cards["entry_price"].set_value(_fmt_num(entry_price, 2))
-        self.position_cards["current_price"].set_value(_fmt_num(current_price, 2))
-        self.position_cards["position_size_btc"].set_value(_fmt_num(position_size, 6))
-        self.position_cards["position_value"].set_value(f"{_fmt_num(position_value, 2)} USDT")
-        self.position_cards["unrealized_pnl"].set_value(f"{_fmt_num(unrealized_pnl, 2)} USDT")
-        self.position_cards["unrealized_pnl_pct"].set_value(_fmt_pct(unrealized_pnl_pct))
-        self.position_cards["stop_loss"].set_value(_fmt_num(state.get("stop_loss"), 2))
-        self.position_cards["take_profit"].set_value(_fmt_num(state.get("take_profit"), 2))
-
-    def _update_exposure_panel(self, state: dict[str, Any]) -> None:
-        total_equity = _to_float(state.get("total_equity"))
-        btc_value = _to_float(state.get("btc_value"))
-        usdt_balance = _to_float(state.get("balance", state.get("usdt_balance")))
-
-        btc_exposure = None
-        usdt_exposure = None
-        if total_equity and total_equity > 0:
-            if btc_value is not None:
-                btc_exposure = (btc_value / total_equity) * 100
-            if usdt_balance is not None:
-                usdt_exposure = (usdt_balance / total_equity) * 100
-
-        self.exposure_cards["btc_exposure"].set_value(_fmt_pct(btc_exposure))
-        self.exposure_cards["usdt_exposure"].set_value(_fmt_pct(usdt_exposure))
-
-    def _update_risk_panel(self, state: dict[str, Any]) -> None:
-        risk_metrics = state.get("risk_metrics", {}) or {}
-        self.risk_cards["risk_per_trade"].set_value(_smart_format(risk_metrics.get("risk_per_trade")))
-        self.risk_cards["max_concurrent_trades"].set_value(_smart_format(risk_metrics.get("max_concurrent_trades")))
-        self.risk_cards["current_exposure"].set_value(_smart_format(risk_metrics.get("current_exposure")))
-        self.risk_cards["daily_drawdown"].set_value(_smart_format(risk_metrics.get("daily_drawdown")))
-
-    def _update_system_panel(self, state: dict[str, Any]) -> None:
+    def _update_system(self, state: dict[str, Any]) -> None:
         system = state.get("system", {}) or {}
-        bot_mode = state.get("bot_mode") or system.get("bot_mode")
-        if bot_mode is None:
-            bot_mode = "TESTNET" if state.get("testnet", True) else "LIVE"
-
-        self.system_cards["bot_mode"].set_value(str(bot_mode))
-        self.system_cards["engine_state"].set_value(str(state.get("status", state.get("engine_state", "-"))))
-        self.system_cards["api_latency"].set_value(f"{_fmt_num(system.get('api_latency_ms', state.get('api_latency_ms')), 1)} ms")
-        self.system_cards["exchange_status"].set_value(str(system.get("exchange_status", "-")))
-        self.system_cards["database_status"].set_value(str(system.get("database_status", "-")))
+        self._set(self.system_cards, "bot_mode", state.get("bot_mode", "TESTNET" if state.get("testnet", True) else "LIVE"))
+        self._set(self.system_cards, "engine_state", state.get("status", state.get("engine_state", "-")))
+        self._set(self.system_cards, "exchange_status", system.get("exchange_status", "-"))
+        self._set(self.system_cards, "database_status", system.get("database_status", "-"))
+        self._set(self.system_cards, "api_latency", _fmt(system.get("api_latency_ms", state.get("api_latency_ms")), 2))
 
 
-def _fmt_num(value: Any, digits: int) -> str:
-    try:
-        return f"{float(value):.{digits}f}"
-    except (TypeError, ValueError):
-        return "-"
-
-
-def _fmt_pct(value: Any) -> str:
-    numeric = _to_float(value)
-    if numeric is None:
-        return "-"
-    return f"{numeric:.2f}%"
-
-
-def _to_float(value: Any, fallback: float | None = None) -> float | None:
+def _to_float(value: Any) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):
-        return fallback
+        return None
 
 
-def _smart_format(value: Any) -> str:
-    if value is None:
+def _fmt(value: Any, digits: int) -> str:
+    if value in (None, ""):
         return "-"
-    if isinstance(value, (int, float)):
-        return f"{value:.4f}" if isinstance(value, float) else str(value)
-    return str(value)
-
-
-def signal_color(signal: str) -> str:
-    return {"BUY": "#16c784", "SELL": "#ea3943"}.get(signal, "#667085")
-
-
-def status_color(status: str) -> str:
-    status = status.upper()
-    if status == "RUNNING":
-        return "#16c784"
-    if status == "WAITING_DATA":
-        return "#f0b90b"
-    if status == "ERROR":
-        return "#ea3943"
-    return "#9aa4b2"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return str(value)

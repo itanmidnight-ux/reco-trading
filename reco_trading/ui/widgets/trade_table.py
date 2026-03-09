@@ -7,13 +7,14 @@ from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
 
 
 class TradeTable(QTableWidget):
-    HEADERS = ["Trade ID", "Pair", "Entry Price", "Exit Price", "Position Size", "PnL", "Status", "Timestamp"]
+    HEADERS = ["Time", "Side", "Price", "Quantity", "Value", "PnL"]
 
     def __init__(self) -> None:
         super().__init__(0, len(self.HEADERS))
         self.setHorizontalHeaderLabels(self.HEADERS)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.setAlternatingRowColors(True)
+        self.setSortingEnabled(True)
 
     def load_trades(self, trades: list[dict[str, Any]]) -> None:
         self.setRowCount(0)
@@ -23,32 +24,39 @@ class TradeTable(QTableWidget):
     def add_trade(self, trade: dict[str, Any]) -> None:
         row = self.rowCount()
         self.insertRow(row)
-        pnl = trade.get("pnl")
+        side = str(trade.get("side", trade.get("signal", "-"))).upper()
+        qty = _to_float(trade.get("quantity", trade.get("size", trade.get("position_size"))))
+        price = _to_float(trade.get("price", trade.get("entry", trade.get("entry_price"))))
+        pnl = _to_float(trade.get("pnl"), None)
+        value = (qty * price) if qty is not None and price is not None else None
+
         values = [
-            str(trade.get("trade_id", "-")),
-            str(trade.get("pair", "BTC/USDT")),
-            _fmt_num(trade.get("entry", trade.get("entry_price")), 4),
-            _fmt_num(trade.get("exit", trade.get("exit_price")), 4),
-            _fmt_num(trade.get("size", trade.get("position_size")), 4),
-            _fmt_num(pnl, 4),
-            str(trade.get("status", "OPEN")),
             str(trade.get("time", trade.get("entry_time", "-"))),
+            side if side else "-",
+            _fmt_num(price, 4),
+            _fmt_num(qty, 6),
+            _fmt_num(value, 2),
+            _fmt_num(pnl, 2),
         ]
-        for col, value in enumerate(values):
-            item = QTableWidgetItem(value)
-            if col == 5:
-                item.setForeground(QColor("#16c784" if _to_float(pnl) >= 0 else "#ea3943"))
+        for col, value_text in enumerate(values):
+            item = QTableWidgetItem(value_text)
+            if col == 1:
+                item.setForeground(QColor("#16c784" if side == "BUY" else "#ea3943" if side == "SELL" else "#e6e8ee"))
+            if col == 5 and pnl is not None:
+                item.setForeground(QColor("#16c784" if pnl >= 0 else "#ea3943"))
             self.setItem(row, col, item)
 
 
-def _to_float(value: Any) -> float:
+def _to_float(value: Any, fallback: float | None = 0.0) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):
-        return 0.0
+        return fallback
 
 
 def _fmt_num(value: Any, digits: int) -> str:
+    if value is None:
+        return "-"
     try:
         return f"{float(value):.{digits}f}"
     except (TypeError, ValueError):
