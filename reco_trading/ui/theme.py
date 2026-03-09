@@ -1,61 +1,103 @@
 from __future__ import annotations
 
-BG = "#0f1117"
-PANEL = "#1a1d26"
-BORDER = "#2a2f3a"
-TEXT_PRIMARY = "#e6e8ee"
-TEXT_SECONDARY = "#9aa4b2"
-POSITIVE = "#16c784"
-NEGATIVE = "#ea3943"
-WARNING = "#f0b90b"
-INFO = "#3a7afe"
+COLORS = {
+    "background": "#0f1117",
+    "panel": "#1a1d26",
+    "border": "#2a2f3a",
+    "text_primary": "#e6e8ee",
+    "text_secondary": "#9aa4b2",
+    "positive": "#16c784",
+    "negative": "#ea3943",
+    "warning": "#f0b90b",
+    "info": "#3a7afe",
+    "neutral": "#667085",
+}
 
 
-def status_color(status: str) -> str:
-    mapping = {
-        "RUNNING": POSITIVE,
-        "WAITING_DATA": WARNING,
-        "ERROR": NEGATIVE,
-    }
-    return mapping.get((status or "").upper(), TEXT_SECONDARY)
-
-
-def signal_color(signal: str) -> str:
-    mapping = {"BUY": POSITIVE, "SELL": NEGATIVE, "NEUTRAL": TEXT_SECONDARY, "HOLD": TEXT_SECONDARY}
-    return mapping.get((signal or "").upper(), TEXT_SECONDARY)
-
-
-def app_stylesheet() -> str:
+def dashboard_stylesheet() -> str:
     return f"""
     QWidget {{
-        background-color: {BG};
-        color: {TEXT_PRIMARY};
-        font-size: 12px;
+        background-color: {COLORS['background']};
+        color: {COLORS['text_primary']};
+        font-family: Inter, Segoe UI, Arial;
     }}
-    QMainWindow {{ background-color: {BG}; }}
-    QTabWidget::pane {{ border: 1px solid {BORDER}; border-radius: 8px; background: {PANEL}; }}
+    QMainWindow, QTabWidget::pane {{
+        border: 1px solid {COLORS['border']};
+        background: {COLORS['background']};
+    }}
     QTabBar::tab {{
-        background: {PANEL};
-        color: {TEXT_SECONDARY};
-        padding: 8px 14px;
+        background: {COLORS['panel']};
+        color: {COLORS['text_secondary']};
+        border: 1px solid {COLORS['border']};
+        border-bottom: none;
+        padding: 10px 16px;
         margin-right: 4px;
-        border: 1px solid {BORDER};
-        border-radius: 8px;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
     }}
-    QTabBar::tab:selected {{ color: {TEXT_PRIMARY}; border-color: {INFO}; }}
-    QTabBar::tab:hover {{ color: {TEXT_PRIMARY}; background: #222634; }}
-    QFrame#card {{ border: 1px solid {BORDER}; border-radius: 10px; background: {PANEL}; }}
-    QLabel#cardTitle {{ color: {TEXT_SECONDARY}; font-size: 11px; }}
-    QLabel#cardValue {{ color: {TEXT_PRIMARY}; font-size: 20px; font-weight: 700; }}
-    QTextEdit, QPlainTextEdit, QTableWidget, QListWidget {{
-        background: {PANEL};
-        border: 1px solid {BORDER};
-        border-radius: 8px;
+    QTabBar::tab:hover {{
+        color: {COLORS['text_primary']};
+        background: #202534;
     }}
-    QHeaderView::section {{ background: #1e2230; border: 0; color: {TEXT_SECONDARY}; padding: 6px; }}
-    QProgressBar {{ border: 1px solid {BORDER}; border-radius: 6px; background: #131722; text-align: center; }}
-    QProgressBar::chunk {{ background-color: {INFO}; border-radius: 4px; }}
-    QPushButton {{ background: #21283a; border: 1px solid {BORDER}; border-radius: 8px; padding: 6px 10px; }}
-    QPushButton:hover {{ background: #2a3147; }}
-    QLineEdit, QComboBox {{ background: #151a26; border: 1px solid {BORDER}; border-radius: 6px; padding: 4px; }}
+    QTabBar::tab:selected {{
+        color: {COLORS['text_primary']};
+        background: #232839;
+    }}
+    QFrame#metricCard, QFrame#panelCard {{
+        background: {COLORS['panel']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 10px;
+    }}
+    QLabel#metricLabel {{
+        color: {COLORS['text_secondary']};
+        font-size: 11px;
+        text-transform: uppercase;
+    }}
+    QLabel#metricValue {{
+        color: {COLORS['text_primary']};
+        font-size: 19px;
+        font-weight: 700;
+    }}
+    QLabel#smallMetricValue {{
+        color: {COLORS['text_primary']};
+        font-size: 14px;
+        font-weight: 600;
+    }}
+    QTableWidget, QTextEdit {{
+        background: {COLORS['panel']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 10px;
+        gridline-color: {COLORS['border']};
+    }}
+    QHeaderView::section {{
+        background: #202534;
+        color: {COLORS['text_secondary']};
+        border: none;
+        padding: 6px;
+    }}
+    QProgressBar {{
+        border: 1px solid {COLORS['border']};
+        border-radius: 6px;
+        text-align: center;
+        background: #141824;
+    }}
+    QProgressBar::chunk {{
+        background-color: {COLORS['info']};
+        border-radius: 6px;
+    }}
+    QLineEdit, QComboBox, QSpinBox {{
+        background: #141824;
+        border: 1px solid {COLORS['border']};
+        border-radius: 6px;
+        padding: 6px;
+    }}
+    QPushButton {{
+        background: #242a3c;
+        border: 1px solid {COLORS['border']};
+        border-radius: 8px;
+        padding: 8px 12px;
+    }}
+    QPushButton:hover {{
+        background: #2d3550;
+    }}
     """

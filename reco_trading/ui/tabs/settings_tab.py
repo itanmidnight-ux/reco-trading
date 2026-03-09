@@ -1,30 +1,45 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 
 class SettingsTab(QWidget):
+    settings_changed = Signal(dict)
+
     def __init__(self) -> None:
         super().__init__()
-        self.layout = QVBoxLayout(self)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("UI Settings (read-only impact on trading engine)"))
+
         form = QFormLayout()
-
-        self.refresh_rate = QComboBox()
-        self.refresh_rate.addItems(["500 ms", "1000 ms", "2000 ms", "5000 ms"])
-        self.chart_visible = QCheckBox("Show chart")
+        self.refresh_rate = QSpinBox()
+        self.refresh_rate.setRange(250, 5000)
+        self.refresh_rate.setValue(1000)
+        self.chart_visible = QCheckBox()
         self.chart_visible.setChecked(True)
-        self.theme_toggle = QComboBox()
-        self.theme_toggle.addItems(["Dark", "Dark High Contrast"])
+        self.theme = QComboBox()
+        self.theme.addItems(["Dark", "Dark+Contrast"])
         self.log_verbosity = QComboBox()
-        self.log_verbosity.addItems(["INFO", "WARNING", "ERROR", "DEBUG"])
+        self.log_verbosity.addItems(["INFO", "WARNING", "ERROR"])
 
-        form.addRow("Refresh Rate", self.refresh_rate)
-        form.addRow("Chart Visibility", self.chart_visible)
-        form.addRow("Theme", self.theme_toggle)
-        form.addRow("Log Verbosity", self.log_verbosity)
+        form.addRow("Refresh rate (ms)", self.refresh_rate)
+        form.addRow("Chart visibility", self.chart_visible)
+        form.addRow("Theme", self.theme)
+        form.addRow("Log verbosity", self.log_verbosity)
+        layout.addLayout(form)
 
-        self.layout.addLayout(form)
-        self.apply_btn = QPushButton("Apply UI Settings")
-        self.layout.addWidget(self.apply_btn)
-        self.status = QLabel("UI-only settings. Trading engine remains untouched.")
-        self.layout.addWidget(self.status)
+        self.refresh_rate.valueChanged.connect(self._emit)
+        self.chart_visible.stateChanged.connect(self._emit)
+        self.theme.currentTextChanged.connect(self._emit)
+        self.log_verbosity.currentTextChanged.connect(self._emit)
+
+    def _emit(self) -> None:
+        self.settings_changed.emit(
+            {
+                "refresh_rate_ms": self.refresh_rate.value(),
+                "chart_visible": self.chart_visible.isChecked(),
+                "theme": self.theme.currentText(),
+                "log_verbosity": self.log_verbosity.currentText(),
+            }
+        )

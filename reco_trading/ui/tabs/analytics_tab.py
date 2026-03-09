@@ -14,7 +14,7 @@ class AnalyticsTab(QWidget):
         self.cards = {}
         keys = ["total_trades", "win_rate", "profit_factor", "average_win", "average_loss"]
         for i, key in enumerate(keys):
-            card = StatCard(key.replace("_", " ").title())
+            card = StatCard(key.replace("_", " ").title(), compact=True)
             self.cards[key] = card
             grid.addWidget(card, i // 3, i % 3)
         layout.addLayout(grid)
@@ -24,5 +24,12 @@ class AnalyticsTab(QWidget):
     def update_state(self, state: dict) -> None:
         analytics = state.get("analytics", {})
         for key, card in self.cards.items():
-            card.set_value(str(analytics.get(key, "-")))
-        self.equity_curve.plot(analytics.get("equity_curve", []))
+            val = analytics.get(key, "-")
+            if key == "win_rate":
+                try:
+                    card.set_value(f"{float(val) * 100:.2f}%")
+                except (TypeError, ValueError):
+                    card.set_value("-")
+            else:
+                card.set_value(str(val))
+        self.equity_curve.plot([float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float))])

@@ -12,7 +12,7 @@ class RiskTab(QWidget):
         self.cards = {}
         keys = ["risk_per_trade", "max_concurrent_trades", "daily_drawdown", "current_exposure"]
         for i, key in enumerate(keys):
-            card = StatCard(key.replace("_", " ").title())
+            card = StatCard(key.replace("_", " ").title(), compact=True)
             self.cards[key] = card
             layout.addWidget(card, i // 2, i % 2)
 

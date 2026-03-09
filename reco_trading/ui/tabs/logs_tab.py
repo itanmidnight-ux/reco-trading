@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
 
@@ -11,11 +12,11 @@ class LogsTab(QWidget):
         layout = QVBoxLayout(self)
         self.text = QTextEdit()
         self.text.setReadOnly(True)
-        self.text.setStyleSheet("font-family: 'JetBrains Mono', 'Courier New', monospace;")
+        self.text.setFont(QFont("Consolas", 10))
         layout.addWidget(self.text)
 
     def add_log(self, entry: dict) -> None:
-        level = str(entry.get("level", "INFO")).upper()
-        color = self.COLORS.get(level, "#e6e8ee")
-        line = f"<span style='color:{color}'>[{level}] {entry.get('time', '')} {entry.get('message', '')}</span>"
-        self.text.append(line)
+        level = entry.get("level", "INFO").upper()
+        self.text.setTextColor(QColor(self.COLORS.get(level, "#e6e8ee")))
+        self.text.append(f"[{entry.get('time', '')}] [{level}] {entry.get('message', '')}")
+        self.text.moveCursor(self.text.textCursor().End)

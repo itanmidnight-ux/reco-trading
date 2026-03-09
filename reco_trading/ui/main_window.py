@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget
 
 from reco_trading.ui.state_manager import StateManager
@@ -11,15 +12,16 @@ from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
 from reco_trading.ui.tabs.trades_tab import TradesTab
-from reco_trading.ui.theme import app_stylesheet
+from reco_trading.ui.theme import dashboard_stylesheet
 
 
 class MainWindow(QMainWindow):
     def __init__(self, state_manager: StateManager) -> None:
         super().__init__()
-        self.setWindowTitle("Reco Trading Terminal")
-        self.resize(1500, 950)
+        self.setWindowTitle("Reco Trading Professional Terminal")
+        self.resize(1520, 940)
         self.state_manager = state_manager
+        self.setStyleSheet(dashboard_stylesheet())
 
         tabs = QTabWidget()
         self.dashboard_tab = DashboardTab()
@@ -46,6 +48,11 @@ class MainWindow(QMainWindow):
         state_manager.trade_added.connect(self.trades_tab.add_trade)
         state_manager.log_added.connect(self.logs_tab.add_log)
         state_manager.notification.connect(self._notify)
+        self.settings_tab.settings_changed.connect(self._on_ui_settings)
+
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.timeout.connect(self._refresh_from_snapshot)
+        self.refresh_timer.start(1000)
 
     def _on_state(self, state: dict) -> None:
         for tab in (self.dashboard_tab, self.market_tab, self.analytics_tab, self.risk_tab, self.system_tab):
@@ -53,6 +60,13 @@ class MainWindow(QMainWindow):
                 tab.update_state(state)
             except Exception:
                 continue
+
+    def _refresh_from_snapshot(self) -> None:
+        self._on_state(self.state_manager.snapshot())
+
+    def _on_ui_settings(self, settings: dict) -> None:
+        self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
+        self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)

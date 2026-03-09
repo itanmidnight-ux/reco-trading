@@ -9,20 +9,19 @@ class MarketTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QGridLayout(self)
-        fields = [
-            ("spread", "Spread"),
-            ("volatility_regime", "Volatility"),
-            ("order_flow", "Order Flow"),
-            ("trend", "Trend"),
-            ("adx", "ADX"),
-            ("volume", "Volume"),
-        ]
-        self.cards: dict[str, StatCard] = {}
-        for i, (key, label) in enumerate(fields):
-            card = StatCard(label)
-            self.cards[key] = card
+        self.cards = {
+            "spread": StatCard("Spread", compact=True),
+            "volatility": StatCard("Volatility", compact=True),
+            "order_flow": StatCard("Order Flow", compact=True),
+            "trend": StatCard("Trend Metrics", compact=True),
+            "adx": StatCard("ADX", compact=True),
+        }
+        for i, card in enumerate(self.cards.values()):
             layout.addWidget(card, i // 3, i % 3)
 
     def update_state(self, state: dict) -> None:
-        for k, c in self.cards.items():
-            c.set_value(str(state.get(k, "-")))
+        self.cards["spread"].set_value(str(state.get("spread", "-")))
+        self.cards["volatility"].set_value(str(state.get("volatility_regime", "-")))
+        self.cards["order_flow"].set_value(str(state.get("order_flow", "-")))
+        self.cards["trend"].set_value(str(state.get("trend", "-")))
+        self.cards["adx"].set_value(str(state.get("adx", "-")))
