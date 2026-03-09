@@ -10,17 +10,8 @@ class TradeDetailsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Trade {trade.get('trade_id', '-')}")
         form = QFormLayout(self)
-        fields = [
-            ("entry_time", "Entry time"),
-            ("exit_time", "Exit time"),
-            ("size", "Size"),
-            ("fees", "Fees"),
-            ("pnl", "Net PnL"),
-            ("confidence", "Confidence score"),
-            ("signal_details", "Signal details"),
-        ]
-        for key, label in fields:
-            form.addRow(label, QLabel(str(trade.get(key, "-"))))
+        for k, v in trade.items():
+            form.addRow(str(k).replace("_", " ").title(), QLabel(str(v)))
 
 
 class TradesTab(QWidget):
@@ -40,8 +31,6 @@ class TradesTab(QWidget):
         trade_id_item: QTableWidgetItem | None = self.table.item(row, 0)
         if not trade_id_item:
             return
-        trade_id = trade_id_item.text()
-        trade = next((t for t in self.trade_store if str(t.get("trade_id")) == trade_id), None)
-        if not trade:
-            return
-        TradeDetailsDialog(trade, self).exec()
+        trade = next((t for t in self.trade_store if str(t.get("trade_id")) == trade_id_item.text()), None)
+        if trade:
+            TradeDetailsDialog(trade, self).exec()

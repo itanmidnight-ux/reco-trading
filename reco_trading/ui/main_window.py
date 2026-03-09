@@ -11,13 +11,14 @@ from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
 from reco_trading.ui.tabs.trades_tab import TradesTab
+from reco_trading.ui.theme import app_stylesheet
 
 
 class MainWindow(QMainWindow):
     def __init__(self, state_manager: StateManager) -> None:
         super().__init__()
-        self.setWindowTitle("Reco Trading Dashboard")
-        self.resize(1400, 900)
+        self.setWindowTitle("Reco Trading Terminal")
+        self.resize(1500, 950)
         self.state_manager = state_manager
 
         tabs = QTabWidget()
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.settings_tab, "Settings")
         tabs.addTab(self.system_tab, "System")
         self.setCentralWidget(tabs)
+        self.setStyleSheet(app_stylesheet())
 
         state_manager.state_changed.connect(self._on_state)
         state_manager.trade_added.connect(self.trades_tab.add_trade)
