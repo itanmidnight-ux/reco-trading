@@ -12,24 +12,24 @@ class AnalyticsTab(QWidget):
         layout = QVBoxLayout(self)
         grid = QGridLayout()
         self.cards = {}
-        keys = ["total_trades", "win_rate", "profit_factor", "average_win", "average_loss", "largest_win", "largest_loss"]
+        keys = ["total_trades", "win_rate", "profit_factor", "average_win", "average_loss"]
         for i, key in enumerate(keys):
-            card = StatCard(key.replace("_", " ").title())
+            card = StatCard(key.replace("_", " ").title(), compact=True)
             self.cards[key] = card
-            grid.addWidget(card, i // 4, i % 4)
+            grid.addWidget(card, i // 3, i % 3)
         layout.addLayout(grid)
-        self.equity_curve = PnlChart("Equity curve")
+        self.equity_curve = PnlChart("Performance")
         layout.addWidget(self.equity_curve)
 
     def update_state(self, state: dict) -> None:
         analytics = state.get("analytics", {})
         for key, card in self.cards.items():
             val = analytics.get(key, "-")
-            if isinstance(val, float):
-                if key == "win_rate":
-                    card.set_value(f"{val:.2%}")
-                else:
-                    card.set_value(f"{val:.4f}")
+            if key == "win_rate":
+                try:
+                    card.set_value(f"{float(val) * 100:.2f}%")
+                except (TypeError, ValueError):
+                    card.set_value("-")
             else:
                 card.set_value(str(val))
-        self.equity_curve.plot(analytics.get("equity_curve", []))
+        self.equity_curve.plot([float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float))])

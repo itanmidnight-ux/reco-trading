@@ -11,13 +11,19 @@ class TradeDetailsDialog(QDialog):
         self.setWindowTitle(f"Trade {trade.get('trade_id', '-')}")
         form = QFormLayout(self)
         fields = [
-            ("entry_time", "Entry time"),
-            ("exit_time", "Exit time"),
-            ("size", "Size"),
+            ("trade_id", "Trade ID"),
+            ("pair", "Pair"),
+            ("side", "Side"),
+            ("entry", "Entry Price"),
+            ("exit", "Exit Price"),
+            ("size", "Position Size"),
+            ("pnl", "PnL"),
+            ("status", "Status"),
+            ("entry_time", "Entry Time"),
+            ("exit_time", "Exit Time"),
             ("fees", "Fees"),
-            ("pnl", "Net PnL"),
-            ("confidence", "Confidence score"),
-            ("signal_details", "Signal details"),
+            ("confidence", "Confidence"),
+            ("signal_details", "Signal Details"),
         ]
         for key, label in fields:
             form.addRow(label, QLabel(str(trade.get(key, "-"))))
