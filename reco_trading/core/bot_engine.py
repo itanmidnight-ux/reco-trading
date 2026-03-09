@@ -79,6 +79,7 @@ class BotEngine:
             "signals": {},
             "volume": None,
             "api_latency_ms": None,
+            "candles_5m": [],
             "started_at": time.time(),
         }
 
@@ -125,6 +126,7 @@ class BotEngine:
         frame5 = apply_indicators(await self.market_stream.fetch_frame(self.settings.primary_timeframe))
         frame15 = apply_indicators(await self.market_stream.fetch_frame(self.settings.confirmation_timeframe))
         candle = frame5.iloc[-1]
+        candles_5m = self._frame_to_candles(frame5)
 
         tick_start = time.perf_counter()
         ticker = await self.client.fetch_ticker(self.symbol)
@@ -150,6 +152,7 @@ class BotEngine:
         return {
             "frame5": frame5,
             "frame15": frame15,
+            "candles_5m": candles_5m,
             "candle": candle,
             "price": price,
             "bid": bid,
@@ -394,6 +397,7 @@ class BotEngine:
                 "order_flow": bundle.order_flow,
                 "volume": market_data.get("volume"),
                 "change_24h": market_data.get("change_24h"),
+                "candles_5m": list(market_data.get("candles_5m") or [])[-120:],
                 "signal": analysis.get("side"),
                 "confidence": analysis.get("confidence"),
                 "status": self.state.value,
@@ -474,6 +478,7 @@ class BotEngine:
                 atr=0.0,
                 change_24h=self.snapshot.get("change_24h"),
                 signals=self.snapshot.get("signals", {}),
+                candles_5m=list(self.snapshot.get("candles_5m") or [])[-120:],
                 system={
                     "uptime_seconds": time.time() - self.start_time,
                     "api_latency_ms": _as_float(self.snapshot.get("api_latency_ms"), 0.0),
@@ -503,6 +508,28 @@ class BotEngine:
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)
+
+    def _frame_to_candles(self, frame: Any) -> list[dict[str, float]]:
+        candles: list[dict[str, float]] = []
+        try:
+            frame_slice = frame.tail(120)
+        except Exception:  # noqa: BLE001
+            return candles
+
+        for _, row in frame_slice.iterrows():
+            try:
+                candles.append(
+                    {
+                        "open": _as_float(row.get("open"), 0.0),
+                        "high": _as_float(row.get("high"), 0.0),
+                        "low": _as_float(row.get("low"), 0.0),
+                        "close": _as_float(row.get("close"), 0.0),
+                        "volume": _as_float(row.get("volume"), 0.0),
+                    }
+                )
+            except Exception:  # noqa: BLE001
+                continue
+        return candles
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:

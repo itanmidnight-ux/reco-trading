@@ -19,6 +19,7 @@ class SystemTab(QWidget):
             "database": StatCard("Database Status", compact=True),
             "latency": StatCard("Latency", compact=True),
         }
+        self.cards["version"].set_value("reco-trading")
         for i, card in enumerate(self.cards.values()):
             layout.addWidget(card, i // 3, i % 3)
         self.cards["python"].set_value(platform.python_version())

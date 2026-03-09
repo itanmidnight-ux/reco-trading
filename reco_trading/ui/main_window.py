@@ -42,6 +42,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.settings_tab, "Settings")
         tabs.addTab(self.system_tab, "System")
         self.setCentralWidget(tabs)
+        self.setStyleSheet(app_stylesheet())
 
         state_manager.state_changed.connect(self._on_state)
         state_manager.trade_added.connect(self.trades_tab.add_trade)

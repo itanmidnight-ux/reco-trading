@@ -36,9 +36,9 @@ class TradeTable(QTableWidget):
             self.setItem(row, col, item)
 
 
-def _fmt_num(value: Any, digits: int) -> str:
+def _to_float(value: Any) -> float | None:
     try:
-        return f"{float(value):.{digits}f}"
+        return float(value)
     except (TypeError, ValueError):
         return "-"
 
