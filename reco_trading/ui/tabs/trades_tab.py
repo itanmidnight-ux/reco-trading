@@ -34,6 +34,9 @@ class TradesTab(QWidget):
         super().__init__()
         self.trade_store: list[dict] = []
         layout = QVBoxLayout(self)
+        title = QLabel("Trade Blotter")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
         self.table = TradeTable()
         self.table.cellDoubleClicked.connect(self._open_detail)
         layout.addWidget(self.table)

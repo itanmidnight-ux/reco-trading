@@ -3,7 +3,7 @@ from __future__ import annotations
 import platform
 from typing import Any
 
-from PySide6.QtWidgets import QGridLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from reco_trading.ui.widgets.stat_card import StatCard
 
@@ -11,7 +11,12 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class SystemTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
-        layout = QGridLayout(self)
+        root = QVBoxLayout(self)
+        title = QLabel("System Health")
+        title.setObjectName("sectionTitle")
+        root.addWidget(title)
+
+        layout = QGridLayout()
         self.cards = {
             "version": StatCard("Bot Version", compact=True),
             "python": StatCard("Python Version", compact=True),
@@ -23,6 +28,7 @@ class SystemTab(QWidget):
         for i, card in enumerate(self.cards.values()):
             layout.addWidget(card, i // 3, i % 3)
         self.cards["python"].set_value(platform.python_version())
+        root.addLayout(layout)
 
     def update_state(self, state: dict[str, Any]) -> None:
         system = state.get("system", {})

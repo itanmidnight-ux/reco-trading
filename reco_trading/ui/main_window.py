@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
 
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
@@ -42,6 +42,9 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.settings_tab, "Settings")
         tabs.addTab(self.system_tab, "System")
         self.setCentralWidget(tabs)
+        self.tabs = tabs
+        self.tab_fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self.tabs.currentChanged.connect(self._animate_current_tab)
 
         state_manager.state_changed.connect(self._on_state)
         state_manager.trade_added.connect(self.trades_tab.add_trade)
@@ -69,3 +72,17 @@ class MainWindow(QMainWindow):
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)
+
+    def _animate_current_tab(self, index: int) -> None:
+        widget = self.tabs.widget(index)
+        if not widget:
+            return
+        effect = QGraphicsOpacityEffect(widget)
+        widget.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", widget)
+        animation.setDuration(260)
+        animation.setStartValue(0.45)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        animation.start()
+        self._current_animation = animation
