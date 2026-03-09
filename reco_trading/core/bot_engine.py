@@ -23,6 +23,7 @@ from reco_trading.exchange.order_manager import OrderManager
 from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.strategy.confidence_model import ConfidenceModel
+from reco_trading.strategy.entry_optimizer import EntryOptimizer
 from reco_trading.strategy.indicators import apply_indicators
 from reco_trading.strategy.signal_engine import SignalBundle, SignalEngine
 from reco_trading.ui.dashboard import TerminalDashboard
@@ -43,6 +44,7 @@ class BotEngine:
         self.repository = Repository(settings.postgres_dsn)
         self.signal_engine = SignalEngine()
         self.confidence_model = ConfidenceModel()
+        self.entry_optimizer = EntryOptimizer()
         self.risk_manager = RiskManager(settings.daily_loss_limit_fraction, settings.max_trades_per_day)
         self.position_manager = PositionManager()
 
@@ -105,9 +107,13 @@ class BotEngine:
                     market_data = await self.fetch_market_data()
                     await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
                     analysis = await self.analyze_market(market_data)
+                    optimized_signal = self.entry_optimizer.process(str(analysis["side"]), market_data)
                     self._update_snapshot(market_data, analysis)
 
-                    if await self.validate_trade_conditions(analysis):
+                    if optimized_signal:
+                        analysis["side"] = optimized_signal
+
+                    if optimized_signal and await self.validate_trade_conditions(analysis):
                         await self.execute_trade(analysis, market_data)
 
                     await self.manage_open_position(market_data)

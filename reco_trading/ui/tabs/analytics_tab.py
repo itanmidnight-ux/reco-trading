@@ -56,7 +56,7 @@ class AnalyticsTab(QWidget):
                     card.set_value("-")
             else:
                 card.set_value(str(val))
-        self.equity_curve.plot([float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float))])
+        self.equity_curve.plot([_to_float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float, str))])
 
         metric_rows = [
             ("Sharpe Ratio", analytics.get("sharpe_ratio", "-")),
@@ -76,3 +76,10 @@ class AnalyticsTab(QWidget):
         self.insights.addItem(f"Confidence: {state.get('confidence', 0)}")
         self.insights.addItem(f"Open position: {state.get('open_position', '-')}")
         self.insights.addItem(f"Trades today: {state.get('trades_today', 0)}")
+
+
+def _to_float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0

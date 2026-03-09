@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 
 class LogsTab(QWidget):
@@ -10,50 +10,65 @@ class LogsTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
+
         head = QHBoxLayout()
-        title = QLabel("System Logs")
+        title = QLabel("Logs")
         title.setObjectName("sectionTitle")
+        self.summary = QLabel("INFO: 0 | WARNING: 0 | ERROR: 0")
+        self.summary.setObjectName("metricLabel")
         clear = QPushButton("Clear")
-        clear.clicked.connect(lambda: self.text.clear())
+        clear.clicked.connect(self._clear)
         head.addWidget(title)
         head.addStretch(1)
+        head.addWidget(self.summary)
         head.addWidget(clear)
         layout.addLayout(head)
-
-        subtitle = QLabel("Realtime event stream and diagnostics")
-        subtitle.setObjectName("metricLabel")
-        layout.addWidget(subtitle)
-
-        self.summary = QLabel("INFO: 0 | WARNING: 0 | ERROR: 0")
-        self.summary.setObjectName("smallMetricValue")
-        layout.addWidget(self.summary)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(10, 10, 10, 10)
-        self.text = QTextEdit()
-        self.text.setReadOnly(True)
-        self.text.setFont(QFont("Consolas", 10))
-        panel_layout.addWidget(self.text)
-        layout.addWidget(panel)
+
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Timestamp", "Level", "Message"])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSortingEnabled(False)
+        panel_layout.addWidget(self.table)
+        layout.addWidget(panel, 1)
+
         self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
 
-    def add_log(self, entry: dict) -> None:
-        level = entry.get("level", "INFO").upper()
-        self.text.setTextColor(QColor(self.COLORS.get(level, "#e6e8ee")))
-        self.text.append(f"[{entry.get('time', '')}] [{level}] {entry.get('message', '')}")
-        self.text.moveCursor(self.text.textCursor().End)
-        self._counts[level] = self._counts.get(level, 0) + 1
+    def _clear(self) -> None:
+        self.table.setRowCount(0)
+        self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
+        self._refresh_summary()
+
+    def _refresh_summary(self) -> None:
         self.summary.setText(
             f"INFO: {self._counts.get('INFO', 0)} | WARNING: {self._counts.get('WARNING', 0)} | ERROR: {self._counts.get('ERROR', 0)}"
         )
 
-    def update_state(self, state: dict) -> None:
-        logs = state.get("logs", [])
-        if not logs:
+    def add_log(self, entry: dict) -> None:
+        try:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            timestamp = str(entry.get("time", entry.get("timestamp", "-")))
+            level = str(entry.get("level", "INFO")).upper()
+            message = str(entry.get("message", "-"))
+            for col, value in enumerate((timestamp, level, message)):
+                item = QTableWidgetItem(value)
+                if col == 1:
+                    item.setForeground(QColor(self.COLORS.get(level, "#e6e8ee")))
+                self.table.setItem(row, col, item)
+            self._counts[level] = self._counts.get(level, 0) + 1
+            self._refresh_summary()
+            self.table.scrollToBottom()
+        except Exception:
             return
-        self.text.clear()
-        self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
-        for entry in logs[-300:]:
-            self.add_log(entry)
+
+    def update_state(self, state: dict) -> None:
+        logs = state.get("logs", []) or []
+        self._clear()
+        for entry in logs[-500:]:
+            self.add_log(entry or {})
