@@ -41,6 +41,9 @@ class BinanceClient:
     async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
         return await self._call_with_retry(self.exchange.fetch_ticker, symbol)
 
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any]:
+        return await self._call_with_retry(self.exchange.fetch_order_book, symbol, limit)
+
     async def fetch_balance(self) -> dict[str, Any]:
         return await self._call_with_retry(self.exchange.fetch_balance)
 
