@@ -107,7 +107,7 @@ def app_stylesheet() -> str:
         border-radius: 8px;
         padding: 7px;
     }}
-    QPushButton {{
+    QPushButton {
         background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
             stop:0 {COLORS['accent']}, stop:1 {COLORS['info']});
         border: 1px solid {COLORS['border']};
@@ -115,10 +115,21 @@ def app_stylesheet() -> str:
         padding: 8px 12px;
         color: white;
         font-weight: 600;
-    }}
-    QPushButton:hover {{
-        background: {COLORS['info']};
-    }}
+    }
+    QPushButton:hover {
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 {COLORS['info']}, stop:1 {COLORS['accent']});
+        border: 1px solid {COLORS['info']};
+    }
+    QPushButton:pressed {
+        padding-top: 9px;
+        padding-left: 13px;
+        background: {COLORS['panel_alt']};
+    }
+    QPushButton:disabled {
+        background: #2a3557;
+        color: {COLORS['neutral']};
+    }
     """
 
 

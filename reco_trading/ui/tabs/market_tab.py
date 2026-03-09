@@ -14,10 +14,15 @@ class MarketTab(QWidget):
         self.header.setObjectName("sectionTitle")
         root.addWidget(self.header)
 
+        subtitle = QLabel("Live overview of trend, volatility and order flow")
+        subtitle.setObjectName("metricLabel")
+        root.addWidget(subtitle)
+
         panel = QFrame()
         panel.setObjectName("panelCard")
         root.addWidget(panel)
         layout = QGridLayout(panel)
+        layout.setContentsMargins(12, 12, 12, 12)
 
         self.cards = {
             "spread": StatCard("Spread", compact=True),

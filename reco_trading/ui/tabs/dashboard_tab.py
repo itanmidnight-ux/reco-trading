@@ -19,6 +19,30 @@ from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
 
+
+class AnimatedButton(QPushButton):
+    def __init__(self, label: str, parent: QWidget | None = None) -> None:
+        super().__init__(label, parent)
+        self._base_min_width = 118
+        self.setMinimumWidth(self._base_min_width)
+        self._hover_anim = QPropertyAnimation(self, b"minimumWidth", self)
+        self._hover_anim.setDuration(140)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def enterEvent(self, event) -> None:  # type: ignore[override]
+        self._animate_width(self._base_min_width + 10)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        self._animate_width(self._base_min_width)
+        super().leaveEvent(event)
+
+    def _animate_width(self, target: int) -> None:
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self.minimumWidth())
+        self._hover_anim.setEndValue(target)
+        self._hover_anim.start()
+
 class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
@@ -110,10 +134,10 @@ class DashboardTab(QWidget):
         layout.addWidget(title)
         layout.addStretch()
 
-        self.start_btn = QPushButton("Start Bot")
-        self.pause_btn = QPushButton("Pause Bot")
-        self.resume_btn = QPushButton("Resume Bot")
-        self.emergency_btn = QPushButton("Emergency Stop")
+        self.start_btn = AnimatedButton("Start Bot")
+        self.pause_btn = AnimatedButton("Pause Bot")
+        self.resume_btn = AnimatedButton("Resume Bot")
+        self.emergency_btn = AnimatedButton("Emergency Stop")
         self.emergency_btn.setStyleSheet("QPushButton { background:#ea3943; color:#e6e8ee; }")
 
         layout.addWidget(self.start_btn)
@@ -127,7 +151,16 @@ class DashboardTab(QWidget):
             self.resume_btn.clicked.connect(self.state_manager.request_resume)
             self.emergency_btn.clicked.connect(self.state_manager.request_emergency_stop)
 
+        self._sync_control_buttons("INITIALIZING")
         return panel
+
+    def _sync_control_buttons(self, status: str) -> None:
+        normalized = status.upper()
+        running = normalized in {"RUNNING", "ACTIVE", "TRADING"}
+
+        self.pause_btn.setVisible(running)
+        self.start_btn.setVisible(not running)
+        self.resume_btn.setVisible(False)
 
     def _panel(self) -> QFrame:
         panel = QFrame()
@@ -144,6 +177,7 @@ class DashboardTab(QWidget):
         price = _fmt_num(state.get("current_price", state.get("price")), 2)
         trend = str(state.get("trend", "NEUTRAL"))
         status = str(state.get("status", "-"))
+        self._sync_control_buttons(status)
         self.top_bar.setText(f"{pair} | {price} | {trend} | {status}")
         self.top_bar.setStyleSheet(f"color: {status_color(status)};")
 

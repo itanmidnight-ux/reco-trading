@@ -14,10 +14,15 @@ class AnalyticsTab(QWidget):
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
+        subtitle = QLabel("Detailed strategy metrics and equity curve")
+        subtitle.setObjectName("metricLabel")
+        layout.addWidget(subtitle)
+
         panel = QFrame()
         panel.setObjectName("panelCard")
         layout.addWidget(panel)
         panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(12, 12, 12, 12)
 
         grid = QGridLayout()
         self.cards = {}
