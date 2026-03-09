@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QPushButton, QTextEdit, QHBoxLayout, QVBoxLayout, QWidget
 
 
 class LogsTab(QWidget):
@@ -10,6 +10,16 @@ class LogsTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
+        head = QHBoxLayout()
+        title = QLabel("System Logs")
+        title.setObjectName("sectionTitle")
+        clear = QPushButton("Clear")
+        clear.clicked.connect(lambda: self.text.clear())
+        head.addWidget(title)
+        head.addStretch(1)
+        head.addWidget(clear)
+        layout.addLayout(head)
+
         self.text = QTextEdit()
         self.text.setReadOnly(True)
         self.text.setFont(QFont("Consolas", 10))

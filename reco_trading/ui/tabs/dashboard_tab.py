@@ -23,6 +23,10 @@ class DashboardTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
+        title = QLabel("Executive Dashboard")
+        title.setObjectName("sectionTitle")
+        root.addWidget(title)
+
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
         self.top_bar.setObjectName("metricValue")
         root.addWidget(self.top_bar)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QGridLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from reco_trading.ui.widgets.pnl_chart import PnlChart
 from reco_trading.ui.widgets.stat_card import StatCard
@@ -10,6 +10,15 @@ class AnalyticsTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
+        title = QLabel("Performance Analytics")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+
+        panel = QFrame()
+        panel.setObjectName("panelCard")
+        layout.addWidget(panel)
+        panel_layout = QVBoxLayout(panel)
+
         grid = QGridLayout()
         self.cards = {}
         keys = ["total_trades", "win_rate", "profit_factor", "average_win", "average_loss"]
@@ -17,9 +26,10 @@ class AnalyticsTab(QWidget):
             card = StatCard(key.replace("_", " ").title(), compact=True)
             self.cards[key] = card
             grid.addWidget(card, i // 3, i % 3)
-        layout.addLayout(grid)
+        panel_layout.addLayout(grid)
+
         self.equity_curve = PnlChart("Performance")
-        layout.addWidget(self.equity_curve)
+        panel_layout.addWidget(self.equity_curve)
 
     def update_state(self, state: dict) -> None:
         analytics = state.get("analytics", {})

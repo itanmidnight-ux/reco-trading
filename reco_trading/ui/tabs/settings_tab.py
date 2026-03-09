@@ -10,7 +10,10 @@ class SettingsTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("UI Settings (read-only impact on trading engine)"))
+        title = QLabel("Interface Studio")
+        title.setObjectName("sectionTitle")
+        layout.addWidget(title)
+        layout.addWidget(QLabel("UI settings (impact only visual behaviour)"))
 
         form = QFormLayout()
         self.refresh_rate = QSpinBox()
