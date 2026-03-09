@@ -106,61 +106,14 @@ class DashboardTab(QWidget):
         for i, card in enumerate(self.account_cards.values()):
             account_layout.addWidget(card, (i // 2) + 1, i % 2)
 
-        self.position_panel = self._panel()
-        self.position_cards = {
-            "position_side": StatCard("Position Side", compact=True),
-            "entry_price": StatCard("Entry Price", compact=True),
-            "current_price": StatCard("Current Price", compact=True),
-            "position_size_btc": StatCard("Position Size (BTC)", compact=True),
-            "position_value": StatCard("Position Value (USDT)", compact=True),
-            "unrealized_pnl": StatCard("Unrealized PnL", compact=True),
-            "unrealized_pnl_pct": StatCard("Unrealized PnL %", compact=True),
-            "stop_loss": StatCard("Stop Loss", compact=True),
-            "take_profit": StatCard("Take Profit", compact=True),
-        }
-        position_layout = QGridLayout(self.position_panel)
-        position_layout.setContentsMargins(10, 10, 10, 10)
-        position_layout.addWidget(self._title("Position Status"), 0, 0, 1, 2)
-        for i, card in enumerate(self.position_cards.values()):
-            position_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.exposure_panel = self._panel()
-        self.exposure_cards = {
-            "btc_exposure": StatCard("BTC Exposure", compact=True),
-            "usdt_exposure": StatCard("USDT Exposure", compact=True),
-        }
-        exposure_layout = QGridLayout(self.exposure_panel)
-        exposure_layout.setContentsMargins(10, 10, 10, 10)
-        exposure_layout.addWidget(self._title("Portfolio Exposure"), 0, 0, 1, 2)
-        for i, card in enumerate(self.exposure_cards.values()):
-            exposure_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.risk_panel = self._panel()
-        self.risk_cards = {
-            "risk_per_trade": StatCard("Risk per Trade", compact=True),
-            "max_concurrent_trades": StatCard("Max Concurrent Trades", compact=True),
-            "current_exposure": StatCard("Current Exposure", compact=True),
-            "daily_drawdown": StatCard("Daily Drawdown", compact=True),
-        }
-        risk_layout = QGridLayout(self.risk_panel)
-        risk_layout.setContentsMargins(10, 10, 10, 10)
-        risk_layout.addWidget(self._title("Risk Metrics"), 0, 0, 1, 2)
-        for i, card in enumerate(self.risk_cards.values()):
-            risk_layout.addWidget(card, (i // 2) + 1, i % 2)
-
-        self.system_panel = self._panel()
-        self.system_cards = {
-            "bot_mode": StatCard("Bot Mode", compact=True),
-            "engine_state": StatCard("Engine State", compact=True),
-            "api_latency": StatCard("API Latency", compact=True),
-            "exchange_status": StatCard("Exchange Connection", compact=True),
-            "database_status": StatCard("Database Connection", compact=True),
-        }
-        system_layout = QGridLayout(self.system_panel)
-        system_layout.setContentsMargins(10, 10, 10, 10)
-        system_layout.addWidget(self._title("System Status"), 0, 0, 1, 2)
-        for i, card in enumerate(self.system_cards.values()):
-            system_layout.addWidget(card, (i // 2) + 1, i % 2)
+        self.activity_panel = self._panel()
+        activity_layout = QVBoxLayout(self.activity_panel)
+        activity_layout.setContentsMargins(10, 10, 10, 10)
+        activity_layout.addWidget(self._title("Bot Activity"))
+        self.feed = QLabel("[--:--] Waiting for events")
+        self.feed.setWordWrap(True)
+        self.feed.setObjectName("smallMetricValue")
+        activity_layout.addWidget(self.feed)
 
         self.chart_panel = self._panel()
         chart_layout = QVBoxLayout(self.chart_panel)
@@ -169,23 +122,10 @@ class DashboardTab(QWidget):
         self.chart = CandlestickChartWidget()
         chart_layout.addWidget(self.chart)
 
-        self.activity_panel = self._panel()
-        activity_layout = QVBoxLayout(self.activity_panel)
-        activity_layout.setContentsMargins(10, 10, 10, 10)
-        activity_layout.addWidget(self._title("Bot Activity Log"))
-        self.feed = QLabel("[--:--] Waiting for events")
-        self.feed.setWordWrap(True)
-        self.feed.setObjectName("smallMetricValue")
-        activity_layout.addWidget(self.feed)
-
         body.addWidget(self.market_panel, 0, 0)
         body.addWidget(self.account_panel, 0, 1)
-        body.addWidget(self.position_panel, 1, 0)
-        body.addWidget(self.exposure_panel, 1, 1)
-        body.addWidget(self.risk_panel, 2, 0)
-        body.addWidget(self.system_panel, 2, 1)
-        body.addWidget(self.chart_panel, 3, 0)
-        body.addWidget(self.activity_panel, 3, 1)
+        body.addWidget(self.activity_panel, 1, 0)
+        body.addWidget(self.chart_panel, 1, 1)
 
     def _build_controls(self) -> QFrame:
         panel = self._panel()
@@ -255,7 +195,7 @@ class DashboardTab(QWidget):
             f"padding:4px 10px; border-radius:10px; background:{signal_color(signal)}; color:#e6e8ee;"
         )
 
-        confidence = max(0, min(100, int(_to_float(state.get("confidence"), 0.0) * 100)))
+        confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
         self.confidence_label.setText(f"Confidence {confidence}%")
         self.confidence_anim.stop()
         self.confidence_anim.setStartValue(self.confidence_bar.value())
@@ -267,85 +207,18 @@ class DashboardTab(QWidget):
         self.account_cards["btc_balance"].set_value(f"{_fmt_num(state.get('btc_balance'), 6)} BTC")
         self.account_cards["btc_value"].set_value(f"{_fmt_num(state.get('btc_value'), 2)} USDT")
         self.account_cards["total_equity"].set_value(f"{_fmt_num(state.get('total_equity'), 2)} USDT")
-        daily_pnl = _to_float(state.get("daily_pnl"), 0.0)
+        daily_pnl = float(state.get("daily_pnl", 0) or 0)
         self.account_cards["daily_pnl"].set_value(f"{daily_pnl:.2f} USDT")
         self.account_cards["daily_pnl"].value.setStyleSheet(
             f"color: {'#16c784' if daily_pnl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
         )
         self.account_cards["trades_today"].set_value(str(state.get("trades_today", "-")))
-        self.account_cards["win_rate"].set_value(f"{_to_float(state.get('win_rate'), 0.0)*100:.1f}%")
-
-        self._update_position_panel(state)
-        self._update_exposure_panel(state)
-        self._update_risk_panel(state)
-        self._update_system_panel(state)
+        self.account_cards["win_rate"].set_value(f"{float(state.get('win_rate', 0) or 0)*100:.1f}%")
 
         logs = state.get("logs", [])[-8:]
         lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-') }" for entry in logs] or ["[--:--] Waiting for events"]
         self.feed.setText("\n".join(lines))
         self.chart.update_from_snapshot(state)
-
-    def _update_position_panel(self, state: dict[str, Any]) -> None:
-        side = str(state.get("position_side", state.get("open_position", "NONE")) or "NONE")
-        entry_price = _to_float(state.get("entry_price"))
-        current_price = _to_float(state.get("current_price", state.get("price")))
-        position_size = _to_float(state.get("position_size", state.get("position_size_btc")))
-        position_value = _to_float(state.get("position_value"))
-
-        if position_value is None and position_size is not None and current_price is not None:
-            position_value = position_size * current_price
-
-        unrealized_pnl = None
-        unrealized_pnl_pct = None
-        if entry_price is not None and current_price is not None and position_size is not None:
-            unrealized_pnl = (current_price - entry_price) * position_size
-            if entry_price != 0:
-                unrealized_pnl_pct = ((current_price - entry_price) / entry_price) * 100
-
-        self.position_cards["position_side"].set_value(side)
-        self.position_cards["entry_price"].set_value(_fmt_num(entry_price, 2))
-        self.position_cards["current_price"].set_value(_fmt_num(current_price, 2))
-        self.position_cards["position_size_btc"].set_value(_fmt_num(position_size, 6))
-        self.position_cards["position_value"].set_value(f"{_fmt_num(position_value, 2)} USDT")
-        self.position_cards["unrealized_pnl"].set_value(f"{_fmt_num(unrealized_pnl, 2)} USDT")
-        self.position_cards["unrealized_pnl_pct"].set_value(_fmt_pct(unrealized_pnl_pct))
-        self.position_cards["stop_loss"].set_value(_fmt_num(state.get("stop_loss"), 2))
-        self.position_cards["take_profit"].set_value(_fmt_num(state.get("take_profit"), 2))
-
-    def _update_exposure_panel(self, state: dict[str, Any]) -> None:
-        total_equity = _to_float(state.get("total_equity"))
-        btc_value = _to_float(state.get("btc_value"))
-        usdt_balance = _to_float(state.get("balance", state.get("usdt_balance")))
-
-        btc_exposure = None
-        usdt_exposure = None
-        if total_equity and total_equity > 0:
-            if btc_value is not None:
-                btc_exposure = (btc_value / total_equity) * 100
-            if usdt_balance is not None:
-                usdt_exposure = (usdt_balance / total_equity) * 100
-
-        self.exposure_cards["btc_exposure"].set_value(_fmt_pct(btc_exposure))
-        self.exposure_cards["usdt_exposure"].set_value(_fmt_pct(usdt_exposure))
-
-    def _update_risk_panel(self, state: dict[str, Any]) -> None:
-        risk_metrics = state.get("risk_metrics", {}) or {}
-        self.risk_cards["risk_per_trade"].set_value(_smart_format(risk_metrics.get("risk_per_trade")))
-        self.risk_cards["max_concurrent_trades"].set_value(_smart_format(risk_metrics.get("max_concurrent_trades")))
-        self.risk_cards["current_exposure"].set_value(_smart_format(risk_metrics.get("current_exposure")))
-        self.risk_cards["daily_drawdown"].set_value(_smart_format(risk_metrics.get("daily_drawdown")))
-
-    def _update_system_panel(self, state: dict[str, Any]) -> None:
-        system = state.get("system", {}) or {}
-        bot_mode = state.get("bot_mode") or system.get("bot_mode")
-        if bot_mode is None:
-            bot_mode = "TESTNET" if state.get("testnet", True) else "LIVE"
-
-        self.system_cards["bot_mode"].set_value(str(bot_mode))
-        self.system_cards["engine_state"].set_value(str(state.get("status", state.get("engine_state", "-"))))
-        self.system_cards["api_latency"].set_value(f"{_fmt_num(system.get('api_latency_ms', state.get('api_latency_ms')), 1)} ms")
-        self.system_cards["exchange_status"].set_value(str(system.get("exchange_status", "-")))
-        self.system_cards["database_status"].set_value(str(system.get("database_status", "-")))
 
 
 def _fmt_num(value: Any, digits: int) -> str:
@@ -353,28 +226,6 @@ def _fmt_num(value: Any, digits: int) -> str:
         return f"{float(value):.{digits}f}"
     except (TypeError, ValueError):
         return "-"
-
-
-def _fmt_pct(value: Any) -> str:
-    numeric = _to_float(value)
-    if numeric is None:
-        return "-"
-    return f"{numeric:.2f}%"
-
-
-def _to_float(value: Any, fallback: float | None = None) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return fallback
-
-
-def _smart_format(value: Any) -> str:
-    if value is None:
-        return "-"
-    if isinstance(value, (int, float)):
-        return f"{value:.4f}" if isinstance(value, float) else str(value)
-    return str(value)
 
 
 def signal_color(signal: str) -> str:

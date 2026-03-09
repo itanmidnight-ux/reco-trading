@@ -5,7 +5,7 @@ from typing import Any
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF
 from PySide6.QtGui import QBrush, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
@@ -102,21 +102,6 @@ class CandlestickChartWidget(QWidget):
         self._ema21_line = self._price_plot.plot(pen=pg.mkPen("#f0b90b", width=1.2), name="EMA 21")
         self._ema50_line = self._price_plot.plot(pen=pg.mkPen("#c678dd", width=1.2), name="EMA 50")
 
-        self._buy_scatter = pg.ScatterPlotItem(symbol="t", size=12, brush=pg.mkBrush(BULL_COLOR), pen=pg.mkPen(BULL_COLOR))
-        self._sell_scatter = pg.ScatterPlotItem(symbol="t1", size=12, brush=pg.mkBrush(BEAR_COLOR), pen=pg.mkPen(BEAR_COLOR))
-        self._price_plot.addItem(self._buy_scatter)
-        self._price_plot.addItem(self._sell_scatter)
-
-        self._entry_line = pg.InfiniteLine(angle=0, pen=pg.mkPen("#4da3ff", width=1.2, style=Qt.PenStyle.DashLine), label="ENTRY", labelOpts={"color": "#4da3ff", "position": 0.95})
-        self._sl_line = pg.InfiniteLine(angle=0, pen=pg.mkPen(BEAR_COLOR, width=1.2, style=Qt.PenStyle.DashLine), label="SL", labelOpts={"color": BEAR_COLOR, "position": 0.95})
-        self._tp_line = pg.InfiniteLine(angle=0, pen=pg.mkPen(BULL_COLOR, width=1.2, style=Qt.PenStyle.DashLine), label="TP", labelOpts={"color": BULL_COLOR, "position": 0.95})
-        self._price_plot.addItem(self._entry_line)
-        self._price_plot.addItem(self._sl_line)
-        self._price_plot.addItem(self._tp_line)
-        self._entry_line.hide()
-        self._sl_line.hide()
-        self._tp_line.hide()
-
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
         if not raw_candles:
@@ -133,15 +118,13 @@ class CandlestickChartWidget(QWidget):
             for c in raw_candles[-120:]
         ]
         signature = tuple((c.open, c.high, c.low, c.close, c.volume) for c in normalized)
+        if signature == self._last_signature:
+            return
 
         self._candles = normalized
-        if signature != self._last_signature:
-            self._last_signature = signature
-            self._status.setText("Live candles from engine stream")
-            self._update_plot_items()
-
-        self._update_trade_markers(snapshot)
-        self._update_position_levels(snapshot)
+        self._last_signature = signature
+        self._status.setText("Live candles from engine stream")
+        self._update_plot_items()
 
     def _update_plot_items(self) -> None:
         if not self._candles:
@@ -157,54 +140,6 @@ class CandlestickChartWidget(QWidget):
 
         self._price_plot.setXRange(max(0, len(self._candles) - 120), len(self._candles))
 
-    def _update_trade_markers(self, snapshot: dict[str, Any]) -> None:
-        if not self._candles:
-            return
-        trade_history = snapshot.get("trade_history", []) or []
-        buy_pts: list[dict[str, float]] = []
-        sell_pts: list[dict[str, float]] = []
-        window = self._candles[-60:]
-
-        for idx, trade in enumerate(reversed(trade_history[-120:])):
-            side = str(trade.get("side", trade.get("signal", ""))).upper()
-            price = _to_float(trade.get("price"))
-            if price is None:
-                continue
-            anchor = next((c for c in window if c.low <= price <= c.high), window[min(idx, len(window)-1)])
-            x_val = len(self._candles) - len(window) + min(idx, len(window)-1)
-            if side == "BUY":
-                buy_pts.append({"pos": (x_val, anchor.low * 0.9985)})
-            elif side == "SELL":
-                sell_pts.append({"pos": (x_val, anchor.high * 1.0015)})
-
-        self._buy_scatter.setData(buy_pts)
-        self._sell_scatter.setData(sell_pts)
-
-    def _update_position_levels(self, snapshot: dict[str, Any]) -> None:
-        entry = _to_float(snapshot.get("entry_price"))
-        sl = _to_float(snapshot.get("stop_loss"))
-        tp = _to_float(snapshot.get("take_profit"))
-        side = str(snapshot.get("position_side", snapshot.get("open_position", "NONE"))).upper()
-        has_position = side not in {"NONE", "", "FLAT", "CLOSED"}
-
-        if has_position and entry is not None:
-            self._entry_line.setValue(entry)
-            self._entry_line.show()
-        else:
-            self._entry_line.hide()
-
-        if sl is not None:
-            self._sl_line.setValue(sl)
-            self._sl_line.show()
-        else:
-            self._sl_line.hide()
-
-        if tp is not None:
-            self._tp_line.setValue(tp)
-            self._tp_line.show()
-        else:
-            self._tp_line.hide()
-
 
 def _ema(values: np.ndarray, period: int) -> np.ndarray:
     if values.size == 0:
@@ -216,9 +151,3 @@ def _ema(values: np.ndarray, period: int) -> np.ndarray:
         ema[i] = (values[i] * alpha) + (ema[i - 1] * (1.0 - alpha))
     return ema
 
-
-def _to_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
