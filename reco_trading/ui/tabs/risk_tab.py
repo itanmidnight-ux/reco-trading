@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QListWidget, QProgressBar, QVBoxLayout, QWidget
 
 from reco_trading.ui.widgets.stat_card import StatCard
 
@@ -36,6 +36,9 @@ class RiskTab(QWidget):
         self.exposure_bar = QProgressBar()
         self.exposure_bar.setRange(0, 100)
         panel_layout.addWidget(self.exposure_bar)
+        self.alerts = QListWidget()
+        self.alerts.addItems(["No risk alerts."])
+        panel_layout.addWidget(self.alerts)
         self._anim = QPropertyAnimation(self.exposure_bar, b"value", self)
         self._anim.setDuration(300)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -52,3 +55,12 @@ class RiskTab(QWidget):
         self._anim.setStartValue(self.exposure_bar.value())
         self._anim.setEndValue(max(0, min(100, exposure)))
         self._anim.start()
+
+        self.alerts.clear()
+        daily_drawdown = float(metrics.get("daily_drawdown", 0) or 0)
+        if exposure >= 80:
+            self.alerts.addItem("High exposure detected, consider reducing position sizes.")
+        if daily_drawdown <= -0.03:
+            self.alerts.addItem("Drawdown exceeded -3%, pause aggressive entries.")
+        if self.alerts.count() == 0:
+            self.alerts.addItem("No risk alerts.")

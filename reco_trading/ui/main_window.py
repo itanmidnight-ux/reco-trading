@@ -61,7 +61,15 @@ class MainWindow(QMainWindow):
         self.refresh_timer.start(1000)
 
     def _on_state(self, state: dict) -> None:
-        for tab in (self.dashboard_tab, self.market_tab, self.analytics_tab, self.risk_tab, self.system_tab):
+        for tab in (
+            self.dashboard_tab,
+            self.trades_tab,
+            self.market_tab,
+            self.analytics_tab,
+            self.logs_tab,
+            self.risk_tab,
+            self.system_tab,
+        ):
             try:
                 tab.update_state(state)
             except Exception:

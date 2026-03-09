@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QProgressBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QListWidget, QProgressBar, QVBoxLayout, QWidget
 
 from reco_trading.ui.widgets.stat_card import StatCard
 
@@ -23,6 +23,7 @@ class MarketTab(QWidget):
         root.addWidget(panel)
         layout = QGridLayout(panel)
         layout.setContentsMargins(12, 12, 12, 12)
+        layout.setVerticalSpacing(10)
 
         self.cards = {
             "spread": StatCard("Spread", compact=True),
@@ -40,6 +41,16 @@ class MarketTab(QWidget):
         self.activity.setRange(0, 100)
         layout.addWidget(self.sentiment, 2, 0, 1, 2)
         layout.addWidget(self.activity, 2, 2)
+
+        self.orderbook = QListWidget()
+        self.orderbook.addItems(["Bid/Ask depth waiting data..."])
+        self.movers = QListWidget()
+        self.movers.addItems(["Top movers unavailable"])
+        layout.addWidget(QLabel("Order Book Snapshot"), 3, 0)
+        layout.addWidget(QLabel("Price Action Highlights"), 3, 1, 1, 2)
+        layout.addWidget(self.orderbook, 4, 0)
+        layout.addWidget(self.movers, 4, 1, 1, 2)
+        layout.setRowStretch(4, 1)
 
         self._anim = QPropertyAnimation(self.activity, b"value", self)
         self._anim.setDuration(320)
@@ -61,3 +72,28 @@ class MarketTab(QWidget):
         self._anim.setStartValue(self.activity.value())
         self._anim.setEndValue(max(0, min(100, int(adx))))
         self._anim.start()
+
+        bid = float(state.get("bid", 0) or 0)
+        ask = float(state.get("ask", 0) or 0)
+        price = float(state.get("current_price", state.get("price", 0)) or 0)
+        volume = float(state.get("volume", 0) or 0)
+        atr = float(state.get("atr", 0) or 0)
+        self.orderbook.clear()
+        self.orderbook.addItems(
+            [
+                f"Best Bid: {bid:.2f}",
+                f"Best Ask: {ask:.2f}",
+                f"Spread (abs): {(ask - bid):.6f}",
+                f"Price: {price:.2f}",
+            ]
+        )
+
+        self.movers.clear()
+        self.movers.addItems(
+            [
+                f"ATR: {atr:.4f}",
+                f"Volatility Regime: {state.get('volatility_regime', '-')}",
+                f"Order Flow Bias: {state.get('order_flow', '-')}",
+                f"Volume: {volume:.2f}",
+            ]
+        )

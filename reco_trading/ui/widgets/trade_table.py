@@ -15,6 +15,11 @@ class TradeTable(QTableWidget):
         self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.setAlternatingRowColors(True)
 
+    def load_trades(self, trades: list[dict[str, Any]]) -> None:
+        self.setRowCount(0)
+        for trade in trades:
+            self.add_trade(trade)
+
     def add_trade(self, trade: dict[str, Any]) -> None:
         row = self.rowCount()
         self.insertRow(row)
@@ -36,15 +41,15 @@ class TradeTable(QTableWidget):
             self.setItem(row, col, item)
 
 
-def _to_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return "-"
-
-
 def _to_float(value: Any) -> float:
     try:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _fmt_num(value: Any, digits: int) -> str:
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "-"
