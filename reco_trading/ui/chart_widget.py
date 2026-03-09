@@ -95,39 +95,12 @@ class CandlestickChartWidget(QWidget):
         self._price_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
         self._price_plot.getViewBox().setBackgroundColor(BG_COLOR)
 
-        self._volume_plot = self._graphics.addPlot(row=1, col=0)
-        self._volume_plot.setXLink(self._price_plot)
-        self._volume_plot.showGrid(x=True, y=True, alpha=0.2)
-        self._volume_plot.setLabel("left", "Volume")
-        self._volume_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
-        self._volume_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
-        self._volume_plot.getAxis("left").setPen(pg.mkColor(GRID_COLOR))
-        self._volume_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
-        self._volume_plot.getViewBox().setBackgroundColor(BG_COLOR)
-
-        self._rsi_plot = self._graphics.addPlot(row=2, col=0)
-        self._rsi_plot.setXLink(self._price_plot)
-        self._rsi_plot.showGrid(x=True, y=True, alpha=0.2)
-        self._rsi_plot.setLabel("left", "RSI")
-        self._rsi_plot.setYRange(0, 100)
-        self._rsi_plot.addLine(y=70, pen=pg.mkPen("#f0b90b", width=1))
-        self._rsi_plot.addLine(y=30, pen=pg.mkPen("#f0b90b", width=1))
-        self._rsi_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
-        self._rsi_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
-        self._rsi_plot.getAxis("left").setPen(pg.mkColor(GRID_COLOR))
-        self._rsi_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
-        self._rsi_plot.getViewBox().setBackgroundColor(BG_COLOR)
-
         self._candles_item = CandlestickItem()
         self._price_plot.addItem(self._candles_item)
 
         self._ema9_line = self._price_plot.plot(pen=pg.mkPen("#4da3ff", width=1.2), name="EMA 9")
         self._ema21_line = self._price_plot.plot(pen=pg.mkPen("#f0b90b", width=1.2), name="EMA 21")
         self._ema50_line = self._price_plot.plot(pen=pg.mkPen("#c678dd", width=1.2), name="EMA 50")
-
-        self._volume_item = pg.BarGraphItem(x=np.array([]), height=np.array([]), width=0.68, brushes=[])
-        self._volume_plot.addItem(self._volume_item)
-        self._rsi_line = self._rsi_plot.plot(pen=pg.mkPen("#ff9f43", width=1.2))
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
@@ -159,20 +132,11 @@ class CandlestickChartWidget(QWidget):
 
         x = np.arange(len(self._candles), dtype=float)
         closes = np.array([c.close for c in self._candles], dtype=float)
-        volumes = np.array([c.volume for c in self._candles], dtype=float)
-
         self._candles_item.set_candles(self._candles)
 
         self._ema9_line.setData(x, _ema(closes, 9))
         self._ema21_line.setData(x, _ema(closes, 21))
         self._ema50_line.setData(x, _ema(closes, 50))
-
-        brushes = [pg.mkBrush(BULL_COLOR if c.close >= c.open else BEAR_COLOR) for c in self._candles]
-        self._volume_plot.removeItem(self._volume_item)
-        self._volume_item = pg.BarGraphItem(x=x, height=volumes, width=0.68, brushes=brushes)
-        self._volume_plot.addItem(self._volume_item)
-
-        self._rsi_line.setData(x, _rsi(closes, 14))
 
         self._price_plot.setXRange(max(0, len(self._candles) - 120), len(self._candles))
 
@@ -187,27 +151,3 @@ def _ema(values: np.ndarray, period: int) -> np.ndarray:
         ema[i] = (values[i] * alpha) + (ema[i - 1] * (1.0 - alpha))
     return ema
 
-
-def _rsi(values: np.ndarray, period: int) -> np.ndarray:
-    if values.size == 0:
-        return np.array([])
-
-    rsi = np.full(values.size, 50.0, dtype=float)
-    if values.size <= period:
-        return rsi
-
-    deltas = np.diff(values)
-    gains = np.where(deltas > 0, deltas, 0.0)
-    losses = np.where(deltas < 0, -deltas, 0.0)
-
-    avg_gain = gains[:period].mean()
-    avg_loss = losses[:period].mean()
-
-    for i in range(period, values.size):
-        if i > period:
-            avg_gain = ((avg_gain * (period - 1)) + gains[i - 1]) / period
-            avg_loss = ((avg_loss * (period - 1)) + losses[i - 1]) / period
-        rs = avg_gain / avg_loss if avg_loss != 0 else np.inf
-        rsi[i] = 100.0 - (100.0 / (1.0 + rs))
-
-    return rsi

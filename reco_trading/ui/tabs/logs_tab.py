@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import QLabel, QPushButton, QTextEdit, QHBoxLayout, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QTextEdit, QHBoxLayout, QVBoxLayout, QWidget
 
 
 class LogsTab(QWidget):
@@ -20,10 +20,19 @@ class LogsTab(QWidget):
         head.addWidget(clear)
         layout.addLayout(head)
 
+        subtitle = QLabel("Realtime event stream and diagnostics")
+        subtitle.setObjectName("metricLabel")
+        layout.addWidget(subtitle)
+
+        panel = QFrame()
+        panel.setObjectName("panelCard")
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(10, 10, 10, 10)
         self.text = QTextEdit()
         self.text.setReadOnly(True)
         self.text.setFont(QFont("Consolas", 10))
-        layout.addWidget(self.text)
+        panel_layout.addWidget(self.text)
+        layout.addWidget(panel)
 
     def add_log(self, entry: dict) -> None:
         level = entry.get("level", "INFO").upper()

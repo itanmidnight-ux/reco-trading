@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QFrame, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 
 class SettingsTab(QWidget):
@@ -13,7 +13,14 @@ class SettingsTab(QWidget):
         title = QLabel("Interface Studio")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
-        layout.addWidget(QLabel("UI settings (impact only visual behaviour)"))
+        description = QLabel("Customize visual behavior and refresh speed")
+        description.setObjectName("metricLabel")
+        layout.addWidget(description)
+
+        panel = QFrame()
+        panel.setObjectName("panelCard")
+        layout.addWidget(panel)
+        panel_layout = QVBoxLayout(panel)
 
         form = QFormLayout()
         self.refresh_rate = QSpinBox()
@@ -30,7 +37,7 @@ class SettingsTab(QWidget):
         form.addRow("Chart visibility", self.chart_visible)
         form.addRow("Theme", self.theme)
         form.addRow("Log verbosity", self.log_verbosity)
-        layout.addLayout(form)
+        panel_layout.addLayout(form)
 
         self.refresh_rate.valueChanged.connect(self._emit)
         self.chart_visible.stateChanged.connect(self._emit)
