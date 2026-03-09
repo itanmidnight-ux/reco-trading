@@ -30,7 +30,7 @@ class BotEngine:
     def __init__(self, settings: Settings, state_manager: "StateManager | None" = None) -> None:
         self.settings = settings
         self.logger = logging.getLogger(__name__)
-        self.state = BotState.STARTING
+        self.state = BotState.INITIALIZING
 
         self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
         self.symbol = normalize_symbol(settings.trading_symbol)
@@ -70,23 +70,28 @@ class BotEngine:
             "win_rate": None,
             "last_trade": None,
             "cooldown": None,
-            "status": "INITIALIZING",
+            "status": BotState.INITIALIZING.value,
             "signals": {},
         }
 
     async def run(self) -> None:
-        await self._set_state(BotState.STARTING, "initialize_settings")
+        await self._set_state(BotState.INITIALIZING, "initialize_settings")
         await self.repository.setup()
+        await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
         await self.client.sync_time()
-        await self._set_state(BotState.SYNCING_SYMBOL, "sync_exchange_rules")
+        await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
+        await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
         await self.order_manager.sync_rules()
+        await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
         self._sync_ui_state()
 
         with Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False) as live:
             while True:
                 try:
                     self._roll_day()
+                    await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
                     market_data = await self.fetch_market_data()
+                    await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
                     analysis = await self.analyze_market(market_data)
                     self._update_snapshot(market_data, analysis)
 
@@ -149,6 +154,7 @@ class BotEngine:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
         side, confidence, grade = self.confidence_model.evaluate(bundle)
         await self._persist_signal(bundle, side, confidence)
+        await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {"bundle": bundle, "side": side, "confidence": confidence, "grade": grade}
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
@@ -167,7 +173,7 @@ class BotEngine:
             return False
 
         if not self._is_cooldown_complete():
-            await self._set_state(BotState.WAITING_SIGNAL, "cooldown_active")
+            await self._set_state(BotState.COOLDOWN, "cooldown_active")
             self.snapshot["cooldown"] = "ACTIVE"
             return False
 
@@ -179,7 +185,7 @@ class BotEngine:
             confidence_threshold=self.settings.confidence_threshold,
         )
         if not risk.approved:
-            await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_SIGNAL, risk.reason)
+            await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_MARKET_DATA, risk.reason)
             self.snapshot["cooldown"] = risk.reason
             return False
 
@@ -193,11 +199,11 @@ class BotEngine:
         atr = float(market_data.get("atr", 0.0))
 
         if not bundle.regime_trade_allowed:
-            await self._set_state(BotState.WAITING_SIGNAL, "regime_filter")
+            await self._set_state(BotState.WAITING_MARKET_DATA, "regime_filter")
             return
 
         if not self.position_manager.can_open(float(analysis["confidence"])):
-            await self._set_state(BotState.MONITORING_POSITION, "max_positions")
+            await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
 
         qty = self.calculate_position_size(price, float(bundle.size_multiplier))
@@ -243,7 +249,7 @@ class BotEngine:
         self.trades_today += 1
         self.snapshot["trades_today"] = self.trades_today
         self.snapshot["last_trade"] = f"{side} @ {entry:.2f}"
-        await self._set_state(BotState.ORDER_FILLED)
+        await self._set_state(BotState.POSITION_OPEN)
         await self._log("INFO", f"order_filled side={side} qty={qty:.8f} entry={entry:.2f}")
 
         if self.state_manager:
@@ -266,13 +272,13 @@ class BotEngine:
             return
 
         price = float(market_data["price"])
-        await self._set_state(BotState.MONITORING_POSITION)
+        await self._set_state(BotState.POSITION_OPEN)
         for position in list(self.position_manager.positions):
             exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
 
-            await self._set_state(BotState.CLOSING_POSITION)
+            await self._set_state(BotState.COOLDOWN)
             close_side = "sell" if position.side == "BUY" else "buy"
             order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
             exit_price = _as_float(order.get("average"), _as_float(order.get("price"), price))

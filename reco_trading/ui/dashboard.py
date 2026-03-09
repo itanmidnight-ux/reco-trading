@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from rich.console import Group
+from rich.console import Console, Group
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
@@ -59,48 +59,54 @@ class DashboardSnapshot:
 class TerminalDashboard:
     """Renderable Rich dashboard component."""
 
+    def __init__(self) -> None:
+        self.console = Console()
+
     def render(self, snapshot: DashboardSnapshot | Mapping[str, Any]) -> Any:
-        snap = DashboardSnapshot.from_mapping(snapshot) if isinstance(snapshot, Mapping) else snapshot
+        try:
+            snap = DashboardSnapshot.from_mapping(snapshot) if isinstance(snapshot, Mapping) else snapshot
 
-        status = Table.grid(expand=True)
-        status.add_column()
-        status.add_column()
-        status.add_row("Bot Status", snap.state)
-        status.add_row("Pair", snap.pair or "-")
-        status.add_row("Timeframe", snap.timeframe or "-")
-        status.add_row("Price", _fmt_num(snap.price, 2))
-        status.add_row("Spread", _fmt_num(snap.spread, 6))
-        status.add_row("Trend", snap.trend or "-")
-        status.add_row("ADX", _fmt_num(snap.adx, 2))
-        status.add_row("Signal", snap.signal or "-")
-        status.add_row("Confidence", _fmt_pct(snap.confidence))
-        status.add_row("Volatility Regime", snap.volatility_regime or "-")
-        status.add_row("Order Flow", snap.order_flow or "-")
+            status = Table.grid(expand=True)
+            status.add_column()
+            status.add_column()
+            status.add_row("Bot Status", snap.state)
+            status.add_row("Pair", snap.pair or "-")
+            status.add_row("Timeframe", snap.timeframe or "-")
+            status.add_row("Price", _fmt_num(snap.price, 2))
+            status.add_row("Spread", _fmt_num(snap.spread, 6))
+            status.add_row("Trend", snap.trend or "-")
+            status.add_row("ADX", _fmt_num(snap.adx, 2))
+            status.add_row("Signal", snap.signal or "-")
+            status.add_row("Confidence", _fmt_pct(snap.confidence))
+            status.add_row("Volatility Regime", snap.volatility_regime or "-")
+            status.add_row("Order Flow", snap.order_flow or "-")
 
-        portfolio = Table.grid(expand=True)
-        portfolio.add_column()
-        portfolio.add_column()
-        portfolio.add_row("Balance", f"{_fmt_num(snap.balance, 4)} USDT")
-        portfolio.add_row("Equity", f"{_fmt_num(snap.equity, 4)} USDT")
-        portfolio.add_row("Daily PnL", f"{_fmt_num(snap.daily_pnl, 4)} USDT")
-        portfolio.add_row("Trades Today", str(snap.trades_today))
-        portfolio.add_row("Win Rate", _fmt_pct(snap.win_rate))
-        portfolio.add_row("Last Trade", snap.last_trade or "-")
-        portfolio.add_row("Cooldown", snap.cooldown or "-")
+            portfolio = Table.grid(expand=True)
+            portfolio.add_column()
+            portfolio.add_column()
+            portfolio.add_row("Balance", f"{_fmt_num(snap.balance, 4)} USDT")
+            portfolio.add_row("Equity", f"{_fmt_num(snap.equity, 4)} USDT")
+            portfolio.add_row("Daily PnL", f"{_fmt_num(snap.daily_pnl, 4)} USDT")
+            portfolio.add_row("Trades Today", str(snap.trades_today))
+            portfolio.add_row("Win Rate", _fmt_pct(snap.win_rate))
+            portfolio.add_row("Last Trade", snap.last_trade or "-")
+            portfolio.add_row("Cooldown", snap.cooldown or "-")
 
-        signal_table = Table(title="Signal Engines", expand=True)
-        signal_table.add_column("Engine")
-        signal_table.add_column("Signal")
-        for key in ["trend", "momentum", "volume", "volatility", "structure", "order_flow"]:
-            signal_table.add_row(key, str(snap.signals.get(key, "-")))
+            signal_table = Table(title="Signal Engines", expand=True)
+            signal_table.add_column("Engine")
+            signal_table.add_column("Signal")
+            for key in ["trend", "momentum", "volume", "volatility", "structure", "order_flow"]:
+                signal_table.add_row(key, str(snap.signals.get(key, "-")))
 
-        layout = Layout()
-        layout.split_column(
-            Layout(Panel(status, title="Reco Trading Bot"), ratio=2),
-            Layout(Panel(portfolio, title="Portfolio & Risk"), ratio=2),
-            Layout(Panel(signal_table), ratio=3),
-        )
-        return Group(layout)
+            layout = Layout()
+            layout.split_column(
+                Layout(Panel(status, title="Reco Trading Bot"), ratio=2),
+                Layout(Panel(portfolio, title="Portfolio & Risk"), ratio=2),
+                Layout(Panel(signal_table), ratio=3),
+            )
+            return Group(layout)
+        except Exception as exc:  # noqa: BLE001
+            return Panel(f"Dashboard render error: {exc}", title="Reco Trading Bot", border_style="red")
 
 
 def _to_float(value: Any) -> float | None:
