@@ -1,152 +1,213 @@
 from __future__ import annotations
 
-import json
+from dataclasses import dataclass
 from typing import Any
-from urllib.request import urlopen
 
-from PySide6.QtCore import QThread, QTimer, Signal
+import numpy as np
+import pyqtgraph as pg
+from PySide6.QtCore import QRectF
+from PySide6.QtGui import QBrush, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-try:
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-    from matplotlib.figure import Figure
-except Exception:  # noqa: BLE001
-    Figure = None
-    FigureCanvas = None
+BG_COLOR = "#131722"
+GRID_COLOR = "#2a2f3a"
+TEXT_COLOR = "#e6e8ee"
+BULL_COLOR = "#16c784"
+BEAR_COLOR = "#ea3943"
 
 
-class CandleFetchWorker(QThread):
-    fetched = Signal(list)
+@dataclass
+class Candle:
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
 
-    def __init__(self, symbol: str = "BTCUSDT", interval: str = "5m", limit: int = 120) -> None:
+
+class CandlestickItem(pg.GraphicsObject):
+    def __init__(self, body_width: float = 0.68) -> None:
         super().__init__()
-        self.symbol = symbol
-        self.interval = interval
-        self.limit = limit
+        self._body_width = body_width
+        self._picture = QPicture()
+        self._candles: list[Candle] = []
 
-    def run(self) -> None:
-        url = (
-            "https://api.binance.com/api/v3/klines"
-            f"?symbol={self.symbol}&interval={self.interval}&limit={self.limit}"
-        )
-        try:
-            with urlopen(url, timeout=6) as response:  # noqa: S310
-                payload = json.loads(response.read().decode("utf-8"))
-            candles = [
-                {
-                    "open": float(row[1]),
-                    "high": float(row[2]),
-                    "low": float(row[3]),
-                    "close": float(row[4]),
-                    "volume": float(row[5]),
-                }
-                for row in payload
-                if len(row) >= 6
-            ]
-            self.fetched.emit(candles)
-        except Exception:
-            self.fetched.emit([])
+    def set_candles(self, candles: list[Candle]) -> None:
+        self._candles = candles
+        self._rebuild_picture()
+        self.update()
+
+    def _rebuild_picture(self) -> None:
+        picture = QPicture()
+        painter = QPainter(picture)
+        bull_pen = QPen(pg.mkColor(BULL_COLOR))
+        bear_pen = QPen(pg.mkColor(BEAR_COLOR))
+        bull_brush = QBrush(pg.mkColor(BULL_COLOR))
+        bear_brush = QBrush(pg.mkColor(BEAR_COLOR))
+
+        for idx, c in enumerate(self._candles):
+            is_bull = c.close >= c.open
+            pen = bull_pen if is_bull else bear_pen
+            brush = bull_brush if is_bull else bear_brush
+            painter.setPen(pen)
+            painter.drawLine(idx, c.low, idx, c.high)
+
+            body_low = min(c.open, c.close)
+            body_high = max(c.open, c.close)
+            body_height = max(body_high - body_low, 1e-8)
+            rect = QRectF(idx - self._body_width / 2, body_low, self._body_width, body_height)
+            painter.fillRect(rect, brush)
+            painter.drawRect(rect)
+
+        painter.end()
+        self.prepareGeometryChange()
+        self._picture = picture
+
+    def paint(self, painter: QPainter, *args: Any) -> None:  # type: ignore[override]
+        painter.drawPicture(0, 0, self._picture)
+
+    def boundingRect(self) -> QRectF:  # type: ignore[override]
+        return QRectF(self._picture.boundingRect())
 
 
 class CandlestickChartWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
-        self._candles: list[dict[str, float]] = []
+        self._candles: list[Candle] = []
+        self._last_signature: tuple[tuple[float, float, float, float, float], ...] = tuple()
+
         layout = QVBoxLayout(self)
-        self._status = QLabel("Syncing market candles…")
+        self._status = QLabel("Waiting for engine candle stream…")
         self._status.setObjectName("metricLabel")
         layout.addWidget(self._status)
 
-        if Figure is None or FigureCanvas is None:
-            layout.addWidget(QLabel("Chart unavailable: matplotlib backend missing"))
-            self.figure = None
-            self.canvas = None
-            self.ax_price = None
-            self.ax_volume = None
-            return
+        pg.setConfigOptions(antialias=False, background=BG_COLOR, foreground=TEXT_COLOR)
 
-        self.figure = Figure(figsize=(8, 4), facecolor="#141d35")
-        self.ax_price = self.figure.add_subplot(211)
-        self.ax_volume = self.figure.add_subplot(212, sharex=self.ax_price)
-        self.canvas = FigureCanvas(self.figure)
-        layout.addWidget(self.canvas)
+        self._graphics = pg.GraphicsLayoutWidget()
+        layout.addWidget(self._graphics)
 
-        self.fetch_timer = QTimer(self)
-        self.fetch_timer.timeout.connect(self._request_public_candles)
-        self.fetch_timer.start(15000)
-        self._request_public_candles()
+        self._price_plot = self._graphics.addPlot(row=0, col=0)
+        self._price_plot.showGrid(x=True, y=True, alpha=0.25)
+        self._price_plot.setLabel("left", "Price")
+        self._price_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._price_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._price_plot.getAxis("left").setPen(pg.mkColor(GRID_COLOR))
+        self._price_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
+        self._price_plot.getViewBox().setBackgroundColor(BG_COLOR)
+
+        self._volume_plot = self._graphics.addPlot(row=1, col=0)
+        self._volume_plot.setXLink(self._price_plot)
+        self._volume_plot.showGrid(x=True, y=True, alpha=0.2)
+        self._volume_plot.setLabel("left", "Volume")
+        self._volume_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._volume_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._volume_plot.getAxis("left").setPen(pg.mkColor(GRID_COLOR))
+        self._volume_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
+        self._volume_plot.getViewBox().setBackgroundColor(BG_COLOR)
+
+        self._rsi_plot = self._graphics.addPlot(row=2, col=0)
+        self._rsi_plot.setXLink(self._price_plot)
+        self._rsi_plot.showGrid(x=True, y=True, alpha=0.2)
+        self._rsi_plot.setLabel("left", "RSI")
+        self._rsi_plot.setYRange(0, 100)
+        self._rsi_plot.addLine(y=70, pen=pg.mkPen("#f0b90b", width=1))
+        self._rsi_plot.addLine(y=30, pen=pg.mkPen("#f0b90b", width=1))
+        self._rsi_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._rsi_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._rsi_plot.getAxis("left").setPen(pg.mkColor(GRID_COLOR))
+        self._rsi_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
+        self._rsi_plot.getViewBox().setBackgroundColor(BG_COLOR)
+
+        self._candles_item = CandlestickItem()
+        self._price_plot.addItem(self._candles_item)
+
+        self._ema9_line = self._price_plot.plot(pen=pg.mkPen("#4da3ff", width=1.2), name="EMA 9")
+        self._ema21_line = self._price_plot.plot(pen=pg.mkPen("#f0b90b", width=1.2), name="EMA 21")
+        self._ema50_line = self._price_plot.plot(pen=pg.mkPen("#c678dd", width=1.2), name="EMA 50")
+
+        self._volume_item = pg.BarGraphItem(x=np.array([]), height=np.array([]), width=0.68, brushes=[])
+        self._volume_plot.addItem(self._volume_item)
+        self._rsi_line = self._rsi_plot.plot(pen=pg.mkPen("#ff9f43", width=1.2))
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
-        candles = snapshot.get("candles_5m", [])
-        if candles:
-            self._candles = [
-                {
-                    "open": float(c.get("open", 0.0)),
-                    "high": float(c.get("high", 0.0)),
-                    "low": float(c.get("low", 0.0)),
-                    "close": float(c.get("close", 0.0)),
-                    "volume": float(c.get("volume", 0.0)),
-                }
-                for c in candles[-120:]
-            ]
-            self._status.setText("Live candles from engine stream")
-            self._plot_candles(self._candles)
-
-    def _request_public_candles(self) -> None:
-        self._worker = CandleFetchWorker()
-        self._worker.fetched.connect(self._on_public_candles)
-        self._worker.start()
-
-    def _on_public_candles(self, candles: list[dict[str, float]]) -> None:
-        if candles:
-            self._candles = candles[-120:]
-            self._status.setText("Public Binance sync active (auto-refresh 15s)")
-            self._plot_candles(self._candles)
-        elif not self._candles:
-            self._status.setText("Waiting for candle data from engine/public endpoint")
-
-    def _plot_candles(self, candles: list[dict[str, float]]) -> None:
-        if not candles or not self.ax_price or not self.ax_volume or not self.canvas:
+        raw_candles = snapshot.get("candles_5m", [])
+        if not raw_candles:
             return
 
-        opens, highs, lows, closes, volumes = [], [], [], [], []
-        for c in candles[-80:]:
-            opens.append(float(c.get("open", 0)))
-            highs.append(float(c.get("high", 0)))
-            lows.append(float(c.get("low", 0)))
-            closes.append(float(c.get("close", 0)))
-            volumes.append(float(c.get("volume", 0)))
+        normalized = [
+            Candle(
+                open=float(c.get("open", 0.0)),
+                high=float(c.get("high", 0.0)),
+                low=float(c.get("low", 0.0)),
+                close=float(c.get("close", 0.0)),
+                volume=float(c.get("volume", 0.0)),
+            )
+            for c in raw_candles[-120:]
+        ]
+        signature = tuple((c.open, c.high, c.low, c.close, c.volume) for c in normalized)
+        if signature == self._last_signature:
+            return
 
-        self.ax_price.clear()
-        self.ax_volume.clear()
-        self.ax_price.set_facecolor("#141d35")
-        self.ax_volume.set_facecolor("#141d35")
+        self._candles = normalized
+        self._last_signature = signature
+        self._status.setText("Live candles from engine stream")
+        self._update_plot_items()
 
-        for i, (o, h, l, cl) in enumerate(zip(opens, highs, lows, closes)):
-            color = "#22d39b" if cl >= o else "#ff5f7b"
-            self.ax_price.plot([i, i], [l, h], color=color, linewidth=1)
-            lower = min(o, cl)
-            height = max(abs(cl - o), 1e-8)
-            self.ax_price.bar(i, height, bottom=lower, color=color, width=0.65)
-            self.ax_volume.bar(i, volumes[i], color=color, width=0.65, alpha=0.45)
+    def _update_plot_items(self) -> None:
+        if not self._candles:
+            return
 
-        ema = _ema(closes, 20)
-        if ema:
-            self.ax_price.plot(range(len(ema)), ema, color="#5a8dff", linewidth=1.2, label="EMA 20")
-            self.ax_price.legend(loc="upper left", fontsize=8, frameon=False)
+        x = np.arange(len(self._candles), dtype=float)
+        closes = np.array([c.close for c in self._candles], dtype=float)
+        volumes = np.array([c.volume for c in self._candles], dtype=float)
 
-        self.ax_price.set_title("BTC/USDT 5m Candles", color="#edf2ff", fontsize=10)
-        self.ax_price.tick_params(colors="#9fb2d9", labelsize=8)
-        self.ax_volume.tick_params(colors="#9fb2d9", labelsize=7)
-        self.figure.tight_layout()
-        self.canvas.draw_idle()
+        self._candles_item.set_candles(self._candles)
+
+        self._ema9_line.setData(x, _ema(closes, 9))
+        self._ema21_line.setData(x, _ema(closes, 21))
+        self._ema50_line.setData(x, _ema(closes, 50))
+
+        brushes = [pg.mkBrush(BULL_COLOR if c.close >= c.open else BEAR_COLOR) for c in self._candles]
+        self._volume_plot.removeItem(self._volume_item)
+        self._volume_item = pg.BarGraphItem(x=x, height=volumes, width=0.68, brushes=brushes)
+        self._volume_plot.addItem(self._volume_item)
+
+        self._rsi_line.setData(x, _rsi(closes, 14))
+
+        self._price_plot.setXRange(max(0, len(self._candles) - 120), len(self._candles))
 
 
-def _ema(values: list[float], period: int) -> list[float]:
-    if not values:
-        return []
-    alpha = 2 / (period + 1)
-    out = [values[0]]
-    for value in values[1:]:
-        out.append((value * alpha) + (out[-1] * (1 - alpha)))
-    return out
+def _ema(values: np.ndarray, period: int) -> np.ndarray:
+    if values.size == 0:
+        return np.array([])
+    alpha = 2.0 / (period + 1)
+    ema = np.empty(values.size, dtype=float)
+    ema[0] = values[0]
+    for i in range(1, values.size):
+        ema[i] = (values[i] * alpha) + (ema[i - 1] * (1.0 - alpha))
+    return ema
+
+
+def _rsi(values: np.ndarray, period: int) -> np.ndarray:
+    if values.size == 0:
+        return np.array([])
+
+    rsi = np.full(values.size, 50.0, dtype=float)
+    if values.size <= period:
+        return rsi
+
+    deltas = np.diff(values)
+    gains = np.where(deltas > 0, deltas, 0.0)
+    losses = np.where(deltas < 0, -deltas, 0.0)
+
+    avg_gain = gains[:period].mean()
+    avg_loss = losses[:period].mean()
+
+    for i in range(period, values.size):
+        if i > period:
+            avg_gain = ((avg_gain * (period - 1)) + gains[i - 1]) / period
+            avg_loss = ((avg_loss * (period - 1)) + losses[i - 1]) / period
+        rs = avg_gain / avg_loss if avg_loss != 0 else np.inf
+        rsi[i] = 100.0 - (100.0 / (1.0 + rs))
+
+    return rsi

@@ -6,19 +6,23 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QProgressBar,
     QVBoxLayout,
     QWidget,
 )
 
 from reco_trading.ui.chart_widget import CandlestickChartWidget
+from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
 
 class DashboardTab(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
+        self.state_manager = state_manager
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
@@ -30,6 +34,9 @@ class DashboardTab(QWidget):
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
         self.top_bar.setObjectName("metricValue")
         root.addWidget(self.top_bar)
+
+        controls = self._build_controls()
+        root.addWidget(controls)
 
         body = QGridLayout()
         body.setSpacing(10)
@@ -92,6 +99,35 @@ class DashboardTab(QWidget):
         body.addWidget(self.account_panel, 0, 1)
         body.addWidget(self.activity_panel, 1, 0)
         body.addWidget(self.chart_panel, 1, 1)
+
+    def _build_controls(self) -> QFrame:
+        panel = self._panel()
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        title = self._title("Bot Controls")
+        layout.addWidget(title)
+        layout.addStretch()
+
+        self.start_btn = QPushButton("Start Bot")
+        self.pause_btn = QPushButton("Pause Bot")
+        self.resume_btn = QPushButton("Resume Bot")
+        self.emergency_btn = QPushButton("Emergency Stop")
+        self.emergency_btn.setStyleSheet("QPushButton { background:#ea3943; color:#e6e8ee; }")
+
+        layout.addWidget(self.start_btn)
+        layout.addWidget(self.pause_btn)
+        layout.addWidget(self.resume_btn)
+        layout.addWidget(self.emergency_btn)
+
+        if self.state_manager:
+            self.start_btn.clicked.connect(self.state_manager.request_start)
+            self.pause_btn.clicked.connect(self.state_manager.request_pause)
+            self.resume_btn.clicked.connect(self.state_manager.request_resume)
+            self.emergency_btn.clicked.connect(self.state_manager.request_emergency_stop)
+
+        return panel
 
     def _panel(self) -> QFrame:
         panel = QFrame()

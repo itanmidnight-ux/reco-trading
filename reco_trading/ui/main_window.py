@@ -24,7 +24,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(app_stylesheet())
 
         tabs = QTabWidget()
-        self.dashboard_tab = DashboardTab()
+        self.dashboard_tab = DashboardTab(state_manager=state_manager)
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
         self.analytics_tab = AnalyticsTab()
