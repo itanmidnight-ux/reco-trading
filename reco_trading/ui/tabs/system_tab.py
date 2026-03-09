@@ -16,12 +16,12 @@ class SystemTab(QWidget):
         layout = QGridLayout(self)
         self.start = time.time()
         self.cards = {
-            "cpu": StatCard("CPU usage"),
-            "ram": StatCard("RAM usage"),
-            "uptime": StatCard("Bot uptime"),
-            "db": StatCard("Database status"),
+            "binance": StatCard("Binance status"),
+            "db": StatCard("PostgreSQL status"),
+            "redis": StatCard("Redis status"),
             "latency": StatCard("API latency"),
-            "sync": StatCard("Last server sync time"),
+            "uptime": StatCard("Bot uptime"),
+            "ram": StatCard("Memory usage"),
         }
         for i, card in enumerate(self.cards.values()):
             layout.addWidget(card, i // 3, i % 3)
@@ -32,11 +32,11 @@ class SystemTab(QWidget):
     def update_state(self, state: dict[str, Any]) -> None:
         system = state.get("system") or {}
         self.cards["db"].set_value(str(system.get("database_status", "UNKNOWN")))
+        self.cards["binance"].set_value(str(system.get("exchange_status", "UNKNOWN")))
+        self.cards["redis"].set_value(str(system.get("redis_status", "UNKNOWN")))
         self.cards["latency"].set_value(f"{_fmt_num(system.get('api_latency_ms'), 2)} ms")
-        self.cards["sync"].set_value(str(system.get("last_server_sync", "-")))
 
     def update_system(self) -> None:
-        self.cards["cpu"].set_value(f"{psutil.cpu_percent(interval=None):.1f}%")
         self.cards["ram"].set_value(f"{psutil.virtual_memory().percent:.1f}%")
         self.cards["uptime"].set_value(f"{int(time.time() - self.start)} s")
 

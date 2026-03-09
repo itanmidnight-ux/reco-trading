@@ -13,4 +13,7 @@ class MarketTab(QWidget):
         layout.addWidget(self.panel)
 
     def update_state(self, state: dict) -> None:
-        self.panel.update_market(state)
+        try:
+            self.panel.update_market(state)
+        except Exception:
+            return

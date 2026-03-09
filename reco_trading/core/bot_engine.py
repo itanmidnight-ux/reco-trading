@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import ccxt
+from rich.console import Console
+from rich.layout import Layout
 from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
 
 from reco_trading.config.settings import Settings
 from reco_trading.config.symbols import normalize_symbol
@@ -30,7 +34,7 @@ class BotEngine:
     def __init__(self, settings: Settings, state_manager: "StateManager | None" = None) -> None:
         self.settings = settings
         self.logger = logging.getLogger(__name__)
-        self.state = BotState.STARTING
+        self.state = BotState.INITIALIZING
 
         self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
         self.symbol = normalize_symbol(settings.trading_symbol)
@@ -52,6 +56,7 @@ class BotEngine:
         self.consecutive_losses = 0
 
         self.dashboard = TerminalDashboard()
+        self.console = Console()
         self.snapshot: dict[str, Any] = {
             "pair": self.symbol,
             "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
@@ -71,14 +76,24 @@ class BotEngine:
             "last_trade": None,
             "cooldown": None,
             "status": "INITIALIZING",
+            "exchange_status": "UNKNOWN",
+            "database_status": "UNKNOWN",
+            "redis_status": "UNKNOWN",
             "signals": {},
+            "volume": None,
+            "api_latency_ms": None,
+            "started_at": time.time(),
         }
 
     async def run(self) -> None:
-        await self._set_state(BotState.STARTING, "initialize_settings")
+        await self._set_state(BotState.INITIALIZING, "load_settings")
         await self.repository.setup()
+        self.snapshot["database_status"] = "CONNECTED"
+        await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_binance")
         await self.client.sync_time()
-        await self._set_state(BotState.SYNCING_SYMBOL, "sync_exchange_rules")
+        self.snapshot["exchange_status"] = "CONNECTED"
+        await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
+        await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
         await self.order_manager.sync_rules()
         self._sync_ui_state()
 
@@ -86,7 +101,9 @@ class BotEngine:
             while True:
                 try:
                     self._roll_day()
+                    await self._set_state(BotState.WAITING_MARKET_DATA)
                     market_data = await self.fetch_market_data()
+                    await self._set_state(BotState.ANALYZING_MARKET)
                     analysis = await self.analyze_market(market_data)
                     self._update_snapshot(market_data, analysis)
 
@@ -113,8 +130,10 @@ class BotEngine:
         frame15 = apply_indicators(await self.market_stream.fetch_frame(self.settings.confirmation_timeframe))
         candle = frame5.iloc[-1]
 
+        tick_start = time.perf_counter()
         ticker = await self.client.fetch_ticker(self.symbol)
         order_book = await self.client.fetch_order_book(self.symbol)
+        self.snapshot["api_latency_ms"] = (time.perf_counter() - tick_start) * 1000
         price = _as_float(ticker.get("last"), _as_float(candle.get("close"), 0.0))
         bid = _book_price(order_book, "bids", price)
         ask = _book_price(order_book, "asks", price)
@@ -143,11 +162,13 @@ class BotEngine:
             "volume": _as_float(candle.get("volume"), 0.0),
             "atr": _as_float(candle.get("atr"), 0.0),
             "adx": _as_float(candle.get("adx"), 0.0),
+            "change_24h": _as_float(ticker.get("percentage"), 0.0),
         }
 
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
         side, confidence, grade = self.confidence_model.evaluate(bundle)
+        await self._set_state(BotState.SIGNAL_GENERATED)
         await self._persist_signal(bundle, side, confidence)
         return {"bundle": bundle, "side": side, "confidence": confidence, "grade": grade}
 
@@ -167,7 +188,7 @@ class BotEngine:
             return False
 
         if not self._is_cooldown_complete():
-            await self._set_state(BotState.WAITING_SIGNAL, "cooldown_active")
+            await self._set_state(BotState.COOLDOWN, "cooldown_active")
             self.snapshot["cooldown"] = "ACTIVE"
             return False
 
@@ -179,7 +200,7 @@ class BotEngine:
             confidence_threshold=self.settings.confidence_threshold,
         )
         if not risk.approved:
-            await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_SIGNAL, risk.reason)
+            await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.COOLDOWN, risk.reason)
             self.snapshot["cooldown"] = risk.reason
             return False
 
@@ -193,11 +214,11 @@ class BotEngine:
         atr = float(market_data.get("atr", 0.0))
 
         if not bundle.regime_trade_allowed:
-            await self._set_state(BotState.WAITING_SIGNAL, "regime_filter")
+            await self._set_state(BotState.COOLDOWN, "regime_filter")
             return
 
         if not self.position_manager.can_open(float(analysis["confidence"])):
-            await self._set_state(BotState.MONITORING_POSITION, "max_positions")
+            await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
 
         qty = self.calculate_position_size(price, float(bundle.size_multiplier))
@@ -243,7 +264,7 @@ class BotEngine:
         self.trades_today += 1
         self.snapshot["trades_today"] = self.trades_today
         self.snapshot["last_trade"] = f"{side} @ {entry:.2f}"
-        await self._set_state(BotState.ORDER_FILLED)
+        await self._set_state(BotState.POSITION_OPEN)
         await self._log("INFO", f"order_filled side={side} qty={qty:.8f} entry={entry:.2f}")
 
         if self.state_manager:
@@ -258,6 +279,11 @@ class BotEngine:
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "status": "OPEN",
+                    "entry_time": datetime.utcnow().isoformat(timespec="seconds"),
+                    "exit_time": "-",
+                    "fees": order.get("fee", {}).get("cost", 0),
+                    "confidence": analysis.get("confidence"),
+                    "signal_details": str(bundle),
                 }
             )
 
@@ -266,13 +292,13 @@ class BotEngine:
             return
 
         price = float(market_data["price"])
-        await self._set_state(BotState.MONITORING_POSITION)
+        await self._set_state(BotState.POSITION_OPEN)
         for position in list(self.position_manager.positions):
             exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
 
-            await self._set_state(BotState.CLOSING_POSITION)
+            await self._set_state(BotState.COOLDOWN)
             close_side = "sell" if position.side == "BUY" else "buy"
             order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
             exit_price = _as_float(order.get("average"), _as_float(order.get("price"), price))
@@ -304,6 +330,11 @@ class BotEngine:
                         "size": position.quantity,
                         "pnl": pnl,
                         "status": exit_reason,
+                        "entry_time": "-",
+                        "exit_time": datetime.utcnow().isoformat(timespec="seconds"),
+                        "fees": order.get("fee", {}).get("cost", 0),
+                        "confidence": None,
+                        "signal_details": exit_reason,
                     }
                 )
 
@@ -364,6 +395,8 @@ class BotEngine:
                 "adx": market_data.get("adx"),
                 "volatility_regime": bundle.regime,
                 "order_flow": bundle.order_flow,
+                "volume": market_data.get("volume"),
+                "change_24h": market_data.get("change_24h"),
                 "signal": analysis.get("side"),
                 "confidence": analysis.get("confidence"),
                 "status": self.state.value,
@@ -440,22 +473,35 @@ class BotEngine:
                 status=self.snapshot.get("status", "INITIALIZING"),
                 bid=self.snapshot.get("price"),
                 ask=self.snapshot.get("price"),
-                volume=0.0,
+                volume=self.snapshot.get("volume"),
                 atr=0.0,
+                change_24h=self.snapshot.get("change_24h"),
                 signals=self.snapshot.get("signals", {}),
                 system={
                     "uptime_seconds": time.time() - self.start_time,
-                    "api_latency_ms": 0.0,
-                    "database_status": "CONNECTED",
+                    "api_latency_ms": _as_float(self.snapshot.get("api_latency_ms"), 0.0),
+                    "database_status": self.snapshot.get("database_status", "UNKNOWN"),
+                    "exchange_status": self.snapshot.get("exchange_status", "UNKNOWN"),
+                    "redis_status": self.snapshot.get("redis_status", "UNKNOWN"),
+                    "memory_usage_mb": 0.0,
                     "last_server_sync": datetime.utcnow().isoformat(timespec="seconds"),
                 },
                 risk_metrics={
                     "risk_per_trade": f"{self.settings.risk_per_trade_fraction:.2%}",
-                    "max_trades_per_hour": self.settings.max_trades_per_day,
-                    "cooldown": self.settings.cooldown_minutes,
+                    "max_concurrent_trades": self.settings.max_trades_per_day,
+                    "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
-                    "current_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
-                    "daily_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
+                    "current_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
+                },
+                analytics={
+                    "total_trades": self.trades_today,
+                    "win_rate": self.snapshot.get("win_rate") or 0.0,
+                    "profit_factor": 0.0,
+                    "average_win": 0.0,
+                    "average_loss": 0.0,
+                    "largest_win": 0.0,
+                    "largest_loss": 0.0,
+                    "equity_curve": [self.snapshot.get("equity") or 0.0],
                 },
             )
         except Exception as exc:  # noqa: BLE001

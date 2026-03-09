@@ -10,11 +10,11 @@ class RiskTab(QWidget):
         super().__init__()
         layout = QGridLayout(self)
         self.cards = {}
-        keys = ["risk_per_trade", "max_trades_per_hour", "cooldown", "consecutive_losses", "current_drawdown", "daily_exposure"]
+        keys = ["risk_per_trade", "max_concurrent_trades", "daily_drawdown", "current_exposure"]
         for i, key in enumerate(keys):
             card = StatCard(key.replace("_", " ").title())
             self.cards[key] = card
-            layout.addWidget(card, i // 3, i % 3)
+            layout.addWidget(card, i // 2, i % 2)
 
     def update_state(self, state: dict) -> None:
         metrics = state.get("risk_metrics", {})
