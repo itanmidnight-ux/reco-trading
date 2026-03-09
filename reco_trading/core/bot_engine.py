@@ -70,6 +70,9 @@ class BotEngine:
             "confidence": None,
             "balance": None,
             "equity": None,
+            "btc_balance": 0.0,
+            "btc_value": 0.0,
+            "total_equity": None,
             "daily_pnl": None,
             "trades_today": 0,
             "win_rate": None,
@@ -174,11 +177,17 @@ class BotEngine:
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
         confidence = float(analysis["confidence"])
-        balance = await self._fetch_usdt_balance()
+        usdt_balance, btc_balance = await self._fetch_balances()
+        current_price = _as_float(self.snapshot.get("price"), 0.0)
+        btc_value = float(btc_balance * current_price)
+        total_equity = float(usdt_balance + btc_value)
         daily_pnl = float(await self.repository.get_daily_pnl() or 0.0)
 
-        self.snapshot["balance"] = balance
-        self.snapshot["equity"] = balance + daily_pnl
+        self.snapshot["balance"] = float(usdt_balance)
+        self.snapshot["btc_balance"] = float(btc_balance)
+        self.snapshot["btc_value"] = btc_value
+        self.snapshot["total_equity"] = total_equity
+        self.snapshot["equity"] = total_equity + daily_pnl
         self.snapshot["daily_pnl"] = daily_pnl
         self.snapshot["trades_today"] = self.trades_today
 
@@ -193,7 +202,7 @@ class BotEngine:
             return False
 
         risk = self.risk_manager.validate(
-            balance=balance,
+            balance=usdt_balance,
             daily_pnl=daily_pnl,
             trades_today=self.trades_today,
             confidence=confidence,
@@ -412,10 +421,20 @@ class BotEngine:
             }
         )
 
-    async def _fetch_usdt_balance(self) -> float:
+    async def _fetch_balances(self) -> tuple[float, float]:
         payload = await self.client.fetch_balance()
-        usdt = payload.get("USDT") or {}
-        return _as_float(usdt.get("free"), 0.0)
+
+        total_balances = payload.get("total") if isinstance(payload, dict) else None
+        if isinstance(total_balances, dict):
+            usdt_balance = _as_float(total_balances.get("USDT"), 0.0)
+            btc_balance = _as_float(total_balances.get("BTC"), 0.0)
+            return usdt_balance, btc_balance
+
+        usdt = payload.get("USDT") if isinstance(payload, dict) else {}
+        btc = payload.get("BTC") if isinstance(payload, dict) else {}
+        usdt_balance = _as_float((usdt or {}).get("free"), 0.0)
+        btc_balance = _as_float((btc or {}).get("free"), 0.0)
+        return usdt_balance, btc_balance
 
     async def _set_state(self, new_state: BotState, context: str = "") -> None:
         if new_state == self.state:
@@ -466,6 +485,9 @@ class BotEngine:
                 confidence=self.snapshot.get("confidence"),
                 balance=self.snapshot.get("balance"),
                 equity=self.snapshot.get("equity"),
+                btc_balance=self.snapshot.get("btc_balance", 0.0),
+                btc_value=self.snapshot.get("btc_value", 0.0),
+                total_equity=self.snapshot.get("total_equity", self.snapshot.get("equity")),
                 daily_pnl=self.snapshot.get("daily_pnl"),
                 trades_today=self.snapshot.get("trades_today", 0),
                 win_rate=self.snapshot.get("win_rate"),

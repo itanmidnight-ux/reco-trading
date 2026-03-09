@@ -93,6 +93,9 @@ class DashboardTab(QWidget):
         self.account_cards = {
             "balance": StatCard("Balance", compact=True),
             "equity": StatCard("Equity", compact=True),
+            "btc_balance": StatCard("BTC Balance", compact=True),
+            "btc_value": StatCard("BTC Value", compact=True),
+            "total_equity": StatCard("Total Equity", compact=True),
             "daily_pnl": StatCard("Daily PnL", compact=True),
             "trades_today": StatCard("Trades Today", compact=True),
             "win_rate": StatCard("Win Rate", compact=True),
@@ -201,6 +204,9 @@ class DashboardTab(QWidget):
 
         self.account_cards["balance"].set_value(f"{_fmt_num(state.get('balance'), 2)} USDT")
         self.account_cards["equity"].set_value(f"{_fmt_num(state.get('equity'), 2)} USDT")
+        self.account_cards["btc_balance"].set_value(f"{_fmt_num(state.get('btc_balance'), 6)} BTC")
+        self.account_cards["btc_value"].set_value(f"{_fmt_num(state.get('btc_value'), 2)} USDT")
+        self.account_cards["total_equity"].set_value(f"{_fmt_num(state.get('total_equity'), 2)} USDT")
         daily_pnl = float(state.get("daily_pnl", 0) or 0)
         self.account_cards["daily_pnl"].set_value(f"{daily_pnl:.2f} USDT")
         self.account_cards["daily_pnl"].value.setStyleSheet(
