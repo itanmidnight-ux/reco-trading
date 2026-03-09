@@ -1,45 +1,45 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from PySide6.QtWidgets import QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget
-
-from reco_trading.config.settings import Settings
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QSpinBox, QVBoxLayout, QWidget
 
 
 class SettingsTab(QWidget):
-    FIELDS = ["TRADING_SYMBOL", "PRIMARY_TIMEFRAME", "RISK_PER_TRADE_FRACTION", "COOLDOWN_MINUTES"]
+    settings_changed = Signal(dict)
 
     def __init__(self) -> None:
         super().__init__()
-        self.inputs: dict[str, QLineEdit] = {}
-        settings = Settings()
-        defaults = {
-            "TRADING_SYMBOL": settings.trading_symbol,
-            "PRIMARY_TIMEFRAME": settings.primary_timeframe,
-            "RISK_PER_TRADE_FRACTION": str(settings.risk_per_trade_fraction),
-            "COOLDOWN_MINUTES": str(settings.cooldown_minutes),
-        }
         layout = QVBoxLayout(self)
-        form = QFormLayout()
-        for field in self.FIELDS:
-            inp = QLineEdit(defaults.get(field, ""))
-            form.addRow(field, inp)
-            self.inputs[field] = inp
-        layout.addLayout(form)
-        save = QPushButton("Save to .env")
-        save.clicked.connect(self.save_env)
-        layout.addWidget(save)
+        layout.addWidget(QLabel("UI Settings (read-only impact on trading engine)"))
 
-    def save_env(self) -> None:
-        env_path = Path(".env")
-        existing: dict[str, str] = {}
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if "=" in line and not line.strip().startswith("#"):
-                    k, v = line.split("=", 1)
-                    existing[k] = v
-        for k, widget in self.inputs.items():
-            if widget.text().strip():
-                existing[k] = widget.text().strip()
-        env_path.write_text("\n".join(f"{k}={v}" for k, v in existing.items()) + "\n")
+        form = QFormLayout()
+        self.refresh_rate = QSpinBox()
+        self.refresh_rate.setRange(250, 5000)
+        self.refresh_rate.setValue(1000)
+        self.chart_visible = QCheckBox()
+        self.chart_visible.setChecked(True)
+        self.theme = QComboBox()
+        self.theme.addItems(["Dark", "Dark+Contrast"])
+        self.log_verbosity = QComboBox()
+        self.log_verbosity.addItems(["INFO", "WARNING", "ERROR"])
+
+        form.addRow("Refresh rate (ms)", self.refresh_rate)
+        form.addRow("Chart visibility", self.chart_visible)
+        form.addRow("Theme", self.theme)
+        form.addRow("Log verbosity", self.log_verbosity)
+        layout.addLayout(form)
+
+        self.refresh_rate.valueChanged.connect(self._emit)
+        self.chart_visible.stateChanged.connect(self._emit)
+        self.theme.currentTextChanged.connect(self._emit)
+        self.log_verbosity.currentTextChanged.connect(self._emit)
+
+    def _emit(self) -> None:
+        self.settings_changed.emit(
+            {
+                "refresh_rate_ms": self.refresh_rate.value(),
+                "chart_visible": self.chart_visible.isChecked(),
+                "theme": self.theme.currentText(),
+                "log_verbosity": self.log_verbosity.currentText(),
+            }
+        )
