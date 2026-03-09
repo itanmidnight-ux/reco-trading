@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QFrame, QLabel, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QFrame, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 
 class SettingsTab(QWidget):
@@ -32,17 +32,33 @@ class SettingsTab(QWidget):
         self.theme.addItems(["Dark", "Dark+Contrast"])
         self.log_verbosity = QComboBox()
         self.log_verbosity.addItems(["INFO", "WARNING", "ERROR"])
+        self.default_pair = QComboBox()
+        self.default_pair.addItems(["BTC/USDT", "ETH/USDT", "SOL/USDT"])
+        self.default_tf = QComboBox()
+        self.default_tf.addItems(["1m / 5m", "5m / 15m", "15m / 1h"])
 
         form.addRow("Refresh rate (ms)", self.refresh_rate)
         form.addRow("Chart visibility", self.chart_visible)
         form.addRow("Theme", self.theme)
         form.addRow("Log verbosity", self.log_verbosity)
+        form.addRow("Default pair", self.default_pair)
+        form.addRow("Default timeframe", self.default_tf)
         panel_layout.addLayout(form)
+
+        self.status_hint = QLabel("Changes are applied in realtime.")
+        self.status_hint.setObjectName("metricLabel")
+        panel_layout.addWidget(self.status_hint)
+
+        self.apply_btn = QPushButton("Apply now")
+        self.apply_btn.clicked.connect(self._emit)
+        panel_layout.addWidget(self.apply_btn)
 
         self.refresh_rate.valueChanged.connect(self._emit)
         self.chart_visible.stateChanged.connect(self._emit)
         self.theme.currentTextChanged.connect(self._emit)
         self.log_verbosity.currentTextChanged.connect(self._emit)
+        self.default_pair.currentTextChanged.connect(self._emit)
+        self.default_tf.currentTextChanged.connect(self._emit)
 
     def _emit(self) -> None:
         self.settings_changed.emit(
@@ -51,5 +67,7 @@ class SettingsTab(QWidget):
                 "chart_visible": self.chart_visible.isChecked(),
                 "theme": self.theme.currentText(),
                 "log_verbosity": self.log_verbosity.currentText(),
+                "default_pair": self.default_pair.currentText(),
+                "default_timeframe": self.default_tf.currentText(),
             }
         )
