@@ -12,7 +12,6 @@ from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
 from reco_trading.ui.tabs.trades_tab import TradesTab
-from reco_trading.ui.theme import app_stylesheet
 
 
 class MainWindow(QMainWindow):
@@ -21,7 +20,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Reco Trading Professional Terminal")
         self.resize(1520, 940)
         self.state_manager = state_manager
-        self.setStyleSheet(app_stylesheet())
+        try:
+            from reco_trading.ui.theme import app_stylesheet
+
+            self.setStyleSheet(app_stylesheet())
+        except Exception as exc:  # noqa: BLE001
+            print(f"Theme loading failed: {exc}")
 
         tabs = QTabWidget()
         self.dashboard_tab = DashboardTab(state_manager=state_manager)
