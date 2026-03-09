@@ -14,7 +14,7 @@ COLORS = {
 }
 
 
-def dashboard_stylesheet() -> str:
+def app_stylesheet() -> str:
     return f"""
     QWidget {{
         background-color: {COLORS['background']};
@@ -101,3 +101,8 @@ def dashboard_stylesheet() -> str:
         background: #2d3550;
     }}
     """
+
+
+def dashboard_stylesheet() -> str:
+    """Backward-compatible alias for the global application stylesheet."""
+    return app_stylesheet()
