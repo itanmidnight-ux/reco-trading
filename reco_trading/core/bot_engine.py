@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import ccxt
+from rich.console import Console
+from rich.layout import Layout
 from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
 
 from reco_trading.config.settings import Settings
 from reco_trading.config.symbols import normalize_symbol
@@ -52,6 +56,7 @@ class BotEngine:
         self.consecutive_losses = 0
 
         self.dashboard = TerminalDashboard()
+        self.console = Console()
         self.snapshot: dict[str, Any] = {
             "pair": self.symbol,
             "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
@@ -72,6 +77,9 @@ class BotEngine:
             "cooldown": None,
             "status": BotState.INITIALIZING.value,
             "signals": {},
+            "volume": None,
+            "api_latency_ms": None,
+            "started_at": time.time(),
         }
 
     async def run(self) -> None:
@@ -118,8 +126,10 @@ class BotEngine:
         frame15 = apply_indicators(await self.market_stream.fetch_frame(self.settings.confirmation_timeframe))
         candle = frame5.iloc[-1]
 
+        tick_start = time.perf_counter()
         ticker = await self.client.fetch_ticker(self.symbol)
         order_book = await self.client.fetch_order_book(self.symbol)
+        self.snapshot["api_latency_ms"] = (time.perf_counter() - tick_start) * 1000
         price = _as_float(ticker.get("last"), _as_float(candle.get("close"), 0.0))
         bid = _book_price(order_book, "bids", price)
         ask = _book_price(order_book, "asks", price)
@@ -148,11 +158,13 @@ class BotEngine:
             "volume": _as_float(candle.get("volume"), 0.0),
             "atr": _as_float(candle.get("atr"), 0.0),
             "adx": _as_float(candle.get("adx"), 0.0),
+            "change_24h": _as_float(ticker.get("percentage"), 0.0),
         }
 
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
         side, confidence, grade = self.confidence_model.evaluate(bundle)
+        await self._set_state(BotState.SIGNAL_GENERATED)
         await self._persist_signal(bundle, side, confidence)
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {"bundle": bundle, "side": side, "confidence": confidence, "grade": grade}
@@ -264,6 +276,11 @@ class BotEngine:
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "status": "OPEN",
+                    "entry_time": datetime.utcnow().isoformat(timespec="seconds"),
+                    "exit_time": "-",
+                    "fees": order.get("fee", {}).get("cost", 0),
+                    "confidence": analysis.get("confidence"),
+                    "signal_details": str(bundle),
                 }
             )
 
@@ -310,6 +327,11 @@ class BotEngine:
                         "size": position.quantity,
                         "pnl": pnl,
                         "status": exit_reason,
+                        "entry_time": "-",
+                        "exit_time": datetime.utcnow().isoformat(timespec="seconds"),
+                        "fees": order.get("fee", {}).get("cost", 0),
+                        "confidence": None,
+                        "signal_details": exit_reason,
                     }
                 )
 
@@ -370,6 +392,8 @@ class BotEngine:
                 "adx": market_data.get("adx"),
                 "volatility_regime": bundle.regime,
                 "order_flow": bundle.order_flow,
+                "volume": market_data.get("volume"),
+                "change_24h": market_data.get("change_24h"),
                 "signal": analysis.get("side"),
                 "confidence": analysis.get("confidence"),
                 "status": self.state.value,
@@ -446,22 +470,35 @@ class BotEngine:
                 status=self.snapshot.get("status", "INITIALIZING"),
                 bid=self.snapshot.get("price"),
                 ask=self.snapshot.get("price"),
-                volume=0.0,
+                volume=self.snapshot.get("volume"),
                 atr=0.0,
+                change_24h=self.snapshot.get("change_24h"),
                 signals=self.snapshot.get("signals", {}),
                 system={
                     "uptime_seconds": time.time() - self.start_time,
-                    "api_latency_ms": 0.0,
-                    "database_status": "CONNECTED",
+                    "api_latency_ms": _as_float(self.snapshot.get("api_latency_ms"), 0.0),
+                    "database_status": self.snapshot.get("database_status", "UNKNOWN"),
+                    "exchange_status": self.snapshot.get("exchange_status", "UNKNOWN"),
+                    "redis_status": self.snapshot.get("redis_status", "UNKNOWN"),
+                    "memory_usage_mb": 0.0,
                     "last_server_sync": datetime.utcnow().isoformat(timespec="seconds"),
                 },
                 risk_metrics={
                     "risk_per_trade": f"{self.settings.risk_per_trade_fraction:.2%}",
-                    "max_trades_per_hour": self.settings.max_trades_per_day,
-                    "cooldown": self.settings.cooldown_minutes,
+                    "max_concurrent_trades": self.settings.max_trades_per_day,
+                    "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
-                    "current_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
-                    "daily_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
+                    "current_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
+                },
+                analytics={
+                    "total_trades": self.trades_today,
+                    "win_rate": self.snapshot.get("win_rate") or 0.0,
+                    "profit_factor": 0.0,
+                    "average_win": 0.0,
+                    "average_loss": 0.0,
+                    "largest_win": 0.0,
+                    "largest_loss": 0.0,
+                    "equity_curve": [self.snapshot.get("equity") or 0.0],
                 },
             )
         except Exception as exc:  # noqa: BLE001

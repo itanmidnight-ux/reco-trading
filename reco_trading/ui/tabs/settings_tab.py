@@ -4,20 +4,26 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QFormLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
+from reco_trading.config.settings import Settings
+
 
 class SettingsTab(QWidget):
-    FIELDS = [
-        "TRADING_PAIR", "TIMEFRAME", "RISK_PER_TRADE", "MAX_TRADES_PER_HOUR", "COOLDOWN_TIME", "ADX_THRESHOLD",
-        "SPREAD_FILTER", "VOLUME_FILTER", "CONFIDENCE_THRESHOLD",
-    ]
+    FIELDS = ["TRADING_SYMBOL", "PRIMARY_TIMEFRAME", "RISK_PER_TRADE_FRACTION", "COOLDOWN_MINUTES"]
 
     def __init__(self) -> None:
         super().__init__()
         self.inputs: dict[str, QLineEdit] = {}
+        settings = Settings()
+        defaults = {
+            "TRADING_SYMBOL": settings.trading_symbol,
+            "PRIMARY_TIMEFRAME": settings.primary_timeframe,
+            "RISK_PER_TRADE_FRACTION": str(settings.risk_per_trade_fraction),
+            "COOLDOWN_MINUTES": str(settings.cooldown_minutes),
+        }
         layout = QVBoxLayout(self)
         form = QFormLayout()
         for field in self.FIELDS:
-            inp = QLineEdit()
+            inp = QLineEdit(defaults.get(field, ""))
             form.addRow(field, inp)
             self.inputs[field] = inp
         layout.addLayout(form)

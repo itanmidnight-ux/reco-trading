@@ -12,21 +12,24 @@ class MarketPanel(QWidget):
         super().__init__()
         layout = QGridLayout(self)
         self.cards: dict[str, StatCard] = {}
-        keys = ["Price", "Bid", "Ask", "Spread", "Volume", "ATR", "ADX", "Volatility"]
-        for i, key in enumerate(keys):
-            card = StatCard(key)
-            layout.addWidget(card, i // 4, i % 4)
-            self.cards[key.lower()] = card
+        keys = [
+            ("current_price", "Current price"),
+            ("change_24h", "24h change %"),
+            ("spread", "Spread"),
+            ("volume", "Volume"),
+            ("volatility_regime", "Volatility regime"),
+        ]
+        for i, (key, label) in enumerate(keys):
+            card = StatCard(label)
+            layout.addWidget(card, i // 3, i % 3)
+            self.cards[key] = card
 
     def update_market(self, state: dict[str, Any]) -> None:
-        self.cards["price"].set_value(_fmt_num(state.get("current_price"), 4))
-        self.cards["bid"].set_value(_fmt_num(state.get("bid"), 4))
-        self.cards["ask"].set_value(_fmt_num(state.get("ask"), 4))
+        self.cards["current_price"].set_value(_fmt_num(state.get("current_price"), 4))
+        self.cards["change_24h"].set_value(f"{_fmt_num(state.get('change_24h'), 2)}%")
         self.cards["spread"].set_value(_fmt_num(state.get("spread"), 6))
         self.cards["volume"].set_value(_fmt_num(state.get("volume"), 2))
-        self.cards["atr"].set_value(_fmt_num(state.get("atr"), 4))
-        self.cards["adx"].set_value(_fmt_num(state.get("adx"), 2))
-        self.cards["volatility"].set_value(str(state.get("volatility_regime") or "-"))
+        self.cards["volatility_regime"].set_value(str(state.get("volatility_regime") or "-"))
 
 
 def _fmt_num(value: Any, digits: int) -> str:

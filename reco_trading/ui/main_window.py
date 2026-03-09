@@ -46,11 +46,11 @@ class MainWindow(QMainWindow):
         state_manager.notification.connect(self._notify)
 
     def _on_state(self, state: dict) -> None:
-        self.dashboard_tab.update_state(state)
-        self.market_tab.update_state(state)
-        self.analytics_tab.update_state(state)
-        self.risk_tab.update_state(state)
-        self.system_tab.update_state(state)
+        for tab in (self.dashboard_tab, self.market_tab, self.analytics_tab, self.risk_tab, self.system_tab):
+            try:
+                tab.update_state(state)
+            except Exception:
+                continue
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)

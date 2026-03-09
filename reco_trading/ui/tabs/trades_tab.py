@@ -10,11 +10,17 @@ class TradeDetailsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"Trade {trade.get('trade_id', '-')}")
         form = QFormLayout(self)
-        for key in [
-            "trade_id", "pair", "side", "entry", "exit", "size", "position_value", "stop_loss", "take_profit", "pnl", "duration",
-            "trend", "momentum", "volume_signal", "order_flow", "confidence",
-        ]:
-            form.addRow(key.replace("_", " ").title(), QLabel(str(trade.get(key, "-"))))
+        fields = [
+            ("entry_time", "Entry time"),
+            ("exit_time", "Exit time"),
+            ("size", "Size"),
+            ("fees", "Fees"),
+            ("pnl", "Net PnL"),
+            ("confidence", "Confidence score"),
+            ("signal_details", "Signal details"),
+        ]
+        for key, label in fields:
+            form.addRow(label, QLabel(str(trade.get(key, "-"))))
 
 
 class TradesTab(QWidget):
