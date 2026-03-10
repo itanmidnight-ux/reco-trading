@@ -261,7 +261,7 @@ class DashboardTab(QWidget):
         self.account_cards["position_side"].set_value(str(state.get("position_side", "NONE")))
         self.account_cards["entry_price"].set_value(f"{_fmt_num(state.get('entry_price'), 2)}")
         self.account_cards["position_size"].set_value(f"{_fmt_num(state.get('position_size'), 8)}")
-        unrl = _to_float(state.get("unrealized_pnl")) or 0.0
+        unrl = float(state.get("unrealized_pnl", 0) or 0)
         self.account_cards["unrealized_pnl"].set_value(f"{unrl:.4f} USDT")
         self.account_cards["unrealized_pnl"].value.setStyleSheet(
             f"color: {'#16c784' if unrl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
@@ -297,7 +297,7 @@ def status_color(status: str) -> str:
     status = status.upper()
     if status in {"RUNNING", "POSITION_OPEN", "PLACING_ORDER"}:
         return "#16c784"
-    if status in {"WAITING_DATA", "WAITING_MARKET_DATA", "ANALYZING_MARKET", "SIGNAL_GENERATED", "COOLDOWN", "PAUSED"}:
+    if status in {"WAITING_DATA", "WAITING_MARKET_DATA", "ANALYZING_MARKET", "SIGNAL_GENERATED", "COOLDOWN"}:
         return "#f0b90b"
     if status == "ERROR":
         return "#ea3943"
