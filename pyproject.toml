@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "reco-trading"
+version = "0.2.0"
+description = "Minimal retail Binance trading bot (low-frequency, safety-first)"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "aiohttp",
+  "ccxt",
+  "loguru",
+  "numpy",
+  "pandas",
+  "pydantic",
+  "pydantic-settings",
+  "pyqtgraph",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
