@@ -60,7 +60,7 @@ def app_stylesheet() -> str:
         }}
         QLabel#sectionTitle {{
             color: {COLORS['text_primary']};
-            font-size: 17px;
+            font-size: 18px;
             font-weight: 700;
             letter-spacing: 0.4px;
         }}
@@ -71,7 +71,7 @@ def app_stylesheet() -> str:
         }}
         QLabel#metricValue {{
             color: {COLORS['text_primary']};
-            font-size: 19px;
+            font-size: 18px;
             font-weight: 700;
         }}
         QLabel#smallMetricValue {{

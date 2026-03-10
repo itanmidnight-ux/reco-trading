@@ -34,6 +34,7 @@ class SystemTab(QWidget):
             "latency": StatCard("Latency", compact=True),
             "memory": StatCard("Memory Usage", compact=True),
             "redis": StatCard("Redis", compact=True),
+            "bot_mode": StatCard("Bot Mode", compact=True),
         }
         self.cards["version"].set_value("reco-trading")
         for i, card in enumerate(self.cards.values()):
@@ -45,12 +46,13 @@ class SystemTab(QWidget):
 
     def update_state(self, state: dict[str, Any]) -> None:
         system = state.get("system", {})
-        self.cards["version"].set_value(str(state.get("bot_version", "-")))
+        self.cards["version"].set_value(str(state.get("bot_version", "reco-trading")))
         self.cards["api"].set_value(str(system.get("exchange_status", "UNKNOWN")))
         self.cards["database"].set_value(str(system.get("database_status", "UNKNOWN")))
         self.cards["latency"].set_value(f"{system.get('api_latency_ms', '-') } ms")
         self.cards["memory"].set_value(f"{system.get('memory_usage_mb', '-') } MB")
         self.cards["redis"].set_value(str(system.get("redis_status", "UNKNOWN")))
+        self.cards["bot_mode"].set_value(str(system.get("bot_mode", "UNKNOWN")))
 
         self.events.clear()
         self.events.addItems(
@@ -59,5 +61,6 @@ class SystemTab(QWidget):
                 f"Last server sync: {system.get('last_server_sync', '-')}",
                 f"Exchange: {system.get('exchange_status', 'UNKNOWN')}",
                 f"Database: {system.get('database_status', 'UNKNOWN')}",
+                f"Mode: {system.get('bot_mode', 'UNKNOWN')}",
             ]
         )

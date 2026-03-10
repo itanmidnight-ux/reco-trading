@@ -74,5 +74,5 @@ class AnalyticsTab(QWidget):
         self.insights.clear()
         self.insights.addItem(f"Signal: {state.get('signal', '-')}")
         self.insights.addItem(f"Confidence: {state.get('confidence', 0)}")
-        self.insights.addItem(f"Open position: {state.get('open_position', '-')}")
+        self.insights.addItem(f"Open position: {state.get('position_side', state.get('open_position', '-'))}")
         self.insights.addItem(f"Trades today: {state.get('trades_today', 0)}")

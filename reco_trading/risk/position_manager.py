@@ -21,9 +21,8 @@ class PositionManager:
     def __init__(self) -> None:
         self.positions: list[Position] = []
 
-    def can_open(self, confidence: float) -> bool:
-        max_positions = 2 if confidence >= 0.90 else 1
-        return len(self.positions) < max_positions
+    def can_open(self, max_concurrent_trades: int) -> bool:
+        return len(self.positions) < max(int(max_concurrent_trades), 1)
 
     def open(self, position: Position) -> None:
         self.positions.append(position)
