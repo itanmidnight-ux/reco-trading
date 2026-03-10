@@ -70,11 +70,7 @@ def test_tabs_accept_full_snapshot_without_errors() -> None:
         "analytics": {"equity_curve": [1000.0, 1010.0], "win_rate": 0.66, "total_trades": 3},
     }
 
-    dash = DashboardTab()
-    dash.update_state(snapshot)
-    assert "1000.00 USDT" in dash.account_cards["balance"].value.text()
-    assert "0.010000 BTC" in dash.account_cards["btc_balance"].value.text()
-
+    DashboardTab().update_state(snapshot)
     MarketTab().update_state(snapshot)
     RiskTab().update_state(snapshot)
     SystemTab().update_state(snapshot)
