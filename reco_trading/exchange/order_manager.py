@@ -63,6 +63,14 @@ class OrderManager:
             raise RuntimeError("symbol_rules_not_loaded")
         return quantity * price >= self.rules.min_notional
 
+    def spread_ratio(self, bid: float, ask: float, price: float) -> float:
+        reference = max(float(price), 1e-9)
+        spread = max(float(ask) - float(bid), 0.0)
+        return spread / reference
+
+    def validate_spread(self, bid: float, ask: float, price: float, max_spread_ratio: float) -> bool:
+        return self.spread_ratio(bid, ask, price) <= max_spread_ratio
+
     @staticmethod
     def _round_to_step(value: float, step: float) -> float:
         if step <= 0:
