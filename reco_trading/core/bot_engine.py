@@ -8,10 +8,7 @@ from typing import Any
 
 import ccxt
 from rich.console import Console
-from rich.layout import Layout
 from rich.live import Live
-from rich.panel import Panel
-from rich.table import Table
 
 from reco_trading.config.settings import Settings
 from reco_trading.config.symbols import normalize_symbol
@@ -66,7 +63,7 @@ class BotEngine:
             "adx": None,
             "volatility_regime": None,
             "order_flow": None,
-            "signal": None,
+            "signal": "HOLD",
             "confidence": None,
             "balance": None,
             "equity": None,
@@ -74,6 +71,10 @@ class BotEngine:
             "btc_value": 0.0,
             "total_equity": None,
             "daily_pnl": None,
+            "position_side": "NONE",
+            "entry_price": None,
+            "position_size": 0.0,
+            "unrealized_pnl": 0.0,
             "trades_today": 0,
             "win_rate": None,
             "last_trade": None,
@@ -84,13 +85,18 @@ class BotEngine:
             "api_latency_ms": None,
             "candles_5m": [],
             "started_at": time.time(),
+            "bot_mode": "TESTNET" if self.settings.binance_testnet else "LIVE",
+            "exchange_status": "UNKNOWN",
+            "database_status": "UNKNOWN",
         }
 
     async def run(self) -> None:
         await self._set_state(BotState.INITIALIZING, "initialize_settings")
         await self.repository.setup()
+        self.snapshot["database_status"] = "CONNECTED"
         await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
         await self.client.sync_time()
+        self.snapshot["exchange_status"] = "CONNECTED"
         await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
         await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
         await self.order_manager.sync_rules()
@@ -169,14 +175,20 @@ class BotEngine:
 
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
-        side, confidence, grade = self.confidence_model.evaluate(bundle)
+        side, confidence, grade = self.confidence_model.evaluate(bundle, self.settings.confidence_threshold)
         await self._set_state(BotState.SIGNAL_GENERATED)
         await self._persist_signal(bundle, side, confidence)
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {"bundle": bundle, "side": side, "confidence": confidence, "grade": grade}
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
+        side = str(analysis["side"])
         confidence = float(analysis["confidence"])
+
+        if side == "HOLD":
+            self.snapshot["cooldown"] = "HOLD_SIGNAL"
+            return False
+
         usdt_balance, btc_balance = await self._fetch_balances()
         current_price = _as_float(self.snapshot.get("price"), 0.0)
         btc_value = float(btc_balance * current_price)
@@ -187,7 +199,7 @@ class BotEngine:
         self.snapshot["btc_balance"] = float(btc_balance)
         self.snapshot["btc_value"] = btc_value
         self.snapshot["total_equity"] = total_equity
-        self.snapshot["equity"] = total_equity + daily_pnl
+        self.snapshot["equity"] = total_equity
         self.snapshot["daily_pnl"] = daily_pnl
         self.snapshot["trades_today"] = self.trades_today
 
@@ -221,16 +233,28 @@ class BotEngine:
         side = str(analysis["side"])
         price = float(market_data["price"])
         atr = float(market_data.get("atr", 0.0))
+        bid = float(market_data.get("bid", price))
+        ask = float(market_data.get("ask", price))
 
+        if side == "HOLD":
+            return
         if not bundle.regime_trade_allowed:
             await self._set_state(BotState.WAITING_MARKET_DATA, "regime_filter")
             return
-
-        if not self.position_manager.can_open(float(analysis["confidence"])):
+        if not bundle.reversal_confirmed:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "reversal_unconfirmed")
+            return
+        if not bundle.liquidity_ok:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "liquidity_zone_block")
+            return
+        if not self.position_manager.can_open(self.settings.max_concurrent_trades):
             await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
+        if not self.order_manager.validate_spread(bid, ask, price, self.settings.max_spread_ratio):
+            await self._log("WARNING", "spread_above_threshold")
+            return
 
-        qty = self.calculate_position_size(price, float(bundle.size_multiplier))
+        qty, stop_distance = self.calculate_position_size(price, atr, float(bundle.size_multiplier))
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
             return
@@ -247,7 +271,7 @@ class BotEngine:
             return
 
         entry = _as_float(order.get("average"), _as_float(order.get("price"), price))
-        stop_loss, take_profit = self._build_stops(side, entry, atr)
+        stop_loss, take_profit = self._build_stops(side, entry, max(atr, stop_distance / 1.5))
         trade = await self.repository.create_trade(
             symbol=self.symbol,
             side=side,
@@ -298,18 +322,32 @@ class BotEngine:
 
     async def manage_open_position(self, market_data: dict[str, Any]) -> None:
         if not self.position_manager.positions:
+            self.snapshot.update({"position_side": "NONE", "entry_price": None, "position_size": 0.0, "unrealized_pnl": 0.0})
             return
 
         price = float(market_data["price"])
         await self._set_state(BotState.POSITION_OPEN)
         for position in list(self.position_manager.positions):
+            self.snapshot["position_side"] = position.side
+            self.snapshot["entry_price"] = position.entry_price
+            self.snapshot["position_size"] = position.quantity
+            pnl_mark = (price - position.entry_price) * position.quantity
+            if position.side == "SELL":
+                pnl_mark *= -1
+            self.snapshot["unrealized_pnl"] = pnl_mark
+
             exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
 
             await self._set_state(BotState.COOLDOWN)
             close_side = "sell" if position.side == "BUY" else "buy"
-            order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
+            try:
+                order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
+            except ccxt.BaseError as exc:
+                await self._log("ERROR", f"close_order_rejected error={exc}")
+                await self.repository.record_error(self.state.value, "close_order", str(exc))
+                continue
             exit_price = _as_float(order.get("average"), _as_float(order.get("price"), price))
 
             pnl = (exit_price - position.entry_price) * position.quantity
@@ -327,32 +365,16 @@ class BotEngine:
             self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else None
             self.snapshot["last_trade"] = f"{position.side} {exit_reason} pnl={pnl:.4f}"
 
-            if self.state_manager:
-                self.state_manager.add_trade(
-                    {
-                        "trade_id": position.trade_id,
-                        "time": datetime.utcnow().isoformat(timespec="seconds"),
-                        "pair": self.symbol,
-                        "side": position.side,
-                        "entry": position.entry_price,
-                        "exit": exit_price,
-                        "size": position.quantity,
-                        "pnl": pnl,
-                        "status": exit_reason,
-                        "entry_time": "-",
-                        "exit_time": datetime.utcnow().isoformat(timespec="seconds"),
-                        "fees": order.get("fee", {}).get("cost", 0),
-                        "confidence": None,
-                        "signal_details": exit_reason,
-                    }
-                )
-
-    def calculate_position_size(self, price: float, size_multiplier: float) -> float:
-        balance = _as_float(self.snapshot.get("balance"), 0.0)
-        capital = balance * self.settings.max_trade_balance_fraction * max(size_multiplier, 0.1)
-        capital = max(capital, self.settings.min_trade_usdt)
-        qty = self.order_manager.normalize_quantity(capital / max(price, 1e-9))
-        return float(qty)
+    def calculate_position_size(self, price: float, atr: float, size_multiplier: float) -> tuple[float, float]:
+        equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("balance"), 0.0))
+        sizing = self.risk_manager.position_size_for_risk(
+            equity=equity,
+            risk_fraction=self.settings.risk_per_trade_fraction * max(size_multiplier, 0.1),
+            price=price,
+            atr=atr,
+        )
+        qty = self.order_manager.normalize_quantity(sizing.quantity)
+        return float(qty), float(sizing.stop_distance)
 
     def _build_stops(self, side: str, entry: float, atr: float) -> tuple[float, float]:
         atr = max(atr, entry * 0.002)
@@ -387,6 +409,9 @@ class BotEngine:
                 "structure": bundle.structure,
                 "order_flow": bundle.order_flow,
                 "regime": bundle.regime,
+                "reversal_confirmed": bundle.reversal_confirmed,
+                "dip_detected": bundle.dip_detected,
+                "liquidity_ok": bundle.liquidity_ok,
             },
             confidence,
             side,
@@ -422,7 +447,11 @@ class BotEngine:
         )
 
     async def _fetch_balances(self) -> tuple[float, float]:
-        payload = await self.client.fetch_balance()
+        try:
+            payload = await self.client.fetch_balance()
+        except ccxt.BaseError as exc:
+            await self._log("ERROR", f"balance_fetch_failed error={exc}")
+            return 0.0, 0.0
 
         total_balances = payload.get("total") if isinstance(payload, dict) else None
         if isinstance(total_balances, dict):
@@ -489,6 +518,10 @@ class BotEngine:
                 btc_value=self.snapshot.get("btc_value", 0.0),
                 total_equity=self.snapshot.get("total_equity", self.snapshot.get("equity")),
                 daily_pnl=self.snapshot.get("daily_pnl"),
+                position_side=self.snapshot.get("position_side", "NONE"),
+                entry_price=self.snapshot.get("entry_price"),
+                position_size=self.snapshot.get("position_size", 0.0),
+                unrealized_pnl=self.snapshot.get("unrealized_pnl", 0.0),
                 trades_today=self.snapshot.get("trades_today", 0),
                 win_rate=self.snapshot.get("win_rate"),
                 last_trade=self.snapshot.get("last_trade"),
@@ -506,13 +539,14 @@ class BotEngine:
                     "api_latency_ms": _as_float(self.snapshot.get("api_latency_ms"), 0.0),
                     "database_status": self.snapshot.get("database_status", "UNKNOWN"),
                     "exchange_status": self.snapshot.get("exchange_status", "UNKNOWN"),
+                    "bot_mode": self.snapshot.get("bot_mode", "UNKNOWN"),
                     "redis_status": self.snapshot.get("redis_status", "UNKNOWN"),
                     "memory_usage_mb": 0.0,
                     "last_server_sync": datetime.utcnow().isoformat(timespec="seconds"),
                 },
                 risk_metrics={
                     "risk_per_trade": f"{self.settings.risk_per_trade_fraction:.2%}",
-                    "max_concurrent_trades": self.settings.max_trades_per_day,
+                    "max_concurrent_trades": self.settings.max_concurrent_trades,
                     "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
                     "current_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
