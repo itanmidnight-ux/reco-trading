@@ -370,26 +370,6 @@ class BotEngine:
             self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else None
             self.snapshot["last_trade"] = f"{position.side} {exit_reason} pnl={pnl:.4f}"
 
-            if self.state_manager:
-                self.state_manager.add_trade(
-                    {
-                        "trade_id": position.trade_id,
-                        "time": datetime.utcnow().isoformat(timespec="seconds"),
-                        "pair": self.symbol,
-                        "side": position.side,
-                        "entry": position.entry_price,
-                        "exit": exit_price,
-                        "size": position.quantity,
-                        "pnl": pnl,
-                        "status": exit_reason,
-                        "entry_time": "-",
-                        "exit_time": datetime.utcnow().isoformat(timespec="seconds"),
-                        "fees": order.get("fee", {}).get("cost", 0),
-                        "confidence": None,
-                        "signal_details": exit_reason,
-                    }
-                )
-
     def calculate_position_size(self, price: float, atr: float, size_multiplier: float) -> tuple[float, float]:
         equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("balance"), 0.0))
         sizing = self.risk_manager.position_size_for_risk(
@@ -575,7 +555,7 @@ class BotEngine:
                 risk_metrics={
                     "risk_per_trade": f"{self.settings.risk_per_trade_fraction:.2%}",
                     "max_concurrent_trades": self.settings.max_concurrent_trades,
-                    "daily_drawdown": _as_float(self.snapshot.get("daily_pnl"), 0.0),
+                    "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
                     "current_exposure": self._current_exposure_ratio(),
                 },
