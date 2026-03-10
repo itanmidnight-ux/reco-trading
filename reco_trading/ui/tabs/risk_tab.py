@@ -47,8 +47,12 @@ class RiskTab(QWidget):
         metrics = state.get("risk_metrics", {})
         for key, card in self.cards.items():
             card.set_value(str(metrics.get(key, "-")))
+        exposure_raw = metrics.get("current_exposure", 0)
+        if isinstance(exposure_raw, str):
+            exposure_raw = exposure_raw.replace("%", "").strip()
         try:
-            exposure = int(float(metrics.get("current_exposure", 0)) * 100)
+            exposure_val = float(exposure_raw)
+            exposure = int(exposure_val if exposure_val > 1 else exposure_val * 100)
         except (TypeError, ValueError):
             exposure = 0
         self._anim.stop()

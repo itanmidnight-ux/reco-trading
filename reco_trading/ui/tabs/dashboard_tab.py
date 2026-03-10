@@ -19,7 +19,6 @@ from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
 
-
 class AnimatedButton(QPushButton):
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(label, parent)
@@ -43,6 +42,7 @@ class AnimatedButton(QPushButton):
         self._hover_anim.setEndValue(target)
         self._hover_anim.start()
 
+
 class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
@@ -59,6 +59,10 @@ class DashboardTab(QWidget):
         self.top_bar.setObjectName("metricValue")
         root.addWidget(self.top_bar)
 
+        self.capital_strip = QLabel("USDT Capital: - | BTC Holdings: - | BTC Value: - | Allocation: -")
+        self.capital_strip.setObjectName("smallMetricValue")
+        root.addWidget(self.capital_strip)
+
         controls = self._build_controls()
         root.addWidget(controls)
 
@@ -72,6 +76,8 @@ class DashboardTab(QWidget):
             "adx": StatCard("ADX", compact=True),
             "volatility_regime": StatCard("Volatility Regime", compact=True),
             "order_flow": StatCard("Order Flow", compact=True),
+            "bid": StatCard("Best Bid", compact=True),
+            "ask": StatCard("Best Ask", compact=True),
         }
         market_layout = QGridLayout(self.market_panel)
         market_layout.setContentsMargins(10, 10, 10, 10)
@@ -85,20 +91,27 @@ class DashboardTab(QWidget):
         self.confidence_anim = QPropertyAnimation(self.confidence_bar, b"value", self)
         self.confidence_anim.setDuration(300)
         self.confidence_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        market_layout.addWidget(self.signal_badge, 3, 0)
-        market_layout.addWidget(self.confidence_label, 3, 1)
-        market_layout.addWidget(self.confidence_bar, 4, 0, 1, 2)
+        market_layout.addWidget(self.signal_badge, 4, 0)
+        market_layout.addWidget(self.confidence_label, 4, 1)
+        market_layout.addWidget(self.confidence_bar, 5, 0, 1, 2)
 
         self.account_panel = self._panel()
         self.account_cards = {
-            "balance": StatCard("Balance", compact=True),
+            "balance": StatCard("USDT Capital", compact=True),
             "equity": StatCard("Equity", compact=True),
-            "btc_balance": StatCard("BTC Balance", compact=True),
+            "btc_balance": StatCard("BTC Holdings", compact=True),
             "btc_value": StatCard("BTC Value", compact=True),
             "total_equity": StatCard("Total Equity", compact=True),
             "daily_pnl": StatCard("Daily PnL", compact=True),
             "trades_today": StatCard("Trades Today", compact=True),
             "win_rate": StatCard("Win Rate", compact=True),
+            "position_side": StatCard("Position Side", compact=True),
+            "entry_price": StatCard("Entry Price", compact=True),
+            "position_size": StatCard("Position Size", compact=True),
+            "unrealized_pnl": StatCard("Unrealized PnL", compact=True),
+            "bot_mode": StatCard("Bot Mode", compact=True),
+            "exchange_status": StatCard("Exchange", compact=True),
+            "database_status": StatCard("Database", compact=True),
         }
         account_layout = QGridLayout(self.account_panel)
         account_layout.setContentsMargins(10, 10, 10, 10)
@@ -159,7 +172,7 @@ class DashboardTab(QWidget):
 
     def _sync_control_buttons(self, status: str) -> None:
         normalized = status.upper()
-        running = normalized in {"RUNNING", "ACTIVE", "TRADING"}
+        running = normalized in {"RUNNING", "ACTIVE", "TRADING", "POSITION_OPEN", "PLACING_ORDER"}
 
         self.pause_btn.setVisible(running)
         self.start_btn.setVisible(not running)
@@ -176,7 +189,7 @@ class DashboardTab(QWidget):
         return label
 
     def update_state(self, state: dict[str, Any]) -> None:
-        pair = state.get("pair", "BTC/USDT")
+        pair = str(state.get("pair", "BTC/USDT"))
         price = _fmt_num(state.get("current_price", state.get("price")), 2)
         trend = str(state.get("trend", "NEUTRAL"))
         status = str(state.get("status", "-"))
@@ -184,10 +197,22 @@ class DashboardTab(QWidget):
         self.top_bar.setText(f"{pair} | {price} | {trend} | {status}")
         self.top_bar.setStyleSheet(f"color: {status_color(status)};")
 
+        usdt_balance = _as_float(state.get("balance"))
+        btc_balance = _as_float(state.get("btc_balance"))
+        btc_value = _as_float(state.get("btc_value"))
+        total_equity = _as_float(state.get("total_equity"))
+        btc_allocation = (btc_value / total_equity) if total_equity > 0 else 0.0
+        self.capital_strip.setText(
+            f"USDT Capital: {usdt_balance:.2f} USDT | BTC Holdings: {btc_balance:.6f} BTC | "
+            f"BTC Value: {btc_value:.2f} USDT | BTC Allocation: {_fmt_pct(btc_allocation)}"
+        )
+
         self.market_cards["spread"].set_value(_fmt_num(state.get("spread"), 6))
         self.market_cards["adx"].set_value(_fmt_num(state.get("adx"), 2))
         self.market_cards["volatility_regime"].set_value(str(state.get("volatility_regime", "-")))
         self.market_cards["order_flow"].set_value(str(state.get("order_flow", "-")))
+        self.market_cards["bid"].set_value(_fmt_num(state.get("bid"), 2))
+        self.market_cards["ask"].set_value(_fmt_num(state.get("ask"), 2))
 
         signal = str(state.get("signal", "NEUTRAL")).upper()
         self.signal_badge.setText(f"Signal: {signal}")
@@ -195,30 +220,54 @@ class DashboardTab(QWidget):
             f"padding:4px 10px; border-radius:10px; background:{signal_color(signal)}; color:#e6e8ee;"
         )
 
-        confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
+        confidence = max(0, min(100, int(_as_float(state.get("confidence")) * 100)))
         self.confidence_label.setText(f"Confidence {confidence}%")
         self.confidence_anim.stop()
         self.confidence_anim.setStartValue(self.confidence_bar.value())
         self.confidence_anim.setEndValue(confidence)
         self.confidence_anim.start()
 
-        self.account_cards["balance"].set_value(f"{_fmt_num(state.get('balance'), 2)} USDT")
-        self.account_cards["equity"].set_value(f"{_fmt_num(state.get('equity'), 2)} USDT")
-        self.account_cards["btc_balance"].set_value(f"{_fmt_num(state.get('btc_balance'), 6)} BTC")
-        self.account_cards["btc_value"].set_value(f"{_fmt_num(state.get('btc_value'), 2)} USDT")
-        self.account_cards["total_equity"].set_value(f"{_fmt_num(state.get('total_equity'), 2)} USDT")
-        daily_pnl = float(state.get("daily_pnl", 0) or 0)
+        self.account_cards["balance"].set_value(f"{usdt_balance:.2f} USDT")
+        self.account_cards["equity"].set_value(f"{_as_float(state.get('equity')):.2f} USDT")
+        self.account_cards["btc_balance"].set_value(f"{btc_balance:.6f} BTC")
+        self.account_cards["btc_value"].set_value(f"{btc_value:.2f} USDT")
+        self.account_cards["total_equity"].set_value(f"{total_equity:.2f} USDT")
+
+        daily_pnl = _as_float(state.get("daily_pnl"))
         self.account_cards["daily_pnl"].set_value(f"{daily_pnl:.2f} USDT")
         self.account_cards["daily_pnl"].value.setStyleSheet(
             f"color: {'#16c784' if daily_pnl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
         )
+
         self.account_cards["trades_today"].set_value(str(state.get("trades_today", "-")))
-        self.account_cards["win_rate"].set_value(f"{float(state.get('win_rate', 0) or 0)*100:.1f}%")
+        win_rate = _as_float(state.get("win_rate"))
+        self.account_cards["win_rate"].set_value(_fmt_pct(win_rate))
+
+        self.account_cards["position_side"].set_value(str(state.get("position_side", "NONE")))
+        self.account_cards["entry_price"].set_value(_fmt_num(state.get("entry_price"), 2))
+        self.account_cards["position_size"].set_value(_fmt_num(state.get("position_size"), 8))
+        unrl = _as_float(state.get("unrealized_pnl"))
+        self.account_cards["unrealized_pnl"].set_value(f"{unrl:.4f} USDT")
+        self.account_cards["unrealized_pnl"].value.setStyleSheet(
+            f"color: {'#16c784' if unrl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
+        )
+
+        system = state.get("system", {}) if isinstance(state.get("system"), dict) else {}
+        self.account_cards["bot_mode"].set_value(str(system.get("bot_mode", state.get("bot_mode", "-"))))
+        self.account_cards["exchange_status"].set_value(str(system.get("exchange_status", "UNKNOWN")))
+        self.account_cards["database_status"].set_value(str(system.get("database_status", "UNKNOWN")))
 
         logs = state.get("logs", [])[-8:]
-        lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-') }" for entry in logs] or ["[--:--] Waiting for events"]
+        lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-')}" for entry in logs] or ["[--:--] Waiting for events"]
         self.feed.setText("\n".join(lines))
         self.chart.update_from_snapshot(state)
+
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _fmt_num(value: Any, digits: int) -> str:
@@ -228,16 +277,22 @@ def _fmt_num(value: Any, digits: int) -> str:
         return "-"
 
 
+def _fmt_pct(value: float | Any) -> str:
+    return f"{_as_float(value) * 100:.1f}%"
+
+
 def signal_color(signal: str) -> str:
-    return {"BUY": "#16c784", "SELL": "#ea3943"}.get(signal, "#667085")
+    return {"BUY": "#16c784", "SELL": "#ea3943", "HOLD": "#667085"}.get(signal, "#667085")
 
 
 def status_color(status: str) -> str:
     status = status.upper()
-    if status == "RUNNING":
+    if status in {"RUNNING", "POSITION_OPEN", "PLACING_ORDER"}:
         return "#16c784"
-    if status == "WAITING_DATA":
+    if status in {"WAITING_DATA", "WAITING_MARKET_DATA", "ANALYZING_MARKET", "SIGNAL_GENERATED", "COOLDOWN"}:
         return "#f0b90b"
+    if status in {"PAUSED", "STOPPED"}:
+        return "#9aa4b2"
     if status == "ERROR":
         return "#ea3943"
     return "#9aa4b2"
