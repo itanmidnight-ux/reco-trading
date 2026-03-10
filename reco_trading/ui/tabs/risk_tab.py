@@ -1,70 +1,47 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QListWidget, QProgressBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QProgressBar, QVBoxLayout, QWidget
 
-from reco_trading.ui.widgets.stat_card import StatCard
+from reco_trading.ui.components.formatting import fmt_pct
 
 
 class RiskTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         root = QVBoxLayout(self)
-        title = QLabel("Risk Center")
+        title = QLabel("Risk")
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
-        subtitle = QLabel("Exposure and drawdown controls")
-        subtitle.setObjectName("metricLabel")
-        root.addWidget(subtitle)
+        self.risk_per_trade = QLabel("Risk per trade: --")
+        self.exposure = QLabel("Current exposure: --")
+        self.max_drawdown = QLabel("Max drawdown: --")
+        self.daily_limit = QLabel("Daily loss limit: --")
+        for w in [self.risk_per_trade, self.exposure, self.max_drawdown, self.daily_limit]:
+            root.addWidget(w)
 
-        panel = QFrame()
-        panel.setObjectName("panelCard")
-        root.addWidget(panel)
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(12, 12, 12, 12)
-
-        layout = QGridLayout()
-        self.cards = {}
-        keys = ["risk_per_trade", "max_concurrent_trades", "daily_drawdown", "current_exposure"]
-        for i, key in enumerate(keys):
-            card = StatCard(key.replace("_", " ").title(), compact=True)
-            self.cards[key] = card
-            layout.addWidget(card, i // 2, i % 2)
-        panel_layout.addLayout(layout)
-
-        self.exposure_bar = QProgressBar()
-        self.exposure_bar.setRange(0, 100)
-        panel_layout.addWidget(self.exposure_bar)
-        self.alerts = QListWidget()
-        self.alerts.addItems(["No risk alerts."])
-        panel_layout.addWidget(self.alerts)
-        self._anim = QPropertyAnimation(self.exposure_bar, b"value", self)
-        self._anim.setDuration(300)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.exposure_gauge = QProgressBar()
+        self.exposure_gauge.setRange(0, 100)
+        self.drawdown_gauge = QProgressBar()
+        self.drawdown_gauge.setRange(0, 100)
+        root.addWidget(self.exposure_gauge)
+        root.addWidget(self.drawdown_gauge)
 
     def update_state(self, state: dict) -> None:
-        metrics = state.get("risk_metrics", {})
-        for key, card in self.cards.items():
-            card.set_value(str(metrics.get(key, "-")))
-        exposure_raw = metrics.get("current_exposure", 0)
-        if isinstance(exposure_raw, str):
-            exposure_raw = exposure_raw.replace("%", "").strip()
-        try:
-            exposure_val = float(exposure_raw)
-            exposure = int(exposure_val if exposure_val > 1 else exposure_val * 100)
-        except (TypeError, ValueError):
-            exposure = 0
-        self._anim.stop()
-        self._anim.setStartValue(self.exposure_bar.value())
-        self._anim.setEndValue(max(0, min(100, exposure)))
-        self._anim.start()
+        metrics = state.get("risk_metrics", {}) if isinstance(state.get("risk_metrics"), dict) else {}
+        self.risk_per_trade.setText(f"Risk per trade: {metrics.get('risk_per_trade', '--')}")
+        exp = _to_pct(metrics.get("current_exposure", 0))
+        self.exposure.setText(f"Current exposure: {exp:.1f}%")
+        dd = _to_pct(abs(metrics.get("max_drawdown", metrics.get("daily_drawdown", 0))))
+        self.max_drawdown.setText(f"Max drawdown: {dd:.1f}%")
+        self.daily_limit.setText(f"Daily loss limit: {metrics.get('daily_loss_limit', '--')}")
+        self.exposure_gauge.setValue(int(max(0, min(100, exp))))
+        self.drawdown_gauge.setValue(int(max(0, min(100, dd))))
 
-        self.alerts.clear()
-        daily_drawdown = float(metrics.get("daily_drawdown", 0) or 0)
-        if exposure >= 80:
-            self.alerts.addItem("High exposure detected, consider reducing position sizes.")
-        if daily_drawdown <= -0.03:
-            self.alerts.addItem("Drawdown exceeded -3%, pause aggressive entries.")
-        if self.alerts.count() == 0:
-            self.alerts.addItem("No risk alerts.")
+
+def _to_pct(value) -> float:
+    try:
+        val = float(str(value).replace("%", ""))
+    except (TypeError, ValueError):
+        return 0.0
+    return val * 100 if abs(val) <= 1 else val

@@ -9,12 +9,6 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QBrush, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-BG_COLOR = "#131722"
-GRID_COLOR = "#2a2f3a"
-TEXT_COLOR = "#e6e8ee"
-BULL_COLOR = "#16c784"
-BEAR_COLOR = "#ea3943"
-
 
 @dataclass
 class Candle:
@@ -26,42 +20,24 @@ class Candle:
 
 
 class CandlestickItem(pg.GraphicsObject):
-    def __init__(self, body_width: float = 0.68) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self._body_width = body_width
         self._picture = QPicture()
-        self._candles: list[Candle] = []
 
-    def set_candles(self, candles: list[Candle]) -> None:
-        self._candles = candles
-        self._rebuild_picture()
-        self.update()
-
-    def _rebuild_picture(self) -> None:
-        picture = QPicture()
-        painter = QPainter(picture)
-        bull_pen = QPen(pg.mkColor(BULL_COLOR))
-        bear_pen = QPen(pg.mkColor(BEAR_COLOR))
-        bull_brush = QBrush(pg.mkColor(BULL_COLOR))
-        bear_brush = QBrush(pg.mkColor(BEAR_COLOR))
-
-        for idx, c in enumerate(self._candles):
-            is_bull = c.close >= c.open
-            pen = bull_pen if is_bull else bear_pen
-            brush = bull_brush if is_bull else bear_brush
-            painter.setPen(pen)
-            painter.drawLine(idx, c.low, idx, c.high)
-
-            body_low = min(c.open, c.close)
-            body_high = max(c.open, c.close)
-            body_height = max(body_high - body_low, 1e-8)
-            rect = QRectF(idx - self._body_width / 2, body_low, self._body_width, body_height)
-            painter.fillRect(rect, brush)
-            painter.drawRect(rect)
-
+    def set_data(self, candles: list[Candle]) -> None:
+        pic = QPicture()
+        painter = QPainter(pic)
+        for i, c in enumerate(candles):
+            up = c.close >= c.open
+            color = pg.mkColor("#22c55e" if up else "#ef4444")
+            painter.setPen(QPen(color))
+            painter.drawLine(i, c.low, i, c.high)
+            painter.setBrush(QBrush(color))
+            painter.drawRect(QRectF(i - 0.3, min(c.open, c.close), 0.6, max(abs(c.close - c.open), 0.01)))
         painter.end()
         self.prepareGeometryChange()
-        self._picture = picture
+        self._picture = pic
+        self.update()
 
     def paint(self, painter: QPainter, *args: Any) -> None:  # type: ignore[override]
         painter.drawPicture(0, 0, self._picture)
@@ -73,81 +49,63 @@ class CandlestickItem(pg.GraphicsObject):
 class CandlestickChartWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
-        self._candles: list[Candle] = []
-        self._last_signature: tuple[tuple[float, float, float, float, float], ...] = tuple()
-
         layout = QVBoxLayout(self)
-        self._status = QLabel("Waiting for engine candle stream…")
-        self._status.setObjectName("metricLabel")
-        layout.addWidget(self._status)
+        self.status = QLabel("Waiting for market candles…")
+        self.status.setObjectName("metricLabel")
+        layout.addWidget(self.status)
 
-        pg.setConfigOptions(antialias=False, background=BG_COLOR, foreground=TEXT_COLOR)
+        pg.setConfigOptions(antialias=False, background="#0f172a", foreground="#dbeafe")
+        self.canvas = pg.GraphicsLayoutWidget()
+        layout.addWidget(self.canvas)
 
-        self._graphics = pg.GraphicsLayoutWidget()
-        layout.addWidget(self._graphics)
+        self.price_plot = self.canvas.addPlot(row=0, col=0)
+        self.price_plot.showGrid(x=True, y=True, alpha=0.2)
+        self.price_item = CandlestickItem()
+        self.price_plot.addItem(self.price_item)
+        self.ma_fast = self.price_plot.plot(pen=pg.mkPen("#38bdf8", width=1.2))
+        self.ma_slow = self.price_plot.plot(pen=pg.mkPen("#f59e0b", width=1.2))
 
-        self._price_plot = self._graphics.addPlot(row=0, col=0)
-        self._price_plot.showGrid(x=True, y=True, alpha=0.25)
-        self._price_plot.setLabel("left", "Price")
-        self._price_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
-        self._price_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
-        self._price_plot.getAxis("left").setPen(pg.mkColor(GRID_COLOR))
-        self._price_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
-        self._price_plot.getViewBox().setBackgroundColor(BG_COLOR)
+        self.volume_plot = self.canvas.addPlot(row=1, col=0)
+        self.volume_plot.setMaximumHeight(120)
+        self.volume_plot.showGrid(x=True, y=True, alpha=0.15)
+        self.volume_bars = pg.BarGraphItem(x=[], height=[], width=0.6, brush="#334155")
+        self.volume_plot.addItem(self.volume_bars)
 
-        self._candles_item = CandlestickItem()
-        self._price_plot.addItem(self._candles_item)
-
-        self._ema9_line = self._price_plot.plot(pen=pg.mkPen("#4da3ff", width=1.2), name="EMA 9")
-        self._ema21_line = self._price_plot.plot(pen=pg.mkPen("#f0b90b", width=1.2), name="EMA 21")
-        self._ema50_line = self._price_plot.plot(pen=pg.mkPen("#c678dd", width=1.2), name="EMA 50")
+        self._sig: tuple[tuple[float, float, float, float, float], ...] = tuple()
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
-        raw_candles = snapshot.get("candles_5m", [])
-        if not raw_candles:
+        raw = snapshot.get("candles_5m") or snapshot.get("candles") or []
+        if not raw:
             return
-
-        normalized = [
-            Candle(
-                open=float(c.get("open", 0.0)),
-                high=float(c.get("high", 0.0)),
-                low=float(c.get("low", 0.0)),
-                close=float(c.get("close", 0.0)),
-                volume=float(c.get("volume", 0.0)),
-            )
-            for c in raw_candles[-120:]
+        candles = [
+            Candle(float(c.get("open", 0)), float(c.get("high", 0)), float(c.get("low", 0)), float(c.get("close", 0)), float(c.get("volume", 0)))
+            for c in raw[-180:]
         ]
-        signature = tuple((c.open, c.high, c.low, c.close, c.volume) for c in normalized)
-        if signature == self._last_signature:
+        sig = tuple((c.open, c.high, c.low, c.close, c.volume) for c in candles)
+        if sig == self._sig:
             return
+        self._sig = sig
+        self.status.setText("Live 5m candles · auto-updating")
 
-        self._candles = normalized
-        self._last_signature = signature
-        self._status.setText("Live candles from engine stream")
-        self._update_plot_items()
-
-    def _update_plot_items(self) -> None:
-        if not self._candles:
-            return
-
-        x = np.arange(len(self._candles), dtype=float)
-        closes = np.array([c.close for c in self._candles], dtype=float)
-        self._candles_item.set_candles(self._candles)
-
-        self._ema9_line.setData(x, _ema(closes, 9))
-        self._ema21_line.setData(x, _ema(closes, 21))
-        self._ema50_line.setData(x, _ema(closes, 50))
-
-        self._price_plot.setXRange(max(0, len(self._candles) - 120), len(self._candles))
+        x = np.arange(len(candles), dtype=float)
+        closes = np.array([c.close for c in candles])
+        vols = np.array([c.volume for c in candles])
+        self.price_item.set_data(candles)
+        self.ma_fast.setData(x, _ema(closes, 9))
+        self.ma_slow.setData(x, _ema(closes, 21))
+        self.volume_plot.removeItem(self.volume_bars)
+        self.volume_bars = pg.BarGraphItem(x=x, height=vols, width=0.6, brush="#334155")
+        self.volume_plot.addItem(self.volume_bars)
+        self.price_plot.setXRange(max(0, len(candles) - 120), len(candles))
+        self.volume_plot.setXRange(max(0, len(candles) - 120), len(candles))
 
 
 def _ema(values: np.ndarray, period: int) -> np.ndarray:
     if values.size == 0:
         return np.array([])
-    alpha = 2.0 / (period + 1)
-    ema = np.empty(values.size, dtype=float)
-    ema[0] = values[0]
+    alpha = 2 / (period + 1)
+    out = np.empty(values.size)
+    out[0] = values[0]
     for i in range(1, values.size):
-        ema[i] = (values[i] * alpha) + (ema[i - 1] * (1.0 - alpha))
-    return ema
-
+        out[i] = values[i] * alpha + out[i - 1] * (1 - alpha)
+    return out

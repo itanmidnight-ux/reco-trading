@@ -1,142 +1,66 @@
 from __future__ import annotations
 
 COLORS = {
-    "background": "#0b1020",
-    "background_alt": "#111933",
-    "panel": "#141d35",
-    "panel_alt": "#1a2643",
-    "border": "#273658",
-    "text_primary": "#edf2ff",
-    "text_secondary": "#9fb2d9",
-    "positive": "#22d39b",
-    "negative": "#ff5f7b",
-    "warning": "#ffcc66",
-    "info": "#5a8dff",
-    "neutral": "#7f93bf",
-    "accent": "#7b61ff",
+    "bg": "#0b0f17",
+    "bg_alt": "#111827",
+    "panel": "#141c2b",
+    "panel_alt": "#1b2638",
+    "border": "#243247",
+    "text": "#e5edf9",
+    "muted": "#91a3bf",
+    "accent": "#38bdf8",
+    "accent_alt": "#2563eb",
+    "positive": "#22c55e",
+    "negative": "#ef4444",
+    "warning": "#f59e0b",
 }
 
 
 def app_stylesheet() -> str:
-    try:
-        style = f"""
-        QWidget {{
-            background-color: {COLORS['background']};
-            color: {COLORS['text_primary']};
-            font-family: Inter, Segoe UI, Arial;
-            selection-background-color: rgba(122, 97, 255, 0.4);
-        }}
-        QMainWindow, QTabWidget::pane {{
-            border: 1px solid {COLORS['border']};
-            border-radius: 12px;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {COLORS['background']}, stop:1 {COLORS['background_alt']});
-        }}
-        QTabBar::tab {{
-            background: {COLORS['panel']};
-            color: {COLORS['text_secondary']};
-            border: 1px solid {COLORS['border']};
-            border-bottom: none;
-            padding: 11px 18px;
-            margin-right: 6px;
-            border-top-left-radius: 10px;
-            border-top-right-radius: 10px;
-            font-weight: 600;
-        }}
-        QTabBar::tab:hover {{
-            color: {COLORS['text_primary']};
-            background: {COLORS['panel_alt']};
-        }}
-        QTabBar::tab:selected {{
-            color: white;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {COLORS['accent']}, stop:1 {COLORS['info']});
-        }}
-        QFrame#metricCard, QFrame#panelCard {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {COLORS['panel']}, stop:1 {COLORS['panel_alt']});
-            border: 1px solid {COLORS['border']};
-            border-radius: 12px;
-        }}
-        QLabel#sectionTitle {{
-            color: {COLORS['text_primary']};
-            font-size: 18px;
-            font-weight: 700;
-            letter-spacing: 0.4px;
-        }}
-        QLabel#metricLabel {{
-            color: {COLORS['text_secondary']};
-            font-size: 11px;
-            text-transform: uppercase;
-        }}
-        QLabel#metricValue {{
-            color: {COLORS['text_primary']};
-            font-size: 18px;
-            font-weight: 700;
-        }}
-        QLabel#smallMetricValue {{
-            color: {COLORS['text_primary']};
-            font-size: 14px;
-            font-weight: 600;
-        }}
-        QTableWidget, QTextEdit {{
-            background: {COLORS['panel']};
-            border: 1px solid {COLORS['border']};
-            border-radius: 10px;
-            gridline-color: {COLORS['border']};
-        }}
-        QHeaderView::section {{
-            background: {COLORS['panel_alt']};
-            color: {COLORS['text_secondary']};
-            border: none;
-            padding: 7px;
-        }}
-        QProgressBar {{
-            border: 1px solid {COLORS['border']};
-            border-radius: 6px;
-            text-align: center;
-            background: rgba(20, 29, 53, 0.8);
-            min-height: 12px;
-        }}
-        QProgressBar::chunk {{
-            background-color: {COLORS['info']};
-            border-radius: 6px;
-        }}
-        QLineEdit, QComboBox, QSpinBox {{
-            background: #101933;
-            border: 1px solid {COLORS['border']};
-            border-radius: 8px;
-            padding: 7px;
-        }}
-        QPushButton {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {COLORS['accent']}, stop:1 {COLORS['info']});
-            border: 1px solid {COLORS['border']};
-            border-radius: 8px;
-            padding: 8px 12px;
-            color: white;
-            font-weight: 600;
-        }}
-        QPushButton:hover {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {COLORS['info']}, stop:1 {COLORS['accent']});
-            border: 1px solid {COLORS['info']};
-        }}
-        QPushButton:pressed {{
-            padding-top: 9px;
-            padding-left: 13px;
-            background: {COLORS['panel_alt']};
-        }}
-        QPushButton:disabled {{
-            background: #2a3557;
-            color: {COLORS['neutral']};
-        }}
-        """
-        return style if isinstance(style, str) else ""
-    except Exception:
-        return ""
+    return f"""
+    QWidget {{
+        background: {COLORS['bg']};
+        color: {COLORS['text']};
+        font-family: Inter, Segoe UI, Arial;
+    }}
+    QMainWindow {{ background: {COLORS['bg']}; }}
+    QFrame#panelCard, QFrame#metricCard, QFrame#sidebar, QFrame#topBar {{
+        background: {COLORS['panel']};
+        border: 1px solid {COLORS['border']};
+        border-radius: 10px;
+    }}
+    QLabel#sectionTitle {{ font-size: 17px; font-weight: 700; }}
+    QLabel#metricLabel {{ color: {COLORS['muted']}; font-size: 11px; text-transform: uppercase; }}
+    QLabel#valueLabel, QLabel#metricValue {{ font-size: 18px; font-weight: 700; }}
+    QPushButton#navButton {{
+        text-align: left;
+        border: 1px solid transparent;
+        background: transparent;
+        color: {COLORS['muted']};
+        border-radius: 8px;
+        padding: 8px;
+    }}
+    QPushButton#navButton:checked {{
+        background: rgba(56, 189, 248, 0.18);
+        color: {COLORS['text']};
+        border: 1px solid rgba(56, 189, 248, 0.35);
+    }}
+    QPushButton#navButton:hover {{ background: rgba(255,255,255,0.05); color: {COLORS['text']}; }}
+    QTableWidget, QTextEdit, QListWidget {{
+        background: {COLORS['panel_alt']}; border: 1px solid {COLORS['border']}; border-radius: 8px;
+        gridline-color: {COLORS['border']};
+    }}
+    QHeaderView::section {{ background: {COLORS['panel']}; color: {COLORS['muted']}; border: none; padding: 6px; }}
+    QProgressBar {{
+        border: 1px solid {COLORS['border']};
+        border-radius: 6px;
+        background: {COLORS['panel_alt']};
+        text-align: center;
+        min-height: 11px;
+    }}
+    QProgressBar::chunk {{ background-color: {COLORS['accent']}; border-radius: 6px; }}
+    """
 
 
 def dashboard_stylesheet() -> str:
-    """Backward-compatible alias for the global application stylesheet."""
     return app_stylesheet()
