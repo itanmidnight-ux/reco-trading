@@ -99,6 +99,11 @@ class DashboardTab(QWidget):
             "daily_pnl": StatCard("Daily PnL", compact=True),
             "trades_today": StatCard("Trades Today", compact=True),
             "win_rate": StatCard("Win Rate", compact=True),
+            "position_side": StatCard("Position Side", compact=True),
+            "entry_price": StatCard("Entry Price", compact=True),
+            "position_size": StatCard("Position Size", compact=True),
+            "unrealized_pnl": StatCard("Unrealized PnL", compact=True),
+            "bot_mode": StatCard("Bot Mode", compact=True),
         }
         account_layout = QGridLayout(self.account_panel)
         account_layout.setContentsMargins(10, 10, 10, 10)
@@ -195,7 +200,11 @@ class DashboardTab(QWidget):
             f"padding:4px 10px; border-radius:10px; background:{signal_color(signal)}; color:#e6e8ee;"
         )
 
-        confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
+        confidence_raw = state.get("confidence", 0)
+        try:
+            confidence = max(0, min(100, int(float(confidence_raw or 0) * 100)))
+        except (TypeError, ValueError):
+            confidence = 0
         self.confidence_label.setText(f"Confidence {confidence}%")
         self.confidence_anim.stop()
         self.confidence_anim.setStartValue(self.confidence_bar.value())
@@ -213,7 +222,21 @@ class DashboardTab(QWidget):
             f"color: {'#16c784' if daily_pnl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
         )
         self.account_cards["trades_today"].set_value(str(state.get("trades_today", "-")))
-        self.account_cards["win_rate"].set_value(f"{float(state.get('win_rate', 0) or 0)*100:.1f}%")
+        try:
+            win_rate = float(state.get("win_rate", 0) or 0)
+        except (TypeError, ValueError):
+            win_rate = 0.0
+        self.account_cards["win_rate"].set_value(f"{win_rate*100:.1f}%")
+        self.account_cards["position_side"].set_value(str(state.get("position_side", "NONE")))
+        self.account_cards["entry_price"].set_value(f"{_fmt_num(state.get('entry_price'), 2)}")
+        self.account_cards["position_size"].set_value(f"{_fmt_num(state.get('position_size'), 8)}")
+        unrl = float(state.get("unrealized_pnl", 0) or 0)
+        self.account_cards["unrealized_pnl"].set_value(f"{unrl:.4f} USDT")
+        self.account_cards["unrealized_pnl"].value.setStyleSheet(
+            f"color: {'#16c784' if unrl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
+        )
+        system = state.get("system", {})
+        self.account_cards["bot_mode"].set_value(str(system.get("bot_mode", state.get("bot_mode", "-"))))
 
         logs = state.get("logs", [])[-8:]
         lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-') }" for entry in logs] or ["[--:--] Waiting for events"]
@@ -234,9 +257,9 @@ def signal_color(signal: str) -> str:
 
 def status_color(status: str) -> str:
     status = status.upper()
-    if status == "RUNNING":
+    if status in {"RUNNING", "POSITION_OPEN", "PLACING_ORDER"}:
         return "#16c784"
-    if status == "WAITING_DATA":
+    if status in {"WAITING_DATA", "WAITING_MARKET_DATA", "ANALYZING_MARKET", "SIGNAL_GENERATED", "COOLDOWN"}:
         return "#f0b90b"
     if status == "ERROR":
         return "#ea3943"

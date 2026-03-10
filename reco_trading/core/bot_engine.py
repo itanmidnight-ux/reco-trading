@@ -354,7 +354,12 @@ class BotEngine:
             if position.side == "SELL":
                 pnl *= -1
 
-            await self.repository.close_trade(position.trade_id, exit_price, pnl, exit_reason)
+            try:
+                await self.repository.close_trade(position.trade_id, exit_price, pnl, exit_reason)
+            except Exception as exc:  # noqa: BLE001
+                await self._log("ERROR", f"close_trade_persist_failed error={exc}")
+                await self.repository.record_error(self.state.value, "close_trade", str(exc))
+                continue
             self.position_manager.close(position.trade_id)
             self.last_close_time = datetime.now(timezone.utc)
             if self._update_loss_protection(pnl):
@@ -425,6 +430,9 @@ class BotEngine:
                 "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
                 "price": market_data.get("price"),
                 "spread": market_data.get("spread"),
+                "bid": market_data.get("bid"),
+                "ask": market_data.get("ask"),
+                "atr": market_data.get("atr"),
                 "trend": bundle.trend,
                 "adx": market_data.get("adx"),
                 "volatility_regime": bundle.regime,
@@ -527,10 +535,10 @@ class BotEngine:
                 last_trade=self.snapshot.get("last_trade"),
                 cooldown=self.snapshot.get("cooldown"),
                 status=self.snapshot.get("status", "INITIALIZING"),
-                bid=self.snapshot.get("price"),
-                ask=self.snapshot.get("price"),
+                bid=self.snapshot.get("bid", self.snapshot.get("price")),
+                ask=self.snapshot.get("ask", self.snapshot.get("price")),
                 volume=self.snapshot.get("volume"),
-                atr=0.0,
+                atr=self.snapshot.get("atr", 0.0),
                 change_24h=self.snapshot.get("change_24h"),
                 signals=self.snapshot.get("signals", {}),
                 candles_5m=list(self.snapshot.get("candles_5m") or [])[-120:],
@@ -549,7 +557,7 @@ class BotEngine:
                     "max_concurrent_trades": self.settings.max_concurrent_trades,
                     "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
-                    "current_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
+                    "current_exposure": self._current_exposure_ratio(),
                 },
                 analytics={
                     "total_trades": self.trades_today,
@@ -564,6 +572,17 @@ class BotEngine:
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)
+
+    def _current_exposure_ratio(self) -> float:
+        equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("balance"), 0.0))
+        if equity <= 0:
+            return 0.0
+        mark_price = _as_float(self.snapshot.get("price"), 0.0)
+        gross_exposure = 0.0
+        for position in self.position_manager.positions:
+            px = mark_price if mark_price > 0 else position.entry_price
+            gross_exposure += abs(position.quantity * px)
+        return min(max(gross_exposure / equity, 0.0), 1.0)
 
     def _frame_to_candles(self, frame: Any) -> list[dict[str, float]]:
         candles: list[dict[str, float]] = []

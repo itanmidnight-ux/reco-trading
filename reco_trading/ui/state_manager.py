@@ -52,7 +52,7 @@ class StateManager(QObject):
             "last_trade": "-",
             "cooldown": "READY",
             "risk_metrics": {},
-            "system": {"uptime_seconds": 0.0, "api_latency_ms": 0.0, "database_status": "UNKNOWN", "exchange_status": "UNKNOWN", "redis_status": "UNKNOWN", "memory_usage_mb": 0.0, "last_server_sync": "-"},
+            "system": {"uptime_seconds": 0.0, "api_latency_ms": 0.0, "database_status": "UNKNOWN", "exchange_status": "UNKNOWN", "bot_mode": "UNKNOWN", "redis_status": "UNKNOWN", "memory_usage_mb": 0.0, "last_server_sync": "-"},
             "signal_analysis": {},
             "trade_history": [],
             "logs": [],
