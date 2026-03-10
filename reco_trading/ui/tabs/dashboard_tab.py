@@ -19,7 +19,6 @@ from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
 
-
 class AnimatedButton(QPushButton):
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(label, parent)
@@ -43,6 +42,7 @@ class AnimatedButton(QPushButton):
         self._hover_anim.setEndValue(target)
         self._hover_anim.start()
 
+
 class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
@@ -51,13 +51,28 @@ class DashboardTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
-        title = QLabel("Executive Dashboard")
+        title = QLabel("Professional Trading Dashboard")
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
         self.top_bar.setObjectName("metricValue")
         root.addWidget(self.top_bar)
+
+        self.capital_strip = self._panel()
+        cap_layout = QHBoxLayout(self.capital_strip)
+        cap_layout.setContentsMargins(12, 10, 12, 10)
+        cap_layout.setSpacing(18)
+        self.usdt_capital = QLabel("USDT Capital: -")
+        self.usdt_capital.setObjectName("metricValue")
+        self.btc_capital = QLabel("BTC Capital: -")
+        self.btc_capital.setObjectName("metricValue")
+        self.total_capital = QLabel("Total Equity: -")
+        self.total_capital.setObjectName("metricValue")
+        cap_layout.addWidget(self.usdt_capital)
+        cap_layout.addWidget(self.btc_capital)
+        cap_layout.addWidget(self.total_capital)
+        root.addWidget(self.capital_strip)
 
         controls = self._build_controls()
         root.addWidget(controls)
@@ -72,10 +87,12 @@ class DashboardTab(QWidget):
             "adx": StatCard("ADX", compact=True),
             "volatility_regime": StatCard("Volatility Regime", compact=True),
             "order_flow": StatCard("Order Flow", compact=True),
+            "atr": StatCard("ATR", compact=True),
+            "change_24h": StatCard("24h Change", compact=True),
         }
         market_layout = QGridLayout(self.market_panel)
         market_layout.setContentsMargins(10, 10, 10, 10)
-        market_layout.addWidget(self._title("Market Information"), 0, 0, 1, 2)
+        market_layout.addWidget(self._title("Market Intelligence"), 0, 0, 1, 2)
         for i, card in enumerate(self.market_cards.values()):
             market_layout.addWidget(card, (i // 2) + 1, i % 2)
         self.signal_badge = QLabel("NEUTRAL")
@@ -85,17 +102,17 @@ class DashboardTab(QWidget):
         self.confidence_anim = QPropertyAnimation(self.confidence_bar, b"value", self)
         self.confidence_anim.setDuration(300)
         self.confidence_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-        market_layout.addWidget(self.signal_badge, 3, 0)
-        market_layout.addWidget(self.confidence_label, 3, 1)
-        market_layout.addWidget(self.confidence_bar, 4, 0, 1, 2)
+        market_layout.addWidget(self.signal_badge, 4, 0)
+        market_layout.addWidget(self.confidence_label, 4, 1)
+        market_layout.addWidget(self.confidence_bar, 5, 0, 1, 2)
 
         self.account_panel = self._panel()
         self.account_cards = {
-            "balance": StatCard("Balance", compact=True),
-            "equity": StatCard("Equity", compact=True),
+            "balance": StatCard("USDT Balance", compact=True),
             "btc_balance": StatCard("BTC Balance", compact=True),
-            "btc_value": StatCard("BTC Value", compact=True),
+            "btc_value": StatCard("BTC Value (USDT)", compact=True),
             "total_equity": StatCard("Total Equity", compact=True),
+            "equity": StatCard("Net Equity", compact=True),
             "daily_pnl": StatCard("Daily PnL", compact=True),
             "trades_today": StatCard("Trades Today", compact=True),
             "win_rate": StatCard("Win Rate", compact=True),
@@ -107,14 +124,14 @@ class DashboardTab(QWidget):
         }
         account_layout = QGridLayout(self.account_panel)
         account_layout.setContentsMargins(10, 10, 10, 10)
-        account_layout.addWidget(self._title("Account Performance"), 0, 0, 1, 2)
+        account_layout.addWidget(self._title("Portfolio & Execution State"), 0, 0, 1, 2)
         for i, card in enumerate(self.account_cards.values()):
             account_layout.addWidget(card, (i // 2) + 1, i % 2)
 
         self.activity_panel = self._panel()
         activity_layout = QVBoxLayout(self.activity_panel)
         activity_layout.setContentsMargins(10, 10, 10, 10)
-        activity_layout.addWidget(self._title("Bot Activity"))
+        activity_layout.addWidget(self._title("Execution Feed"))
         self.feed = QLabel("[--:--] Waiting for events")
         self.feed.setWordWrap(True)
         self.feed.setObjectName("smallMetricValue")
@@ -123,7 +140,7 @@ class DashboardTab(QWidget):
         self.chart_panel = self._panel()
         chart_layout = QVBoxLayout(self.chart_panel)
         chart_layout.setContentsMargins(10, 10, 10, 10)
-        chart_layout.addWidget(self._title("Realtime Chart"))
+        chart_layout.addWidget(self._title("Realtime Candle Matrix"))
         self.chart = CandlestickChartWidget()
         chart_layout.addWidget(self.chart)
 
@@ -164,11 +181,12 @@ class DashboardTab(QWidget):
 
     def _sync_control_buttons(self, status: str) -> None:
         normalized = status.upper()
-        running = normalized in {"RUNNING", "ACTIVE", "TRADING"}
+        running = normalized in {"RUNNING", "ACTIVE", "TRADING", "POSITION_OPEN", "PLACING_ORDER"}
+        paused = normalized in {"PAUSED", "COOLDOWN"}
 
         self.pause_btn.setVisible(running)
-        self.start_btn.setVisible(not running)
-        self.resume_btn.setVisible(False)
+        self.start_btn.setVisible(not running and not paused)
+        self.resume_btn.setVisible(paused)
 
     def _panel(self) -> QFrame:
         panel = QFrame()
@@ -189,10 +207,21 @@ class DashboardTab(QWidget):
         self.top_bar.setText(f"{pair} | {price} | {trend} | {status}")
         self.top_bar.setStyleSheet(f"color: {status_color(status)};")
 
+        balance = _to_float(state.get("balance"))
+        btc_balance = _to_float(state.get("btc_balance"))
+        btc_value = _to_float(state.get("btc_value"))
+        total_equity = _to_float(state.get("total_equity"))
+        self.usdt_capital.setText(f"USDT Capital: {_fmt_num(balance, 2)} USDT")
+        self.btc_capital.setText(f"BTC Capital: {_fmt_num(btc_balance, 8)} BTC ({_fmt_num(btc_value, 2)} USDT)")
+        self.total_capital.setText(f"Total Equity: {_fmt_num(total_equity, 2)} USDT")
+
         self.market_cards["spread"].set_value(_fmt_num(state.get("spread"), 6))
         self.market_cards["adx"].set_value(_fmt_num(state.get("adx"), 2))
         self.market_cards["volatility_regime"].set_value(str(state.get("volatility_regime", "-")))
         self.market_cards["order_flow"].set_value(str(state.get("order_flow", "-")))
+        self.market_cards["atr"].set_value(_fmt_num(state.get("atr"), 4))
+        change_24h = _to_float(state.get("change_24h"))
+        self.market_cards["change_24h"].set_value("-" if change_24h is None else f"{change_24h:.2f}%")
 
         signal = str(state.get("signal", "NEUTRAL")).upper()
         self.signal_badge.setText(f"Signal: {signal}")
@@ -211,16 +240,18 @@ class DashboardTab(QWidget):
         self.confidence_anim.setEndValue(confidence)
         self.confidence_anim.start()
 
-        self.account_cards["balance"].set_value(f"{_fmt_num(state.get('balance'), 2)} USDT")
+        self.account_cards["balance"].set_value(f"{_fmt_num(balance, 2)} USDT")
+        self.account_cards["btc_balance"].set_value(f"{_fmt_num(btc_balance, 8)} BTC")
+        self.account_cards["btc_value"].set_value(f"{_fmt_num(btc_value, 2)} USDT")
+        self.account_cards["total_equity"].set_value(f"{_fmt_num(total_equity, 2)} USDT")
         self.account_cards["equity"].set_value(f"{_fmt_num(state.get('equity'), 2)} USDT")
-        self.account_cards["btc_balance"].set_value(f"{_fmt_num(state.get('btc_balance'), 6)} BTC")
-        self.account_cards["btc_value"].set_value(f"{_fmt_num(state.get('btc_value'), 2)} USDT")
-        self.account_cards["total_equity"].set_value(f"{_fmt_num(state.get('total_equity'), 2)} USDT")
-        daily_pnl = float(state.get("daily_pnl", 0) or 0)
+
+        daily_pnl = _to_float(state.get("daily_pnl")) or 0.0
         self.account_cards["daily_pnl"].set_value(f"{daily_pnl:.2f} USDT")
         self.account_cards["daily_pnl"].value.setStyleSheet(
             f"color: {'#16c784' if daily_pnl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
         )
+
         self.account_cards["trades_today"].set_value(str(state.get("trades_today", "-")))
         try:
             win_rate = float(state.get("win_rate", 0) or 0)
@@ -244,15 +275,22 @@ class DashboardTab(QWidget):
         self.chart.update_from_snapshot(state)
 
 
-def _fmt_num(value: Any, digits: int) -> str:
+def _to_float(value: Any) -> float | None:
     try:
-        return f"{float(value):.{digits}f}"
+        return None if value is None else float(value)
     except (TypeError, ValueError):
+        return None
+
+
+def _fmt_num(value: Any, digits: int) -> str:
+    parsed = _to_float(value)
+    if parsed is None:
         return "-"
+    return f"{parsed:.{digits}f}"
 
 
 def signal_color(signal: str) -> str:
-    return {"BUY": "#16c784", "SELL": "#ea3943"}.get(signal, "#667085")
+    return {"BUY": "#16c784", "SELL": "#ea3943", "HOLD": "#5a8dff"}.get(signal, "#667085")
 
 
 def status_color(status: str) -> str:

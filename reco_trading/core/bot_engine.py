@@ -203,6 +203,10 @@ class BotEngine:
         self.snapshot["daily_pnl"] = daily_pnl
         self.snapshot["trades_today"] = self.trades_today
 
+        if side == "HOLD":
+            self.snapshot["cooldown"] = "HOLD_SIGNAL"
+            return False
+
         if self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until:
             await self._set_state(BotState.PAUSED, "loss_protection_pause")
             self.snapshot["cooldown"] = f"PAUSED until {self.pause_trading_until.isoformat(timespec='seconds')}"
