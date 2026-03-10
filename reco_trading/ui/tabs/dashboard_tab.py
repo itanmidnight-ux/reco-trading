@@ -199,7 +199,7 @@ class DashboardTab(QWidget):
         return label
 
     def update_state(self, state: dict[str, Any]) -> None:
-        pair = state.get("pair", "BTC/USDT")
+        pair = str(state.get("pair", "BTC/USDT"))
         price = _fmt_num(state.get("current_price", state.get("price")), 2)
         trend = str(state.get("trend", "NEUTRAL"))
         status = str(state.get("status", "-"))
@@ -270,7 +270,7 @@ class DashboardTab(QWidget):
         self.account_cards["bot_mode"].set_value(str(system.get("bot_mode", state.get("bot_mode", "-"))))
 
         logs = state.get("logs", [])[-8:]
-        lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-') }" for entry in logs] or ["[--:--] Waiting for events"]
+        lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-')}" for entry in logs] or ["[--:--] Waiting for events"]
         self.feed.setText("\n".join(lines))
         self.chart.update_from_snapshot(state)
 
@@ -289,6 +289,10 @@ def _fmt_num(value: Any, digits: int) -> str:
     return f"{parsed:.{digits}f}"
 
 
+def _fmt_pct(value: float | Any) -> str:
+    return f"{_as_float(value) * 100:.1f}%"
+
+
 def signal_color(signal: str) -> str:
     return {"BUY": "#16c784", "SELL": "#ea3943", "HOLD": "#5a8dff"}.get(signal, "#667085")
 
@@ -299,6 +303,8 @@ def status_color(status: str) -> str:
         return "#16c784"
     if status in {"WAITING_DATA", "WAITING_MARKET_DATA", "ANALYZING_MARKET", "SIGNAL_GENERATED", "COOLDOWN"}:
         return "#f0b90b"
+    if status in {"PAUSED", "STOPPED"}:
+        return "#9aa4b2"
     if status == "ERROR":
         return "#ea3943"
     return "#9aa4b2"
