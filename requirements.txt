@@ -1,0 +1,15 @@
+ccxt
+pandas
+numpy
+ta
+sqlalchemy
+asyncpg
+websockets
+rich
+python-dotenv
+PySide6
+psutil
+matplotlib
+PySide6
+psutil
+pyqtgraph
