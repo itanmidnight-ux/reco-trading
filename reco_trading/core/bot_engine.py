@@ -24,6 +24,7 @@ from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
+from reco_trading.strategy.market_intelligence import MarketIntelligence
 from reco_trading.strategy.signal_engine import SignalBundle, SignalEngine
 from reco_trading.ui.dashboard import TerminalDashboard
 
@@ -45,6 +46,7 @@ class BotEngine:
         self.confidence_model = ConfidenceModel()
         self.risk_manager = RiskManager(settings.daily_loss_limit_fraction, settings.max_trades_per_day)
         self.position_manager = PositionManager()
+        self.market_intelligence = MarketIntelligence(settings)
 
         self.state_manager = state_manager
         self.trades_today = 0
@@ -90,6 +92,10 @@ class BotEngine:
             "api_latency_ms": None,
             "candles_5m": [],
             "started_at": time.time(),
+            "market_regime": None,
+            "volatility_state": None,
+            "distance_to_support": None,
+            "distance_to_resistance": None,
         }
 
     async def run(self) -> None:
@@ -114,7 +120,12 @@ class BotEngine:
                     self._update_snapshot(market_data, analysis)
 
                     if await self.validate_trade_conditions(analysis):
-                        await self.execute_trade(analysis, market_data)
+                        intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
+                        self._apply_market_intelligence_snapshot(intelligence)
+                        if intelligence.get("approved"):
+                            await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                        else:
+                            await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
 
                     await self.manage_open_position(market_data)
                     self._sync_ui_state()
@@ -235,7 +246,7 @@ class BotEngine:
         self.snapshot["cooldown"] = "READY"
         return True
 
-    async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any]) -> None:
+    async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any], intelligence_size_multiplier: float = 1.0) -> None:
         bundle: SignalBundle = analysis["bundle"]
         side = str(analysis["side"])
         price = float(market_data["price"])
@@ -260,7 +271,12 @@ class BotEngine:
             return
 
         stop_loss, take_profit = self._build_stops(side, price, atr)
-        qty = self.calculate_position_size(price, stop_loss, atr, float(bundle.size_multiplier))
+        qty = self.calculate_position_size(
+            price,
+            stop_loss,
+            atr,
+            float(bundle.size_multiplier) * max(float(intelligence_size_multiplier), 0.1),
+        )
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
             return
@@ -388,7 +404,7 @@ class BotEngine:
             atr=atr,
             atr_floor_multiplier=0.5,
         )
-        qty = self.order_manager.normalize_quantity(sizing.quantity)
+        qty = self.order_manager.normalize_quantity(sizing.quantity * max(size_multiplier, 0.1))
         return float(qty)
 
     def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
@@ -482,6 +498,13 @@ class BotEngine:
             }
         )
 
+
+    def _apply_market_intelligence_snapshot(self, intelligence: dict[str, Any]) -> None:
+        self.snapshot["market_regime"] = intelligence.get("market_regime")
+        self.snapshot["volatility_state"] = intelligence.get("volatility_state")
+        self.snapshot["distance_to_support"] = intelligence.get("distance_to_support")
+        self.snapshot["distance_to_resistance"] = intelligence.get("distance_to_resistance")
+
     async def _fetch_balances(self) -> tuple[float, float]:
         payload = await self.client.fetch_balance()
 
@@ -558,6 +581,10 @@ class BotEngine:
                 bid=self.snapshot.get("bid", self.snapshot.get("price")),
                 ask=self.snapshot.get("ask", self.snapshot.get("price")),
                 volume=self.snapshot.get("volume"),
+                market_regime=self.snapshot.get("market_regime"),
+                volatility_state=self.snapshot.get("volatility_state"),
+                distance_to_support=self.snapshot.get("distance_to_support"),
+                distance_to_resistance=self.snapshot.get("distance_to_resistance"),
                 atr=self.snapshot.get("atr", 0.0),
                 change_24h=self.snapshot.get("change_24h"),
                 signals=self.snapshot.get("signals", {}),
