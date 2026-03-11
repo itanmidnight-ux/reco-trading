@@ -20,6 +20,7 @@ class Trade(Base):
     quantity: Mapped[float] = mapped_column(Float)
     entry_price: Mapped[float] = mapped_column(Float)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    close_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     stop_loss: Mapped[float] = mapped_column(Float)
     take_profit: Mapped[float] = mapped_column(Float)
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
