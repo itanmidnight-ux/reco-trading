@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
 
@@ -59,8 +61,10 @@ class MainWindow(QMainWindow):
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self._refresh_from_snapshot)
         self.refresh_timer.start(1000)
+        self._last_state_event_at = 0.0
 
     def _on_state(self, state: dict) -> None:
+        self._last_state_event_at = time.monotonic()
         for tab in (
             self.dashboard_tab,
             self.trades_tab,
@@ -76,6 +80,8 @@ class MainWindow(QMainWindow):
                 continue
 
     def _refresh_from_snapshot(self) -> None:
+        if (time.monotonic() - self._last_state_event_at) < 1.0:
+            return
         self._on_state(self.state_manager.snapshot())
 
     def _on_ui_settings(self, settings: dict) -> None:
