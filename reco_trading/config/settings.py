@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     min_volume_ratio: float = 0.7
 
     # =========================
+    # MARKET INTELLIGENCE
+    # =========================
+    enable_market_intelligence: bool = True
+    volatility_filter_enabled: bool = True
+    liquidity_zone_filter_enabled: bool = True
+    market_regime_classifier_enabled: bool = True
+
+    # =========================
     # RISK MANAGEMENT
     # =========================
     risk_per_trade_fraction: float = 0.01
