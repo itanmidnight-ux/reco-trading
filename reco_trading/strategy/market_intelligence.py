@@ -36,6 +36,20 @@ class LiquidityZones:
 
 
 @dataclass(slots=True)
+class LiquidityFilterAssessment:
+    allow_trade: bool
+    liquidity_multiplier: float
+    liquidity_distance: float | None
+
+
+@dataclass(slots=True)
+class RangeFilterAssessment:
+    allow_trade: bool
+    range_multiplier: float
+    position_in_range: float | None
+
+
+@dataclass(slots=True)
 class MarketRegimeAssessment:
     regime: MarketRegime
     allow_trade: bool
@@ -97,15 +111,29 @@ class LiquidityZoneDetector:
         )
 
     def is_side_allowed(self, side: str, zones: LiquidityZones, price: float) -> bool:
-        if side == "BUY":
-            return self._distance_ratio(price, zones.support_zone) is not None and self._distance_ratio(
-                price, zones.support_zone
-            ) <= self.proximity_threshold
-        if side == "SELL":
-            return self._distance_ratio(price, zones.resistance_zone) is not None and self._distance_ratio(
-                price, zones.resistance_zone
-            ) <= self.proximity_threshold
-        return False
+        assessment = self.assess_side(side=side, zones=zones, price=price, signal_confidence=1.0)
+        return assessment.allow_trade
+
+    def assess_side(self, side: str, zones: LiquidityZones, price: float, signal_confidence: float) -> LiquidityFilterAssessment:
+        del side
+        distance_support = self._distance_ratio(price, zones.support_zone)
+        distance_resistance = self._distance_ratio(price, zones.resistance_zone)
+        distances = [d for d in (distance_support, distance_resistance) if d is not None]
+        if not distances:
+            return LiquidityFilterAssessment(allow_trade=False, liquidity_multiplier=0.0, liquidity_distance=None)
+
+        target_distance = min(distances)
+        if target_distance <= 0.0025:
+            return LiquidityFilterAssessment(allow_trade=True, liquidity_multiplier=1.0, liquidity_distance=target_distance)
+        if target_distance <= 0.006:
+            return LiquidityFilterAssessment(allow_trade=True, liquidity_multiplier=0.7, liquidity_distance=target_distance)
+        if target_distance <= 0.012:
+            return LiquidityFilterAssessment(
+                allow_trade=signal_confidence >= 0.85,
+                liquidity_multiplier=0.4,
+                liquidity_distance=target_distance,
+            )
+        return LiquidityFilterAssessment(allow_trade=False, liquidity_multiplier=0.0, liquidity_distance=target_distance)
 
     def _cluster_price(self, series: pd.Series | None, price: float, prefer: str) -> float | None:
         if series is None:
@@ -160,6 +188,56 @@ class MarketRegimeClassifier:
         return MarketRegimeAssessment(MarketRegime.RANGING, allow_trade=True, risk_multiplier=0.85)
 
 
+class MarketRangePositionFilter:
+    """Evaluates where price sits in recent range and adjusts entry confidence."""
+
+    def assess(
+        self,
+        df: pd.DataFrame,
+        side: str,
+        price: float,
+        market_regime: MarketRegime | None,
+        adx: float,
+    ) -> RangeFilterAssessment:
+        if len(df) == 0:
+            return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=None)
+
+        window = df.tail(120)
+        lowest_low = float(window["low"].min())
+        highest_high = float(window["high"].max())
+        span = highest_high - lowest_low
+        if span <= 1e-9:
+            position_in_range = 0.5
+        else:
+            position_in_range = (price - lowest_low) / span
+        position_in_range = min(max(position_in_range, 0.0), 1.0)
+
+        is_trending = market_regime == MarketRegime.TRENDING or adx >= 25
+        if side == "BUY":
+            if is_trending:
+                if position_in_range > 0.90:
+                    return RangeFilterAssessment(allow_trade=False, range_multiplier=0.6, position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.6, position_in_range=position_in_range)
+            if position_in_range > 0.90:
+                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.5, position_in_range=position_in_range)
+            if position_in_range > 0.80:
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.5, position_in_range=position_in_range)
+            return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
+
+        if side == "SELL":
+            if is_trending:
+                if position_in_range < 0.10:
+                    return RangeFilterAssessment(allow_trade=False, range_multiplier=0.6, position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.6, position_in_range=position_in_range)
+            if position_in_range < 0.10:
+                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.5, position_in_range=position_in_range)
+            if position_in_range < 0.20:
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.5, position_in_range=position_in_range)
+            return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
+
+        return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
+
+
 class MarketIntelligence:
     """Coordinator that keeps advanced filters additive and optional."""
 
@@ -168,6 +246,7 @@ class MarketIntelligence:
         self.volatility_filter = VolatilityFilter()
         self.liquidity_detector = LiquidityZoneDetector(proximity_threshold=0.0025)
         self.regime_classifier = MarketRegimeClassifier()
+        self.range_position_filter = MarketRangePositionFilter()
 
     def evaluate(self, side: str, market_data: dict[str, Any]) -> dict[str, Any]:
         if not getattr(self.settings, "enable_market_intelligence", True):
@@ -185,10 +264,15 @@ class MarketIntelligence:
             "distance_to_resistance": None,
             "support_zone": None,
             "resistance_zone": None,
+            "liquidity_distance": None,
+            "range_position": None,
         }
 
         if df is None or len(df) == 0:
             return result
+
+        adx = float(df.get("adx", pd.Series([20.0])).iloc[-1])
+        regime_assessment: MarketRegimeAssessment | None = None
 
         if getattr(self.settings, "volatility_filter_enabled", True):
             vol = self.volatility_filter.evaluate(df)
@@ -204,17 +288,41 @@ class MarketIntelligence:
             result["resistance_zone"] = zones.resistance_zone
             result["distance_to_support"] = zones.distance_to_support
             result["distance_to_resistance"] = zones.distance_to_resistance
-            if result["approved"] and not self.liquidity_detector.is_side_allowed(side, zones, price):
+            confidence = float(market_data.get("signal_confidence", 1.0))
+            liquidity = self.liquidity_detector.assess_side(
+                side=side,
+                zones=zones,
+                price=price,
+                signal_confidence=confidence,
+            )
+            result["liquidity_distance"] = liquidity.liquidity_distance
+            result["size_multiplier"] *= liquidity.liquidity_multiplier
+            if result["approved"] and not liquidity.allow_trade:
                 result["approved"] = False
                 result["reason"] = "LIQUIDITY_ZONE_FILTER"
 
         if getattr(self.settings, "market_regime_classifier_enabled", True):
-            regime = self.regime_classifier.classify(df)
-            result["market_regime"] = regime.regime.value
-            result["size_multiplier"] *= regime.risk_multiplier
-            if not regime.allow_trade:
+            regime_assessment = self.regime_classifier.classify(df)
+            result["market_regime"] = regime_assessment.regime.value
+            result["size_multiplier"] *= regime_assessment.risk_multiplier
+            if not regime_assessment.allow_trade:
                 result["approved"] = False
-                result["reason"] = regime.regime.value
+                result["reason"] = regime_assessment.regime.value
+
+        if getattr(self.settings, "market_regime_classifier_enabled", True):
+            regime_enum = regime_assessment.regime if regime_assessment else None
+            range_assessment = self.range_position_filter.assess(
+                df=df,
+                side=side,
+                price=price,
+                market_regime=regime_enum,
+                adx=adx,
+            )
+            result["range_position"] = range_assessment.position_in_range
+            result["size_multiplier"] *= range_assessment.range_multiplier
+            if result["approved"] and not range_assessment.allow_trade:
+                result["approved"] = False
+                result["reason"] = "MARKET_RANGE_FILTER"
 
         result["size_multiplier"] = max(min(float(result["size_multiplier"]), 1.0), 0.1)
         return result
