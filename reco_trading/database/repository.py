@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, TypeVar
 
@@ -119,11 +119,23 @@ class Repository:
             await session.commit()
 
     @safe_db_call(default=0.0)
-    async def get_daily_pnl(self) -> float:
+    async def get_session_pnl(self) -> float:
+        now = datetime.now(timezone.utc)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+        day_end = day_start.replace(hour=23, minute=59, second=59, microsecond=999999)
         async with self.session_factory() as session:
-            q = select(func.coalesce(func.sum(Trade.pnl), 0.0)).where(Trade.status != "OPEN")
+            q = (
+                select(func.coalesce(func.sum(Trade.pnl), 0.0))
+                .where(Trade.status != "OPEN")
+                .where(Trade.timestamp >= day_start)
+                .where(Trade.timestamp <= day_end)
+            )
             result = await session.execute(q)
             return float(result.scalar_one())
+
+    @safe_db_call(default=0.0)
+    async def get_daily_pnl(self) -> float:
+        return await self.get_session_pnl()
 
     async def _persist(self, obj: Base) -> None:
         async with self.session_factory() as session:

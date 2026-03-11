@@ -64,6 +64,12 @@ class OrderManager:
         return quantity * price >= self.rules.min_notional
 
     @staticmethod
+    def validate_spread(bid: float, ask: float, price: float, max_spread_ratio: float) -> bool:
+        spread = max(float(ask) - float(bid), 0.0)
+        safe_price = max(float(price), 1e-9)
+        return (spread / safe_price) <= max(float(max_spread_ratio), 0.0)
+
+    @staticmethod
     def _round_to_step(value: float, step: float) -> float:
         if step <= 0:
             return value

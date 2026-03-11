@@ -22,6 +22,11 @@ class SignalBundle:
     regime_trade_allowed: bool
     size_multiplier: float
     atr_ratio: float
+    reversal_confirmed: bool = False
+    dip_detected: bool = False
+    liquidity_ok: bool = True
+    support_zone: float = 0.0
+    resistance_zone: float = 0.0
 
 
 class SignalEngine:

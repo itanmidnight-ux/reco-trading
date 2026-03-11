@@ -54,6 +54,8 @@ class BotEngine:
         self.last_close_time: datetime | None = None
         self.pause_trading_until: datetime | None = None
         self.consecutive_losses = 0
+        self.equity_peak: float | None = None
+        self.trading_paused_by_drawdown = False
 
         self.dashboard = TerminalDashboard()
         self.console = Console()
@@ -62,6 +64,8 @@ class BotEngine:
             "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
             "price": None,
             "spread": None,
+            "bid": None,
+            "ask": None,
             "trend": None,
             "adx": None,
             "volatility_regime": None,
@@ -74,6 +78,7 @@ class BotEngine:
             "btc_value": 0.0,
             "total_equity": None,
             "daily_pnl": None,
+            "session_pnl": None,
             "trades_today": 0,
             "win_rate": None,
             "last_trade": None,
@@ -81,6 +86,7 @@ class BotEngine:
             "status": BotState.INITIALIZING.value,
             "signals": {},
             "volume": None,
+            "atr": None,
             "api_latency_ms": None,
             "candles_5m": [],
             "started_at": time.time(),
@@ -181,15 +187,28 @@ class BotEngine:
         current_price = _as_float(self.snapshot.get("price"), 0.0)
         btc_value = float(btc_balance * current_price)
         total_equity = float(usdt_balance + btc_value)
-        daily_pnl = float(await self.repository.get_daily_pnl() or 0.0)
+        session_pnl = float(await self.repository.get_session_pnl() or 0.0)
 
         self.snapshot["balance"] = float(usdt_balance)
         self.snapshot["btc_balance"] = float(btc_balance)
         self.snapshot["btc_value"] = btc_value
         self.snapshot["total_equity"] = total_equity
-        self.snapshot["equity"] = total_equity + daily_pnl
-        self.snapshot["daily_pnl"] = daily_pnl
+        self.snapshot["equity"] = total_equity
+        self.snapshot["daily_pnl"] = session_pnl
+        self.snapshot["session_pnl"] = session_pnl
         self.snapshot["trades_today"] = self.trades_today
+
+        self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
+        max_drawdown_fraction = _as_float(getattr(self.settings, "max_drawdown_fraction", 0.10), 0.10)
+        if self.equity_peak > 0:
+            drawdown = max((self.equity_peak - total_equity) / self.equity_peak, 0.0)
+            if drawdown >= max_drawdown_fraction:
+                self.trading_paused_by_drawdown = True
+
+        if self.trading_paused_by_drawdown:
+            await self._set_state(BotState.PAUSED, "max_drawdown")
+            self.snapshot["cooldown"] = "MAX_DRAWDOWN"
+            return False
 
         if self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until:
             await self._set_state(BotState.PAUSED, "loss_protection_pause")
@@ -203,7 +222,7 @@ class BotEngine:
 
         risk = self.risk_manager.validate(
             balance=usdt_balance,
-            daily_pnl=daily_pnl,
+            daily_pnl=session_pnl,
             trades_today=self.trades_today,
             confidence=confidence,
             confidence_threshold=self.settings.confidence_threshold,
@@ -226,11 +245,22 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "regime_filter")
             return
 
-        if not self.position_manager.can_open(float(analysis["confidence"])):
+        if not self.position_manager.can_open(self.settings.max_concurrent_trades):
             await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
 
-        qty = self.calculate_position_size(price, float(bundle.size_multiplier))
+        spread = _as_float(market_data.get("spread"), 0.0)
+        spread_ratio = spread / max(price, 1e-9)
+        if spread_ratio > _as_float(self.settings.max_spread_ratio, 0.002):
+            await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide")
+            return
+
+        if not self._pullback_confirmed(bundle, side, market_data):
+            await self._set_state(BotState.WAITING_MARKET_DATA, "pullback_unconfirmed")
+            return
+
+        stop_loss, take_profit = self._build_stops(side, price, atr)
+        qty = self.calculate_position_size(price, stop_loss, atr, float(bundle.size_multiplier))
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
             return
@@ -267,6 +297,7 @@ class BotEngine:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 atr=max(atr, 0.0),
+                initial_risk_distance=abs(entry - stop_loss),
             )
         )
 
@@ -347,12 +378,39 @@ class BotEngine:
                     }
                 )
 
-    def calculate_position_size(self, price: float, size_multiplier: float) -> float:
-        balance = _as_float(self.snapshot.get("balance"), 0.0)
-        capital = balance * self.settings.max_trade_balance_fraction * max(size_multiplier, 0.1)
-        capital = max(capital, self.settings.min_trade_usdt)
-        qty = self.order_manager.normalize_quantity(capital / max(price, 1e-9))
+    def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
+        equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
+        sizing = self.risk_manager.position_size_for_risk(
+            equity=equity,
+            risk_fraction=self.settings.risk_per_trade_fraction * max(size_multiplier, 0.1),
+            price=price,
+            stop_loss_price=stop_loss,
+            atr=atr,
+            atr_floor_multiplier=0.5,
+        )
+        qty = self.order_manager.normalize_quantity(sizing.quantity)
         return float(qty)
+
+    def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
+        frame5 = market_data.get("frame5")
+        if frame5 is None or len(frame5) < 5:
+            return False
+        row = frame5.iloc[-1]
+        prev = frame5.iloc[-2]
+        close = _as_float(row.get("close"), _as_float(market_data.get("price"), 0.0))
+        open_px = _as_float(row.get("open"), close)
+        ema20 = _as_float(row.get("ema20"), close)
+        recent_high = _as_float(frame5["high"].tail(5).max(), close)
+        recent_low = _as_float(frame5["low"].tail(5).min(), close)
+
+        if side == "BUY":
+            pullback = close <= ema20 or close < (recent_high * 0.999)
+            reversal = close > open_px and close > _as_float(prev.get("close"), close)
+            return pullback and reversal
+
+        pullback = close >= ema20 or close > (recent_low * 1.001)
+        rejection = close < open_px and close < _as_float(prev.get("close"), close)
+        return pullback and rejection
 
     def _build_stops(self, side: str, entry: float, atr: float) -> tuple[float, float]:
         atr = max(atr, entry * 0.002)
@@ -400,11 +458,14 @@ class BotEngine:
                 "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
                 "price": market_data.get("price"),
                 "spread": market_data.get("spread"),
+                "bid": market_data.get("bid"),
+                "ask": market_data.get("ask"),
                 "trend": bundle.trend,
                 "adx": market_data.get("adx"),
                 "volatility_regime": bundle.regime,
                 "order_flow": bundle.order_flow,
                 "volume": market_data.get("volume"),
+                "atr": market_data.get("atr"),
                 "change_24h": market_data.get("change_24h"),
                 "candles_5m": list(market_data.get("candles_5m") or [])[-120:],
                 "signal": analysis.get("side"),
@@ -494,10 +555,10 @@ class BotEngine:
                 last_trade=self.snapshot.get("last_trade"),
                 cooldown=self.snapshot.get("cooldown"),
                 status=self.snapshot.get("status", "INITIALIZING"),
-                bid=self.snapshot.get("price"),
-                ask=self.snapshot.get("price"),
+                bid=self.snapshot.get("bid", self.snapshot.get("price")),
+                ask=self.snapshot.get("ask", self.snapshot.get("price")),
                 volume=self.snapshot.get("volume"),
-                atr=0.0,
+                atr=self.snapshot.get("atr", 0.0),
                 change_24h=self.snapshot.get("change_24h"),
                 signals=self.snapshot.get("signals", {}),
                 candles_5m=list(self.snapshot.get("candles_5m") or [])[-120:],
@@ -512,7 +573,7 @@ class BotEngine:
                 },
                 risk_metrics={
                     "risk_per_trade": f"{self.settings.risk_per_trade_fraction:.2%}",
-                    "max_concurrent_trades": self.settings.max_trades_per_day,
+                    "max_concurrent_trades": self.settings.max_concurrent_trades,
                     "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
                     "current_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",

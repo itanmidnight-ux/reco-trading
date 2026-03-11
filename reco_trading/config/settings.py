@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     exceptional_signal_confidence: float = 0.90
     confidence_hold_threshold: float = 0.55
     adx_min_threshold: float = 20.0
-    max_spread_ratio: float = 0.0015
+    max_spread_ratio: float = 0.002
     min_volume_ratio: float = 0.7
 
     # =========================
@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     max_trades_per_day: int = 10
     max_trade_balance_fraction: float = 0.20
     daily_loss_limit_fraction: float = 0.03
+    max_drawdown_fraction: float = 0.10
 
     # =========================
     # COOLDOWNS
