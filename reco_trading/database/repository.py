@@ -43,7 +43,7 @@ class Repository:
             await conn.run_sync(Base.metadata.create_all)
             columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("trades")})
             if "close_timestamp" not in columns:
-                await conn.execute(text("ALTER TABLE trades ADD COLUMN close_timestamp DATETIME"))
+                await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP WITH TIME ZONE"))
 
     @safe_db_call()
     async def record_log(self, level: str, state: str, message: str) -> None:
