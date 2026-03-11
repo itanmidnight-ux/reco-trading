@@ -66,7 +66,8 @@ class MarketTab(QWidget):
         self.cards["trend"].set_value(trend)
         self.cards["adx"].set_value(f"{adx:.2f}")
 
-        sentiment = "Bullish" if "UP" in trend.upper() else "Bearish" if "DOWN" in trend.upper() else "Neutral"
+        normalized_trend = trend.upper().replace("BUY", "UP").replace("SELL", "DOWN")
+        sentiment = "Bullish" if "UP" in normalized_trend else "Bearish" if "DOWN" in normalized_trend else "Neutral"
         self.sentiment.setText(f"Sentiment: {sentiment}")
         self._anim.stop()
         self._anim.setStartValue(self.activity.value())
