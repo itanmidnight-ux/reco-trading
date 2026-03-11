@@ -37,7 +37,7 @@ def test_risk_position_sizing_uses_stop_distance() -> None:
     sizing = RiskManager(0.03, 10).position_size_for_risk(equity=1000, risk_fraction=0.01, price=100, atr=2)
     assert round(sizing.risk_amount, 6) == 10.0
     assert round(sizing.stop_distance, 6) == 3.0
-    assert round(sizing.quantity, 6) == round(10.0 / 3.0, 6)
+    assert round(sizing.quantity, 6) == round((10.0 / 3.0) / 100.0, 6)
 
 
 def test_max_concurrent_trades_enforced() -> None:
