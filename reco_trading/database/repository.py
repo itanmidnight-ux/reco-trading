@@ -7,6 +7,7 @@ from functools import wraps
 from typing import Any, Awaitable, Callable, TypeVar
 
 from sqlalchemy import func, inspect, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from reco_trading.database.models import Base, BotLog, ErrorLog, MarketData, Signal, StateChange, Trade
@@ -44,6 +45,30 @@ class Repository:
             columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("trades")})
             if "close_timestamp" not in columns:
                 await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP WITH TIME ZONE"))
+            await self._migrate_signals_columns(conn)
+
+    async def _migrate_signals_columns(self, conn: Any) -> None:
+        existing_columns = await conn.run_sync(
+            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("signals")}
+        )
+        signals_table = Signal.__table__
+        dialect = postgresql.dialect()
+        preparer = dialect.identifier_preparer
+
+        for column in signals_table.columns:
+            if column.name in existing_columns:
+                continue
+            if column.primary_key:
+                continue
+
+            column_name = preparer.quote(column.name)
+            column_type = column.type.compile(dialect=dialect)
+            migration_sql = text(
+                f"ALTER TABLE {preparer.quote(signals_table.name)} "
+                f"ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            )
+            await conn.execute(migration_sql)
+            self.logger.info("Database migration applied: added column %s to signals table", column.name)
 
     @safe_db_call()
     async def record_log(self, level: str, state: str, message: str) -> None:
