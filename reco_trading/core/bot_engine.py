@@ -382,7 +382,7 @@ class BotEngine:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
         sizing = self.risk_manager.position_size_for_risk(
             equity=equity,
-            risk_fraction=self.settings.risk_per_trade_fraction * max(size_multiplier, 0.1),
+            risk_fraction=self.settings.risk_per_trade_fraction,
             price=price,
             stop_loss_price=stop_loss,
             atr=atr,
