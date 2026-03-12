@@ -40,6 +40,7 @@ class LiquidityFilterAssessment:
     allow_trade: bool
     liquidity_multiplier: float
     liquidity_distance: float | None
+    zone_type: str | None
 
 
 @dataclass(slots=True)
@@ -115,25 +116,56 @@ class LiquidityZoneDetector:
         return assessment.allow_trade
 
     def assess_side(self, side: str, zones: LiquidityZones, price: float, signal_confidence: float) -> LiquidityFilterAssessment:
-        del side
-        distance_support = self._distance_ratio(price, zones.support_zone)
-        distance_resistance = self._distance_ratio(price, zones.resistance_zone)
-        distances = [d for d in (distance_support, distance_resistance) if d is not None]
-        if not distances:
-            return LiquidityFilterAssessment(allow_trade=False, liquidity_multiplier=0.0, liquidity_distance=None)
+        normalized_side = side.upper()
+        if normalized_side == "BUY":
+            target_distance = self._distance_ratio(price, zones.support_zone)
+            zone_type = "support"
+        elif normalized_side == "SELL":
+            target_distance = self._distance_ratio(price, zones.resistance_zone)
+            zone_type = "resistance"
+        else:
+            return LiquidityFilterAssessment(
+                allow_trade=False,
+                liquidity_multiplier=0.0,
+                liquidity_distance=None,
+                zone_type=None,
+            )
 
-        target_distance = min(distances)
+        if target_distance is None:
+            return LiquidityFilterAssessment(
+                allow_trade=False,
+                liquidity_multiplier=0.0,
+                liquidity_distance=None,
+                zone_type=zone_type,
+            )
+
         if target_distance <= 0.0025:
-            return LiquidityFilterAssessment(allow_trade=True, liquidity_multiplier=1.0, liquidity_distance=target_distance)
+            return LiquidityFilterAssessment(
+                allow_trade=True,
+                liquidity_multiplier=1.0,
+                liquidity_distance=target_distance,
+                zone_type=zone_type,
+            )
         if target_distance <= 0.006:
-            return LiquidityFilterAssessment(allow_trade=True, liquidity_multiplier=0.7, liquidity_distance=target_distance)
+            return LiquidityFilterAssessment(
+                allow_trade=True,
+                liquidity_multiplier=0.7,
+                liquidity_distance=target_distance,
+                zone_type=zone_type,
+            )
         if target_distance <= 0.012:
             return LiquidityFilterAssessment(
                 allow_trade=signal_confidence >= 0.85,
                 liquidity_multiplier=0.4,
                 liquidity_distance=target_distance,
+                zone_type=zone_type,
             )
-        return LiquidityFilterAssessment(allow_trade=False, liquidity_multiplier=0.0, liquidity_distance=target_distance)
+        return LiquidityFilterAssessment(
+            allow_trade=False,
+            liquidity_multiplier=0.0,
+            liquidity_distance=target_distance,
+            zone_type=zone_type,
+        )
 
     def _cluster_price(self, series: pd.Series | None, price: float, prefer: str) -> float | None:
         if series is None:
