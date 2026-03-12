@@ -32,7 +32,7 @@ class RegimeFilter:
         atr_ratio = float(row["atr"] / row["close"])
 
         if atr_ratio < self.low_threshold:
-            return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, atr_ratio, False, 0.0)
+            return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, atr_ratio, True, 0.55)
         if atr_ratio > self.high_threshold:
             return RegimeDecision(VolatilityRegime.HIGH_VOLATILITY, atr_ratio, True, 0.7)
         return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, atr_ratio, True, 1.0)
