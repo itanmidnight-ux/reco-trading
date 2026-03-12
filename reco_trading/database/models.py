@@ -39,7 +39,7 @@ class Signal(Base):
     volume: Mapped[str] = mapped_column(String(10))
     volatility: Mapped[str] = mapped_column(String(10))
     structure: Mapped[str] = mapped_column(String(10))
-    order_flow: Mapped[str] = mapped_column(String(10), default="NEUTRAL")
+    order_flow: Mapped[str] = mapped_column(String(32), default="NEUTRAL")
     regime: Mapped[str] = mapped_column(String(24), default="NORMAL_VOLATILITY")
     confidence: Mapped[float] = mapped_column(Float)
     action: Mapped[str] = mapped_column(String(10))
