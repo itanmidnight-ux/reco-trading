@@ -139,23 +139,27 @@ class LiquidityZoneDetector:
                 zone_type=zone_type,
             )
 
-        if target_distance <= 0.0025:
+        base_threshold = max(float(self.proximity_threshold), 1e-4)
+        medium_threshold = base_threshold * 2.4
+        extended_threshold = base_threshold * 4.8
+
+        if target_distance <= base_threshold:
             return LiquidityFilterAssessment(
                 allow_trade=True,
                 liquidity_multiplier=1.0,
                 liquidity_distance=target_distance,
                 zone_type=zone_type,
             )
-        if target_distance <= 0.006:
+        if target_distance <= medium_threshold:
             return LiquidityFilterAssessment(
                 allow_trade=True,
                 liquidity_multiplier=0.7,
                 liquidity_distance=target_distance,
                 zone_type=zone_type,
             )
-        if target_distance <= 0.012:
+        if target_distance <= extended_threshold:
             return LiquidityFilterAssessment(
-                allow_trade=signal_confidence >= 0.85,
+                allow_trade=signal_confidence >= 0.75,
                 liquidity_multiplier=0.4,
                 liquidity_distance=target_distance,
                 zone_type=zone_type,
@@ -276,7 +280,8 @@ class MarketIntelligence:
     def __init__(self, settings: Any) -> None:
         self.settings = settings
         self.volatility_filter = VolatilityFilter()
-        self.liquidity_detector = LiquidityZoneDetector(proximity_threshold=0.0025)
+        proximity_threshold = float(getattr(settings, "liquidity_proximity_threshold", 0.0035))
+        self.liquidity_detector = LiquidityZoneDetector(proximity_threshold=proximity_threshold)
         self.regime_classifier = MarketRegimeClassifier()
         self.range_position_filter = MarketRangePositionFilter()
 
@@ -341,7 +346,7 @@ class MarketIntelligence:
                 result["approved"] = False
                 result["reason"] = regime_assessment.regime.value
 
-        if getattr(self.settings, "market_regime_classifier_enabled", True):
+        if getattr(self.settings, "market_range_filter_enabled", True):
             regime_enum = regime_assessment.regime if regime_assessment else None
             range_assessment = self.range_position_filter.assess(
                 df=df,

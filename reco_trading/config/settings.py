@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     volatility_filter_enabled: bool = True
     liquidity_zone_filter_enabled: bool = True
     market_regime_classifier_enabled: bool = True
+    market_range_filter_enabled: bool = True
+    liquidity_proximity_threshold: float = 0.0035
 
     # =========================
     # RISK MANAGEMENT

@@ -59,3 +59,27 @@ def test_market_intelligence_returns_snapshot_fields() -> None:
     assert "volatility_state" in result
     assert "distance_to_support" in result
     assert "distance_to_resistance" in result
+
+
+def test_market_intelligence_uses_configurable_liquidity_threshold() -> None:
+    class Tight:
+        enable_market_intelligence = True
+        volatility_filter_enabled = True
+        liquidity_zone_filter_enabled = True
+        market_regime_classifier_enabled = True
+        market_range_filter_enabled = True
+        liquidity_proximity_threshold = 0.0015
+
+    class Loose(Tight):
+        liquidity_proximity_threshold = 0.005
+
+    df = _frame(close=100.0)
+    price = float(df["close"].iloc[-1])
+
+    tight = MarketIntelligence(Tight())
+    loose = MarketIntelligence(Loose())
+
+    tight_result = tight.evaluate("BUY", {"frame5": df, "price": price, "signal_confidence": 0.8})
+    loose_result = loose.evaluate("BUY", {"frame5": df, "price": price, "signal_confidence": 0.8})
+
+    assert loose_result["size_multiplier"] >= tight_result["size_multiplier"]
