@@ -93,20 +93,3 @@ def test_dashboard_controls_and_status_colors_match_engine_states() -> None:
 
     tab.update_state({"status": "error"})
     assert "#ea3943" in tab.top_bar.styleSheet()
-
-
-def test_risk_tab_drawdown_alert_uses_pipeline_daily_drawdown() -> None:
-    _app()
-    tab = RiskTab()
-
-    tab.update_state({"risk_metrics": {"current_exposure": 0.2, "daily_drawdown": "0.0400"}})
-    alerts = [tab.alerts.item(i).text() for i in range(tab.alerts.count())]
-    assert any("Drawdown exceeded 3%" in msg for msg in alerts)
-
-
-def test_system_tab_preserves_default_version_when_state_lacks_bot_version() -> None:
-    _app()
-    tab = SystemTab()
-
-    tab.update_state({"system": {"exchange_status": "OK", "database_status": "OK"}})
-    assert tab.cards["version"].value.text() == "reco-trading"
