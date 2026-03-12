@@ -158,12 +158,26 @@ class DashboardTab(QWidget):
         return panel
 
     def _sync_control_buttons(self, status: str) -> None:
-        normalized = status.upper()
-        running = normalized in {"RUNNING", "ACTIVE", "TRADING"}
+        normalized = str(status).lower()
+        running_states = {
+            "connecting_exchange",
+            "syncing_symbol",
+            "syncing_rules",
+            "waiting_market_data",
+            "analyzing_market",
+            "signal_generated",
+            "placing_order",
+            "position_open",
+            "cooldown",
+        }
+        paused_states = {"paused"}
+
+        running = normalized in running_states
+        paused = normalized in paused_states
 
         self.pause_btn.setVisible(running)
-        self.start_btn.setVisible(not running)
-        self.resume_btn.setVisible(False)
+        self.start_btn.setVisible(not running and not paused)
+        self.resume_btn.setVisible(paused)
 
     def _panel(self) -> QFrame:
         panel = QFrame()
@@ -233,11 +247,19 @@ def signal_color(signal: str) -> str:
 
 
 def status_color(status: str) -> str:
-    status = status.upper()
-    if status == "RUNNING":
+    normalized = str(status).lower()
+    if normalized in {
+        "connecting_exchange",
+        "syncing_symbol",
+        "syncing_rules",
+        "analyzing_market",
+        "signal_generated",
+        "placing_order",
+        "position_open",
+    }:
         return "#16c784"
-    if status == "WAITING_DATA":
+    if normalized in {"waiting_market_data", "cooldown", "paused"}:
         return "#f0b90b"
-    if status == "ERROR":
+    if normalized == "error":
         return "#ea3943"
     return "#9aa4b2"

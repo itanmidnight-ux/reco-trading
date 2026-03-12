@@ -16,7 +16,7 @@ class SystemTab(QWidget):
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
-        subtitle = QLabel("Runtime, connectivity and infrastructure status")
+        subtitle = QLabel("Runtime, connectivity, infra and telemetry diagnostics")
         subtitle.setObjectName("metricLabel")
         root.addWidget(subtitle)
 
@@ -39,25 +39,43 @@ class SystemTab(QWidget):
         for i, card in enumerate(self.cards.values()):
             panel_layout.addWidget(card, i // 3, i % 3)
         self.cards["python"].set_value(platform.python_version())
+
+        self.health_badge = QLabel("Health: UNKNOWN")
+        self.health_badge.setObjectName("smallMetricValue")
+        panel_layout.addWidget(self.health_badge, 3, 0, 1, 3)
+
         self.events = QListWidget()
         self.events.addItems(["System diagnostics pending..."])
-        panel_layout.addWidget(self.events, 3, 0, 1, 3)
+        panel_layout.addWidget(self.events, 4, 0, 1, 3)
 
     def update_state(self, state: dict[str, Any]) -> None:
         system = state.get("system", {})
-        self.cards["version"].set_value(str(state.get("bot_version", "-")))
-        self.cards["api"].set_value(str(system.get("exchange_status", "UNKNOWN")))
-        self.cards["database"].set_value(str(system.get("database_status", "UNKNOWN")))
+        exchange_status = str(system.get("exchange_status", "UNKNOWN"))
+        database_status = str(system.get("database_status", "UNKNOWN"))
+        redis_status = str(system.get("redis_status", "UNKNOWN"))
+
+        self.cards["version"].set_value(str(state.get("bot_version") or "reco-trading"))
+        self.cards["api"].set_value(exchange_status)
+        self.cards["database"].set_value(database_status)
         self.cards["latency"].set_value(f"{system.get('api_latency_ms', '-') } ms")
         self.cards["memory"].set_value(f"{system.get('memory_usage_mb', '-') } MB")
-        self.cards["redis"].set_value(str(system.get("redis_status", "UNKNOWN")))
+        self.cards["redis"].set_value(redis_status)
+
+        if all(value in {"OK", "CONNECTED", "ONLINE", "UNKNOWN"} for value in (exchange_status, database_status, redis_status)):
+            self.health_badge.setText("Health: STABLE")
+            self.health_badge.setStyleSheet("color:#16c784;")
+        else:
+            self.health_badge.setText("Health: DEGRADED")
+            self.health_badge.setStyleSheet("color:#f0b90b;")
 
         self.events.clear()
         self.events.addItems(
             [
                 f"Uptime: {system.get('uptime_seconds', 0)}s",
                 f"Last server sync: {system.get('last_server_sync', '-')}",
-                f"Exchange: {system.get('exchange_status', 'UNKNOWN')}",
-                f"Database: {system.get('database_status', 'UNKNOWN')}",
+                f"Exchange: {exchange_status}",
+                f"Database: {database_status}",
+                f"Redis: {redis_status}",
+                f"Latency: {system.get('api_latency_ms', '-') } ms",
             ]
         )

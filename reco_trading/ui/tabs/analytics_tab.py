@@ -14,7 +14,7 @@ class AnalyticsTab(QWidget):
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
 
-        subtitle = QLabel("Detailed strategy metrics and equity curve")
+        subtitle = QLabel("Detailed strategy metrics, quality score and equity behavior")
         subtitle.setObjectName("metricLabel")
         layout.addWidget(subtitle)
 
@@ -24,13 +24,17 @@ class AnalyticsTab(QWidget):
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(12, 12, 12, 12)
 
+        self.score_badge = QLabel("Model Quality: N/A")
+        self.score_badge.setObjectName("smallMetricValue")
+        panel_layout.addWidget(self.score_badge)
+
         grid = QGridLayout()
         self.cards = {}
-        keys = ["total_trades", "win_rate", "profit_factor", "average_win", "average_loss"]
+        keys = ["total_trades", "win_rate", "profit_factor", "average_win", "average_loss", "largest_win", "largest_loss"]
         for i, key in enumerate(keys):
             card = StatCard(key.replace("_", " ").title(), compact=True)
             self.cards[key] = card
-            grid.addWidget(card, i // 3, i % 3)
+            grid.addWidget(card, i // 4, i % 4)
         panel_layout.addLayout(grid)
 
         self.equity_curve = PnlChart("Performance")
@@ -56,7 +60,9 @@ class AnalyticsTab(QWidget):
                     card.set_value("-")
             else:
                 card.set_value(str(val))
-        self.equity_curve.plot([float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float))])
+
+        points = [float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float))]
+        self.equity_curve.plot(points)
 
         metric_rows = [
             ("Sharpe Ratio", analytics.get("sharpe_ratio", "-")),
@@ -71,8 +77,15 @@ class AnalyticsTab(QWidget):
             self.analysis_table.setItem(row, 0, QTableWidgetItem(name))
             self.analysis_table.setItem(row, 1, QTableWidgetItem(str(value)))
 
+        win_rate = float(analytics.get("win_rate", 0) or 0)
+        confidence = float(state.get("confidence", 0) or 0)
+        score = int(((win_rate * 0.6) + (confidence * 0.4)) * 100)
+        self.score_badge.setText(f"Model Quality: {score}%")
+        self.score_badge.setStyleSheet(f"color: {'#16c784' if score >= 60 else '#f0b90b'};")
+
         self.insights.clear()
         self.insights.addItem(f"Signal: {state.get('signal', '-')}")
-        self.insights.addItem(f"Confidence: {state.get('confidence', 0)}")
+        self.insights.addItem(f"Confidence: {confidence:.2f}")
         self.insights.addItem(f"Open position: {state.get('open_position', '-')}")
         self.insights.addItem(f"Trades today: {state.get('trades_today', 0)}")
+        self.insights.addItem(f"Session PnL: {state.get('session_pnl', 0)}")
