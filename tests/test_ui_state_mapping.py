@@ -75,3 +75,21 @@ def test_tabs_accept_full_snapshot_without_errors() -> None:
     RiskTab().update_state(snapshot)
     SystemTab().update_state(snapshot)
     AnalyticsTab().update_state(snapshot)
+
+def test_dashboard_controls_and_status_colors_match_engine_states() -> None:
+    _app()
+    tab = DashboardTab()
+
+    tab.update_state({"status": "paused"})
+    assert tab.resume_btn.isVisible()
+    assert not tab.pause_btn.isVisible()
+
+    tab.update_state({"status": "position_open"})
+    assert tab.pause_btn.isVisible()
+    assert not tab.start_btn.isVisible()
+
+    tab.update_state({"status": "waiting_market_data"})
+    assert "#f0b90b" in tab.top_bar.styleSheet()
+
+    tab.update_state({"status": "error"})
+    assert "#ea3943" in tab.top_bar.styleSheet()
