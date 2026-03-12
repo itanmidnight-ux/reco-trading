@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtGui import QColor, QFont, QTextCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
 
@@ -43,7 +43,9 @@ class LogsTab(QWidget):
         level = entry.get("level", "INFO").upper()
         self.text.setTextColor(QColor(self.COLORS.get(level, "#e6e8ee")))
         self.text.append(f"[{entry.get('time', '')}] [{level}] {entry.get('message', '')}")
-        self.text.moveCursor(self.text.textCursor().End)
+        cursor = self.text.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.text.setTextCursor(cursor)
         self._counts[level] = self._counts.get(level, 0) + 1
         self.summary.setText(
             f"INFO: {self._counts.get('INFO', 0)} | WARNING: {self._counts.get('WARNING', 0)} | ERROR: {self._counts.get('ERROR', 0)}"
