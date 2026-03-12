@@ -73,8 +73,12 @@ class VolatilityFilter:
         atr_ratio = atr / max(close, 1e-9)
         recent_vol = recent["close"].pct_change().dropna().std()
 
-        if atr_ratio < 0.003 and candle_range_pct < 0.004 and recent_vol < 0.004 and adx < 16:
+        if atr_ratio < 0.0015 and candle_range_pct < 0.0025 and recent_vol < 0.0025 and adx < 13:
             return VolatilityAssessment(VolatilityState.LOW_VOLATILITY, allow_trade=False, risk_multiplier=0.0)
+        if atr_ratio < 0.0035 and candle_range_pct < 0.005 and recent_vol < 0.005:
+            return VolatilityAssessment(VolatilityState.LOW_VOLATILITY, allow_trade=True, risk_multiplier=0.55)
+        if atr_ratio < 0.0065 and candle_range_pct < 0.008:
+            return VolatilityAssessment(VolatilityState.NORMAL_VOLATILITY, allow_trade=True, risk_multiplier=0.75)
         if atr_ratio > 0.02 or candle_range_pct > 0.025 or recent_vol > 0.02:
             return VolatilityAssessment(VolatilityState.EXTREME_VOLATILITY, allow_trade=True, risk_multiplier=0.6)
         return VolatilityAssessment(VolatilityState.NORMAL_VOLATILITY, allow_trade=True, risk_multiplier=1.0)
@@ -140,8 +144,8 @@ class LiquidityZoneDetector:
             )
 
         base_threshold = max(float(self.proximity_threshold), 1e-4)
-        medium_threshold = base_threshold * 2.4
-        extended_threshold = base_threshold * 4.8
+        medium_threshold = base_threshold * 2.5
+        extended_threshold = base_threshold * 4.5
 
         if target_distance <= base_threshold:
             return LiquidityFilterAssessment(
@@ -153,14 +157,14 @@ class LiquidityZoneDetector:
         if target_distance <= medium_threshold:
             return LiquidityFilterAssessment(
                 allow_trade=True,
-                liquidity_multiplier=0.7,
+                liquidity_multiplier=0.75,
                 liquidity_distance=target_distance,
                 zone_type=zone_type,
             )
         if target_distance <= extended_threshold:
             return LiquidityFilterAssessment(
-                allow_trade=signal_confidence >= 0.75,
-                liquidity_multiplier=0.4,
+                allow_trade=True,
+                liquidity_multiplier=0.45,
                 liquidity_distance=target_distance,
                 zone_type=zone_type,
             )
@@ -216,12 +220,14 @@ class MarketRegimeClassifier:
         vol_pct = float((returns <= vol_now).mean()) if not returns.empty else 0.5
 
         if atr_ratio < 0.002 and adx < 14 and vol_pct < 0.35:
-            return MarketRegimeAssessment(MarketRegime.LOW_ACTIVITY, allow_trade=False, risk_multiplier=0.0)
+            return MarketRegimeAssessment(MarketRegime.LOW_ACTIVITY, allow_trade=True, risk_multiplier=0.65)
         if atr_ratio > 0.02 or vol_pct > 0.92:
             return MarketRegimeAssessment(MarketRegime.HIGH_VOLATILITY, allow_trade=True, risk_multiplier=0.5)
         if adx >= 25 and abs(slope) > 0.0015:
             return MarketRegimeAssessment(MarketRegime.TRENDING, allow_trade=True, risk_multiplier=1.0)
-        return MarketRegimeAssessment(MarketRegime.RANGING, allow_trade=True, risk_multiplier=0.85)
+        if adx >= 20 and abs(slope) > 0.001:
+            return MarketRegimeAssessment(MarketRegime.TRENDING, allow_trade=True, risk_multiplier=0.8)
+        return MarketRegimeAssessment(MarketRegime.RANGING, allow_trade=True, risk_multiplier=0.65)
 
 
 class MarketRangePositionFilter:
@@ -248,27 +254,30 @@ class MarketRangePositionFilter:
             position_in_range = (price - lowest_low) / span
         position_in_range = min(max(position_in_range, 0.0), 1.0)
 
+        range_band = max(highest_high - lowest_low, 1e-9)
+        support_distance = max((price - lowest_low) / max(price, 1e-9), 0.0)
+        resistance_distance = max((highest_high - price) / max(price, 1e-9), 0.0)
+        proximity_floor = max(0.0035, 0.20 * (range_band / max(price, 1e-9)))
+
         is_trending = market_regime == MarketRegime.TRENDING or adx >= 25
         if side == "BUY":
-            if is_trending:
-                if position_in_range > 0.90:
-                    return RangeFilterAssessment(allow_trade=False, range_multiplier=0.6, position_in_range=position_in_range)
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.6, position_in_range=position_in_range)
-            if position_in_range > 0.90:
-                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.5, position_in_range=position_in_range)
-            if position_in_range > 0.80:
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.5, position_in_range=position_in_range)
+            if resistance_distance <= (proximity_floor * 0.5):
+                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
+            if resistance_distance <= proximity_floor:
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.4, position_in_range=position_in_range)
+            if support_distance <= proximity_floor:
+                support_boost = 1.2 if not is_trending else 1.1
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=min(support_boost, 1.0), position_in_range=position_in_range)
             return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
 
         if side == "SELL":
-            if is_trending:
-                if position_in_range < 0.10:
-                    return RangeFilterAssessment(allow_trade=False, range_multiplier=0.6, position_in_range=position_in_range)
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.6, position_in_range=position_in_range)
-            if position_in_range < 0.10:
-                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.5, position_in_range=position_in_range)
-            if position_in_range < 0.20:
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.5, position_in_range=position_in_range)
+            if support_distance <= (proximity_floor * 0.5):
+                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
+            if support_distance <= proximity_floor:
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.4, position_in_range=position_in_range)
+            if resistance_distance <= proximity_floor:
+                resistance_boost = 1.2 if not is_trending else 1.1
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=min(resistance_boost, 1.0), position_in_range=position_in_range)
             return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
 
         return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
@@ -303,6 +312,7 @@ class MarketIntelligence:
             "resistance_zone": None,
             "liquidity_distance": None,
             "range_position": None,
+            "filter_details": {},
         }
 
         if df is None or len(df) == 0:
@@ -315,6 +325,11 @@ class MarketIntelligence:
             vol = self.volatility_filter.evaluate(df)
             result["volatility_state"] = vol.state.value
             result["size_multiplier"] *= vol.risk_multiplier
+            result["filter_details"]["volatility"] = {
+                "allow_trade": vol.allow_trade,
+                "multiplier": vol.risk_multiplier,
+                "state": vol.state.value,
+            }
             if not vol.allow_trade:
                 result["approved"] = False
                 result["reason"] = vol.state.value
@@ -334,6 +349,12 @@ class MarketIntelligence:
             )
             result["liquidity_distance"] = liquidity.liquidity_distance
             result["size_multiplier"] *= liquidity.liquidity_multiplier
+            result["filter_details"]["liquidity"] = {
+                "allow_trade": liquidity.allow_trade,
+                "multiplier": liquidity.liquidity_multiplier,
+                "distance": liquidity.liquidity_distance,
+                "zone_type": liquidity.zone_type,
+            }
             if result["approved"] and not liquidity.allow_trade:
                 result["approved"] = False
                 result["reason"] = "LIQUIDITY_ZONE_FILTER"
@@ -342,6 +363,11 @@ class MarketIntelligence:
             regime_assessment = self.regime_classifier.classify(df)
             result["market_regime"] = regime_assessment.regime.value
             result["size_multiplier"] *= regime_assessment.risk_multiplier
+            result["filter_details"]["regime"] = {
+                "allow_trade": regime_assessment.allow_trade,
+                "multiplier": regime_assessment.risk_multiplier,
+                "regime": regime_assessment.regime.value,
+            }
             if not regime_assessment.allow_trade:
                 result["approved"] = False
                 result["reason"] = regime_assessment.regime.value
@@ -357,9 +383,15 @@ class MarketIntelligence:
             )
             result["range_position"] = range_assessment.position_in_range
             result["size_multiplier"] *= range_assessment.range_multiplier
+            result["filter_details"]["range"] = {
+                "allow_trade": range_assessment.allow_trade,
+                "multiplier": range_assessment.range_multiplier,
+                "position": range_assessment.position_in_range,
+            }
             if result["approved"] and not range_assessment.allow_trade:
                 result["approved"] = False
                 result["reason"] = "MARKET_RANGE_FILTER"
 
+        result["size_multiplier"] = max(float(result["size_multiplier"]), 0.35)
         result["size_multiplier"] = max(min(float(result["size_multiplier"]), 1.0), 0.1)
         return result

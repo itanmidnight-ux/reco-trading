@@ -59,6 +59,14 @@ def test_market_intelligence_returns_snapshot_fields() -> None:
     assert "volatility_state" in result
     assert "distance_to_support" in result
     assert "distance_to_resistance" in result
+    assert "filter_details" in result
+
+
+def test_market_intelligence_applies_soft_multiplier_floor() -> None:
+    df = _frame(atr=0.1, adx=10.0, vol=100, flat=True)
+    mi = MarketIntelligence(_Settings())
+    result = mi.evaluate("BUY", {"frame5": df, "price": float(df["close"].iloc[-1])})
+    assert result["size_multiplier"] >= 0.35
 
 
 def test_market_intelligence_uses_configurable_liquidity_threshold() -> None:
