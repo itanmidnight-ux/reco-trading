@@ -14,6 +14,8 @@ from reco_trading.ui.tabs.dashboard_tab import DashboardTab
 from reco_trading.ui.tabs.market_tab import MarketTab
 from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.system_tab import SystemTab
+from reco_trading.ui.tabs.settings_tab import SettingsTab
+from reco_trading.ui.tabs.trades_tab import TradesTab
 
 
 def _app() -> QApplication:
