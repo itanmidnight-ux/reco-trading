@@ -14,7 +14,7 @@ class RiskTab(QWidget):
         title.setObjectName("sectionTitle")
         root.addWidget(title)
 
-        subtitle = QLabel("Exposure and drawdown controls")
+        subtitle = QLabel("Exposure, drawdown and protection controls")
         subtitle.setObjectName("metricLabel")
         root.addWidget(subtitle)
 
@@ -26,12 +26,22 @@ class RiskTab(QWidget):
 
         layout = QGridLayout()
         self.cards = {}
-        keys = ["risk_per_trade", "max_concurrent_trades", "daily_drawdown", "current_exposure"]
+        keys = [
+            "risk_per_trade",
+            "max_concurrent_trades",
+            "daily_drawdown",
+            "current_exposure",
+            "consecutive_losses",
+        ]
         for i, key in enumerate(keys):
             card = StatCard(key.replace("_", " ").title(), compact=True)
             self.cards[key] = card
-            layout.addWidget(card, i // 2, i % 2)
+            layout.addWidget(card, i // 3, i % 3)
         panel_layout.addLayout(layout)
+
+        self.status_badge = QLabel("Risk posture: NORMAL")
+        self.status_badge.setObjectName("smallMetricValue")
+        panel_layout.addWidget(self.status_badge)
 
         self.exposure_bar = QProgressBar()
         self.exposure_bar.setRange(0, 100)
@@ -57,10 +67,21 @@ class RiskTab(QWidget):
         self._anim.start()
 
         self.alerts.clear()
-        daily_drawdown = float(metrics.get("daily_drawdown", 0) or 0)
+        daily_drawdown_raw = float(metrics.get("daily_drawdown", 0) or 0)
+        daily_drawdown = abs(daily_drawdown_raw)
+        consecutive_losses = int(float(metrics.get("consecutive_losses", 0) or 0))
+
         if exposure >= 80:
             self.alerts.addItem("High exposure detected, consider reducing position sizes.")
-        if daily_drawdown <= -0.03:
-            self.alerts.addItem("Drawdown exceeded -3%, pause aggressive entries.")
+        if daily_drawdown >= 0.03:
+            self.alerts.addItem("Drawdown exceeded 3%, pause aggressive entries.")
+        if consecutive_losses >= 3:
+            self.alerts.addItem("Consecutive losses elevated. Consider cooldown.")
+
         if self.alerts.count() == 0:
             self.alerts.addItem("No risk alerts.")
+            self.status_badge.setText("Risk posture: NORMAL")
+            self.status_badge.setStyleSheet("color:#16c784;")
+        else:
+            self.status_badge.setText("Risk posture: CAUTION")
+            self.status_badge.setStyleSheet("color:#f0b90b;")

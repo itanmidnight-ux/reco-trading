@@ -48,15 +48,14 @@ class Repository:
             await self._migrate_signals_columns(conn)
 
     async def _migrate_signals_columns(self, conn: Any) -> None:
-        existing_columns = await conn.run_sync(
-            lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("signals")}
-        )
+        existing_columns = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns("signals"))
+        existing_column_names = {col["name"] for col in existing_columns}
         signals_table = Signal.__table__
         dialect = postgresql.dialect()
         preparer = dialect.identifier_preparer
 
         for column in signals_table.columns:
-            if column.name in existing_columns:
+            if column.name in existing_column_names:
                 continue
             if column.primary_key:
                 continue
@@ -69,6 +68,11 @@ class Repository:
             )
             await conn.execute(migration_sql)
             self.logger.info("Database migration applied: added column %s to signals table", column.name)
+
+        order_flow_column = next((col for col in existing_columns if col["name"] == "order_flow"), None)
+        if order_flow_column and getattr(order_flow_column.get("type"), "length", None) != 32:
+            await conn.execute(text("ALTER TABLE signals ALTER COLUMN order_flow TYPE VARCHAR(32)"))
+            self.logger.info("Database migration applied: widened signals.order_flow to VARCHAR(32)")
 
     @safe_db_call()
     async def record_log(self, level: str, state: str, message: str) -> None:
