@@ -340,6 +340,29 @@ class BotEngine:
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
             return
+
+        original_qty = qty
+        qty, adjusted_for_notional = self.order_manager.adjust_quantity_for_min_notional(qty, price)
+        if qty <= 0:
+            await self._log("WARNING", "quantity_below_minimum")
+            return
+        if adjusted_for_notional:
+            max_notional = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0) * max(
+                float(self.settings.max_trade_balance_fraction),
+                0.0,
+            )
+            adjusted_notional = qty * price
+            if max_notional > 0 and adjusted_notional > max_notional:
+                await self._log(
+                    "WARNING",
+                    f"min_notional_adjustment_exceeds_risk_limit adjusted_notional={adjusted_notional:.8f} max_notional={max_notional:.8f}",
+                )
+                return
+            await self._log(
+                "INFO",
+                f"min_notional_adjustment event=min_notional_adjustment price={price:.8f} original_quantity={original_qty:.8f} adjusted_quantity={qty:.8f} min_notional={self.order_manager.rules.min_notional:.8f}",
+            )
+
         if not self.order_manager.validate_notional(qty, price):
             await self._log("WARNING", "notional_below_minimum")
             return
