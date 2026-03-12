@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from reco_trading.core.trace import DecisionTrace
+
 import pandas as pd
 
 
@@ -294,7 +296,7 @@ class MarketIntelligence:
         self.regime_classifier = MarketRegimeClassifier()
         self.range_position_filter = MarketRangePositionFilter()
 
-    def evaluate(self, side: str, market_data: dict[str, Any]) -> dict[str, Any]:
+    def evaluate(self, side: str, market_data: dict[str, Any], trace: DecisionTrace | None = None) -> dict[str, Any]:
         if not getattr(self.settings, "enable_market_intelligence", True):
             return {"approved": True, "size_multiplier": 1.0, "reason": "DISABLED"}
 
@@ -330,6 +332,12 @@ class MarketIntelligence:
                 "multiplier": vol.risk_multiplier,
                 "state": vol.state.value,
             }
+            if trace is not None:
+                trace.volatility_filter = {
+                    "allowed": vol.allow_trade,
+                    "multiplier": vol.risk_multiplier,
+                    "state": vol.state.value,
+                }
             if not vol.allow_trade:
                 result["approved"] = False
                 result["reason"] = vol.state.value
@@ -355,6 +363,13 @@ class MarketIntelligence:
                 "distance": liquidity.liquidity_distance,
                 "zone_type": liquidity.zone_type,
             }
+            if trace is not None:
+                trace.liquidity_filter = {
+                    "allowed": liquidity.allow_trade,
+                    "multiplier": liquidity.liquidity_multiplier,
+                    "distance": liquidity.liquidity_distance,
+                    "zone_type": liquidity.zone_type,
+                }
             if result["approved"] and not liquidity.allow_trade:
                 result["approved"] = False
                 result["reason"] = "LIQUIDITY_ZONE_FILTER"
@@ -368,6 +383,12 @@ class MarketIntelligence:
                 "multiplier": regime_assessment.risk_multiplier,
                 "regime": regime_assessment.regime.value,
             }
+            if trace is not None:
+                trace.regime_filter = {
+                    "allowed": regime_assessment.allow_trade,
+                    "multiplier": regime_assessment.risk_multiplier,
+                    "regime": regime_assessment.regime.value,
+                }
             if not regime_assessment.allow_trade:
                 result["approved"] = False
                 result["reason"] = regime_assessment.regime.value
@@ -388,6 +409,13 @@ class MarketIntelligence:
                 "multiplier": range_assessment.range_multiplier,
                 "position": range_assessment.position_in_range,
             }
+            if trace is not None:
+                trace.range_filter = {
+                    "allowed": range_assessment.allow_trade,
+                    "multiplier": range_assessment.range_multiplier,
+                    "position": range_assessment.position_in_range,
+                    "blocked": not range_assessment.allow_trade,
+                }
             if result["approved"] and not range_assessment.allow_trade:
                 result["approved"] = False
                 result["reason"] = "MARKET_RANGE_FILTER"

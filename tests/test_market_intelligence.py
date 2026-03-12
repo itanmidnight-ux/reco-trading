@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from reco_trading.core.trace import DecisionTrace
 from reco_trading.strategy.market_intelligence import LiquidityZoneDetector, MarketIntelligence, VolatilityFilter
 
 
@@ -91,3 +92,19 @@ def test_market_intelligence_uses_configurable_liquidity_threshold() -> None:
     loose_result = loose.evaluate("BUY", {"frame5": df, "price": price, "signal_confidence": 0.8})
 
     assert loose_result["size_multiplier"] >= tight_result["size_multiplier"]
+
+
+def test_market_intelligence_trace_is_observability_only() -> None:
+    df = _frame()
+    market_data = {"frame5": df, "price": float(df["close"].iloc[-1]), "signal_confidence": 0.52}
+    mi = MarketIntelligence(_Settings())
+
+    baseline = mi.evaluate("BUY", market_data)
+
+    trace = DecisionTrace(signal_side="BUY", confidence=0.52, risk_validation="PASS")
+    traced = mi.evaluate("BUY", market_data, trace=trace)
+
+    assert traced == baseline
+    assert "multiplier" in trace.volatility_filter
+    assert "multiplier" in trace.liquidity_filter
+    assert "multiplier" in trace.range_filter

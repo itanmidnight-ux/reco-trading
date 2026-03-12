@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,7 @@ from rich.table import Table
 from reco_trading.config.settings import Settings
 from reco_trading.config.symbols import normalize_symbol
 from reco_trading.core.state_machine import BotState
+from reco_trading.core.trace import DecisionTrace
 from reco_trading.data.market_stream import MarketStream
 from reco_trading.database.repository import Repository
 from reco_trading.exchange.binance_client import BinanceClient
@@ -140,17 +142,36 @@ class BotEngine:
                         await asyncio.sleep(self.settings.loop_sleep_seconds)
                         continue
                     await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
+                    trace = DecisionTrace()
                     analysis = await self.analyze_market(market_data)
+                    trace.signal_side = str(analysis.get("side", "HOLD"))
+                    trace.confidence = float(analysis.get("confidence", 0.0))
+                    trace.final_decision = "HOLD"
                     self._update_snapshot(market_data, analysis)
 
-                    if await self.validate_trade_conditions(analysis):
-                        intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
+                    if await self.validate_trade_conditions(analysis, trace=trace):
+                        intelligence = self.market_intelligence.evaluate(
+                            str(analysis.get("side", "HOLD")),
+                            market_data,
+                            trace=trace,
+                        )
                         self._apply_market_intelligence_snapshot(intelligence)
                         if intelligence.get("approved"):
-                            await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                            side = str(analysis.get("side", "HOLD"))
+                            if side in {"BUY", "SELL"}:
+                                pre_last_trade = self.snapshot.get("last_trade")
+                                await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                                trace.final_decision = "BLOCKED_EXECUTION" if self.snapshot.get("last_trade") == pre_last_trade else side
+                            else:
+                                trace.final_decision = "HOLD"
                         else:
+                            trace.final_decision = "BLOCKED_FILTER"
                             await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
+                    else:
+                        if trace.risk_validation not in {"PASS", "UNKNOWN"}:
+                            trace.final_decision = "BLOCKED_RISK"
 
+                    await self._emit_decision_trace(trace)
                     await self.manage_open_position(market_data)
                     self.exchange_failure_count = 0
                     self._sync_ui_state()
@@ -252,7 +273,7 @@ class BotEngine:
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {"bundle": bundle, "side": side, "confidence": confidence, "grade": grade}
 
-    async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
+    async def validate_trade_conditions(self, analysis: dict[str, Any], trace: DecisionTrace | None = None) -> bool:
         confidence = float(analysis["confidence"])
         usdt_balance, btc_balance = await self._fetch_balances()
         current_price = _as_float(self.snapshot.get("price"), 0.0)
@@ -277,16 +298,22 @@ class BotEngine:
                 self.trading_paused_by_drawdown = True
 
         if self.trading_paused_by_drawdown:
+            if trace is not None:
+                trace.risk_validation = "MAX_DRAWDOWN"
             await self._set_state(BotState.PAUSED, "max_drawdown")
             self.snapshot["cooldown"] = "MAX_DRAWDOWN"
             return False
 
         if self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until:
+            if trace is not None:
+                trace.risk_validation = "LOSS_PROTECTION_PAUSE"
             await self._set_state(BotState.PAUSED, "loss_protection_pause")
             self.snapshot["cooldown"] = f"PAUSED until {self.pause_trading_until.isoformat(timespec='seconds')}"
             return False
 
         if not self._is_cooldown_complete():
+            if trace is not None:
+                trace.risk_validation = "COOLDOWN_ACTIVE"
             await self._set_state(BotState.COOLDOWN, "cooldown_active")
             self.snapshot["cooldown"] = "ACTIVE"
             return False
@@ -299,10 +326,14 @@ class BotEngine:
             confidence_threshold=self.settings.confidence_threshold,
         )
         if not risk.approved:
+            if trace is not None:
+                trace.risk_validation = str(risk.reason)
             await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_MARKET_DATA, risk.reason)
             self.snapshot["cooldown"] = risk.reason
             return False
 
+        if trace is not None:
+            trace.risk_validation = "PASS"
         self.snapshot["cooldown"] = "READY"
         return True
 
@@ -593,6 +624,12 @@ class BotEngine:
         await self.repository.record_log(level, self.state.value, message)
         if self.state_manager:
             self.state_manager.add_log(level, message)
+
+    async def _emit_decision_trace(self, trace: DecisionTrace) -> None:
+        if not getattr(self.settings, "enable_decision_trace", True):
+            return
+        payload = json.dumps(trace.to_dict(), default=str, sort_keys=True)
+        await self._log("DEBUG", f"TRACE_DECISION {payload}")
 
     def _roll_day(self) -> None:
         today = datetime.now(timezone.utc).date()
