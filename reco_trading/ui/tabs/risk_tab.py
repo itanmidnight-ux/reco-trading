@@ -69,15 +69,10 @@ class RiskTab(QWidget):
         self.alerts.clear()
         daily_drawdown_raw = float(metrics.get("daily_drawdown", 0) or 0)
         daily_drawdown = abs(daily_drawdown_raw)
-        consecutive_losses = int(float(metrics.get("consecutive_losses", 0) or 0))
-
         if exposure >= 80:
             self.alerts.addItem("High exposure detected, consider reducing position sizes.")
         if daily_drawdown >= 0.03:
             self.alerts.addItem("Drawdown exceeded 3%, pause aggressive entries.")
-        if consecutive_losses >= 3:
-            self.alerts.addItem("Consecutive losses elevated. Consider cooldown.")
-
         if self.alerts.count() == 0:
             self.alerts.addItem("No risk alerts.")
             self.status_badge.setText("Risk posture: NORMAL")
