@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # =========================
     # SIGNAL THRESHOLDS
     # =========================
-    min_signal_confidence: float = Field(default=0.75, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
+    min_signal_confidence: float = Field(default=0.45, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
     strong_signal_confidence: float = 0.85
     exceptional_signal_confidence: float = 0.90
     confidence_hold_threshold: float = 0.55
