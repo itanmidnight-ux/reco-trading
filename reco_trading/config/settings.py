@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     market_regime_classifier_enabled: bool = True
     market_range_filter_enabled: bool = True
     liquidity_proximity_threshold: float = 0.0035
+    enable_decision_trace: bool = True
 
     # =========================
     # RISK MANAGEMENT
