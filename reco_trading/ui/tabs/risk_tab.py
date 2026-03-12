@@ -57,10 +57,11 @@ class RiskTab(QWidget):
         self._anim.start()
 
         self.alerts.clear()
-        daily_drawdown = float(metrics.get("daily_drawdown", 0) or 0)
+        daily_drawdown_raw = float(metrics.get("daily_drawdown", 0) or 0)
+        daily_drawdown = abs(daily_drawdown_raw)
         if exposure >= 80:
             self.alerts.addItem("High exposure detected, consider reducing position sizes.")
-        if daily_drawdown <= -0.03:
-            self.alerts.addItem("Drawdown exceeded -3%, pause aggressive entries.")
+        if daily_drawdown >= 0.03:
+            self.alerts.addItem("Drawdown exceeded 3%, pause aggressive entries.")
         if self.alerts.count() == 0:
             self.alerts.addItem("No risk alerts.")

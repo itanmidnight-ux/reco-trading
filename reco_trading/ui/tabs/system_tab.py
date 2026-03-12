@@ -45,7 +45,7 @@ class SystemTab(QWidget):
 
     def update_state(self, state: dict[str, Any]) -> None:
         system = state.get("system", {})
-        self.cards["version"].set_value(str(state.get("bot_version", "-")))
+        self.cards["version"].set_value(str(state.get("bot_version") or "reco-trading"))
         self.cards["api"].set_value(str(system.get("exchange_status", "UNKNOWN")))
         self.cards["database"].set_value(str(system.get("database_status", "UNKNOWN")))
         self.cards["latency"].set_value(f"{system.get('api_latency_ms', '-') } ms")
