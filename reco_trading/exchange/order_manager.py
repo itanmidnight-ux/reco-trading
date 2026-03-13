@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 from reco_trading.config.symbols import normalize_symbol
 from reco_trading.exchange.binance_client import BinanceClient
@@ -53,6 +53,56 @@ class OrderManager:
             return 0.0
         return self._round_to_step(quantity, self.rules.step_size)
 
+    def normalize_order_quantity(
+        self,
+        symbol: str,
+        price: float,
+        quantity: float,
+        equity: float,
+        max_trade_balance_fraction: float,
+    ) -> float | None:
+        """Normalize quantity by Binance filters and reject orders above risk caps."""
+        normalized_symbol = normalize_symbol(symbol)
+        if normalized_symbol != self.symbol:
+            self.symbol = normalized_symbol
+            self.rules = None
+
+        if not self.rules:
+            raise RuntimeError("symbol_rules_not_loaded")
+
+        safe_price = max(float(price), 1e-9)
+        min_qty = float(self.rules.min_qty)
+        step_size = float(self.rules.step_size)
+        min_notional = float(self.rules.min_notional)
+
+        normalized_quantity = float(quantity)
+
+        # Rule 1 — MIN_QTY
+        if normalized_quantity < min_qty:
+            normalized_quantity = min_qty
+
+        # Rule 2 — STEP_SIZE (floor)
+        normalized_quantity = self._round_to_step(normalized_quantity, step_size)
+
+        # Rule 3 — MIN_NOTIONAL (+ 2% safety margin)
+        if safe_price * normalized_quantity < min_notional:
+            normalized_quantity = (min_notional * 1.02) / safe_price
+            normalized_quantity = self._round_to_step_up(normalized_quantity, step_size)
+
+        # Rule 4 — MIN_QTY again
+        if normalized_quantity < min_qty:
+            normalized_quantity = min_qty
+
+        if normalized_quantity <= 0:
+            return None
+
+        notional = safe_price * normalized_quantity
+        max_notional = max(float(equity), 0.0) * max(float(max_trade_balance_fraction), 0.0)
+        if max_notional > 0 and notional > max_notional:
+            return None
+
+        return normalized_quantity
+
     def normalize_price(self, price: float) -> float:
         if not self.rules:
             raise RuntimeError("symbol_rules_not_loaded")
@@ -102,4 +152,13 @@ class OrderManager:
         dec_value = Decimal(str(value))
         dec_step = Decimal(str(step))
         rounded = (dec_value / dec_step).quantize(Decimal("1"), rounding=ROUND_DOWN) * dec_step
+        return float(rounded)
+
+    @staticmethod
+    def _round_to_step_up(value: float, step: float) -> float:
+        if step <= 0:
+            return value
+        dec_value = Decimal(str(value))
+        dec_step = Decimal(str(step))
+        rounded = (dec_value / dec_step).quantize(Decimal("1"), rounding=ROUND_UP) * dec_step
         return float(rounded)
