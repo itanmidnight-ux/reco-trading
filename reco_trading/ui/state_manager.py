@@ -20,6 +20,7 @@ class StateManager(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.RLock()
+        self._control_queue: list[str] = []
         self._state: dict[str, Any] = {
             "pair": "BTC/USDT",
             "timeframe": "5m / 15m",
@@ -46,6 +47,7 @@ class StateManager(QObject):
             "trades_today": 0,
             "win_rate": 0.0,
             "open_position": "NONE",
+            "has_open_position": False,
             "last_trade": "-",
             "cooldown": "READY",
             "risk_metrics": {},
@@ -102,3 +104,14 @@ class StateManager(QObject):
 
     def request_emergency_stop(self) -> None:
         self.control_requested.emit("emergency_stop")
+
+    def request_force_close(self) -> None:
+        with self._lock:
+            self._control_queue.append("force_close")
+        self.control_requested.emit("force_close")
+
+    def pop_control_requests(self) -> list[str]:
+        with self._lock:
+            pending = list(self._control_queue)
+            self._control_queue.clear()
+        return pending
