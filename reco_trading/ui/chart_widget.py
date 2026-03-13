@@ -45,7 +45,7 @@ class CandlestickChartWidget(QWidget):
         self._last_candles: list[dict[str, float | int]] = []
 
         layout = QVBoxLayout(self)
-        self._status = QLabel("Waiting for engine candle stream…")
+        self._status = QLabel("Loading TradingView chart…")
         self._status.setObjectName("metricLabel")
         layout.addWidget(self._status)
 
