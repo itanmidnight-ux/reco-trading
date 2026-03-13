@@ -50,9 +50,13 @@ class SystemTab(QWidget):
 
     def update_state(self, state: dict[str, Any]) -> None:
         system = state.get("system", {})
+        exchange_status = str(system.get("exchange_status", "UNKNOWN"))
+        database_status = str(system.get("database_status", "UNKNOWN"))
+        redis_status = str(system.get("redis_status", "UNKNOWN"))
+
         self.cards["version"].set_value(str(state.get("bot_version") or "reco-trading"))
-        self.cards["api"].set_value(str(system.get("exchange_status", "UNKNOWN")))
-        self.cards["database"].set_value(str(system.get("database_status", "UNKNOWN")))
+        self.cards["api"].set_value(exchange_status)
+        self.cards["database"].set_value(database_status)
         self.cards["latency"].set_value(f"{system.get('api_latency_ms', '-') } ms")
         self.cards["memory"].set_value(f"{system.get('memory_usage_mb', '-') } MB")
         self.cards["redis"].set_value(redis_status)
