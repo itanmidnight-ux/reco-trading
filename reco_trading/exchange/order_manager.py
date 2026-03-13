@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
+import math
 
 from reco_trading.config.symbols import normalize_symbol
 from reco_trading.exchange.binance_client import BinanceClient
@@ -63,6 +64,64 @@ class OrderManager:
             raise RuntimeError("symbol_rules_not_loaded")
         return quantity * price >= self.rules.min_notional
 
+
+    def normalize_order_quantity(
+        self,
+        symbol: str,
+        price: float,
+        quantity: float,
+        equity: float,
+        max_trade_balance_fraction: float,
+    ) -> float | None:
+        if not self.rules:
+            raise RuntimeError("symbol_rules_not_loaded")
+
+        normalized_symbol = normalize_symbol(symbol)
+        if normalized_symbol != self.symbol:
+            raise ValueError(f"symbol_rules_mismatch symbol={normalized_symbol} expected={self.symbol}")
+
+        safe_price = max(float(price), 1e-9)
+
+        # 1) load filter values already synced from Binance exchangeInfo.
+        min_qty = float(self.rules.min_qty)
+        step_size = float(self.rules.step_size)
+        min_notional = float(self.rules.min_notional)
+
+        # 2) quantity required by notional.
+        qty_by_notional = min_notional / safe_price
+
+        # 3) minimum valid quantity considering both LOT_SIZE and MIN_NOTIONAL.
+        min_valid_qty = max(min_qty, qty_by_notional)
+
+        # 4) apply step size ceiling.
+        min_valid_qty = math.ceil(min_valid_qty / step_size) * step_size
+
+        # 5) bring the calculated quantity up if below minimum.
+        normalized_quantity = float(quantity)
+        if normalized_quantity < min_valid_qty:
+            normalized_quantity = min_valid_qty
+
+        # 6) normalize final quantity to step size.
+        normalized_quantity = math.floor(normalized_quantity / step_size) * step_size
+
+        # 7) re-check minQty.
+        if normalized_quantity < min_qty:
+            normalized_quantity = min_qty
+
+        if normalized_quantity <= 0:
+            return None
+
+        # 8) final notional.
+        notional = safe_price * normalized_quantity
+
+        # 9) enforce risk protection.
+        max_notional = max(float(equity), 0.0) * max(float(max_trade_balance_fraction), 0.0)
+        if notional > max_notional:
+            return None
+
+        # 10) return normalized quantity.
+        return normalized_quantity
+
     def adjust_quantity_for_min_notional(
         self,
         quantity: float,
@@ -102,4 +161,13 @@ class OrderManager:
         dec_value = Decimal(str(value))
         dec_step = Decimal(str(step))
         rounded = (dec_value / dec_step).quantize(Decimal("1"), rounding=ROUND_DOWN) * dec_step
+        return float(rounded)
+
+    @staticmethod
+    def _ceil_to_step(value: float, step: float) -> float:
+        if step <= 0:
+            return value
+        dec_value = Decimal(str(value))
+        dec_step = Decimal(str(step))
+        rounded = (dec_value / dec_step).quantize(Decimal("1"), rounding=ROUND_CEILING) * dec_step
         return float(rounded)

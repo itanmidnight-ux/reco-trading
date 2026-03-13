@@ -139,6 +139,7 @@ class BotEngine:
                         self._safe_live_update(live)
                         await asyncio.sleep(self.settings.loop_sleep_seconds)
                         continue
+                    await self._process_control_requests()
                     await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
                     analysis = await self.analyze_market(market_data)
                     self._update_snapshot(market_data, analysis)
@@ -342,25 +343,30 @@ class BotEngine:
             return
 
         original_qty = qty
-        qty, adjusted_for_notional = self.order_manager.adjust_quantity_for_min_notional(qty, price)
-        if qty <= 0:
-            await self._log("WARNING", "quantity_below_minimum")
-            return
-        if adjusted_for_notional:
-            max_notional = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0) * max(
-                float(self.settings.max_trade_balance_fraction),
-                0.0,
+        equity = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0)
+        normalized_qty = self.order_manager.normalize_order_quantity(
+            symbol=self.symbol,
+            price=price,
+            quantity=qty,
+            equity=equity,
+            max_trade_balance_fraction=float(self.settings.max_trade_balance_fraction),
+        )
+        if normalized_qty is None:
+            await self._log(
+                "WARNING",
+                f"order_rejected_after_normalization symbol={self.symbol} original_quantity={original_qty:.8f} price={price:.8f}",
             )
-            adjusted_notional = qty * price
-            if max_notional > 0 and adjusted_notional > max_notional:
-                await self._log(
-                    "WARNING",
-                    f"min_notional_adjustment_exceeds_risk_limit adjusted_notional={adjusted_notional:.8f} max_notional={max_notional:.8f}",
-                )
-                return
+            return
+        qty = normalized_qty
+        if abs(qty - original_qty) > 0:
+            rules = self.order_manager.rules
+            notional = qty * price
             await self._log(
                 "INFO",
-                f"min_notional_adjustment event=min_notional_adjustment price={price:.8f} original_quantity={original_qty:.8f} adjusted_quantity={qty:.8f} min_notional={self.order_manager.rules.min_notional:.8f}",
+                "Adjusted order quantity to satisfy Binance filters "
+                f"symbol={self.symbol} original_quantity={original_qty:.8f} normalized_quantity={qty:.8f} "
+                f"price={price:.8f} notional={notional:.8f} minQty={rules.min_qty:.8f} "
+                f"stepSize={rules.step_size:.8f} minNotional={rules.min_notional:.8f}",
             )
 
         if not self.order_manager.validate_notional(qty, price):
@@ -438,44 +444,81 @@ class BotEngine:
                 continue
 
             await self._set_state(BotState.COOLDOWN)
-            close_side = "sell" if position.side == "BUY" else "buy"
-            order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
-            exit_price = _as_float(order.get("average"), _as_float(order.get("price"), price))
+            await self._log("INFO", f"exit_condition_detected trade_id={position.trade_id} reason={exit_reason} market_price={price:.8f}")
+            closed = await self._close_position(position, exit_reason, price)
+            if not closed:
+                await self._log("ERROR", f"exit_close_failed trade_id={position.trade_id} reason={exit_reason} action=retry_next_loop")
 
-            pnl = (exit_price - position.entry_price) * position.quantity
-            if position.side == "SELL":
-                pnl *= -1
+    async def force_close_position(self) -> None:
+        if not self.position_manager.positions:
+            await self._log("INFO", "MANUAL_TRADE_CLOSE_SKIPPED no_open_position")
+            return
 
-            await self.repository.close_trade(position.trade_id, exit_price, pnl, exit_reason)
-            self.position_manager.close(position.trade_id)
-            self.last_close_time = datetime.now(timezone.utc)
-            if self._update_loss_protection(pnl):
-                await self._log("WARNING", "loss_protection_enabled")
+        await self._set_state(BotState.COOLDOWN)
+        for position in list(self.position_manager.positions):
+            await self._log("INFO", f"MANUAL_TRADE_CLOSE requested trade_id={position.trade_id}")
+            closed = await self._close_position(position, "MANUAL_TRADE_CLOSE", _as_float(self.snapshot.get("price"), position.entry_price))
+            if not closed:
+                await self._log("ERROR", f"MANUAL_TRADE_CLOSE_FAILED trade_id={position.trade_id} action=retry_next_loop")
 
-            if pnl > 0:
-                self.win_count += 1
-            self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else None
-            self.snapshot["last_trade"] = f"{position.side} {exit_reason} pnl={pnl:.4f}"
-
-            if self.state_manager:
-                self.state_manager.add_trade(
-                    {
-                        "trade_id": position.trade_id,
-                        "time": datetime.utcnow().isoformat(timespec="seconds"),
-                        "pair": self.symbol,
-                        "side": position.side,
-                        "entry": position.entry_price,
-                        "exit": exit_price,
-                        "size": position.quantity,
-                        "pnl": pnl,
-                        "status": exit_reason,
-                        "entry_time": "-",
-                        "exit_time": datetime.utcnow().isoformat(timespec="seconds"),
-                        "fees": order.get("fee", {}).get("cost", 0),
-                        "confidence": None,
-                        "signal_details": exit_reason,
-                    }
+    async def _close_position(self, position: Position, exit_reason: str, reference_price: float) -> bool:
+        close_side = "sell" if position.side == "BUY" else "buy"
+        order = None
+        for attempt in range(1, 4):
+            try:
+                order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
+                break
+            except ccxt.BaseError as exc:
+                await self._log(
+                    "WARNING",
+                    f"close_order_attempt_failed trade_id={position.trade_id} reason={exit_reason} attempt={attempt}/3 error={exc}",
                 )
+                if attempt < 3:
+                    await asyncio.sleep(1)
+
+        if order is None:
+            await self.repository.record_error(self.state.value, "close_order", f"trade_id={position.trade_id} reason={exit_reason}")
+            return False
+
+        exit_price = _as_float(order.get("average"), _as_float(order.get("price"), reference_price))
+        pnl = (exit_price - position.entry_price) * position.quantity
+        if position.side == "SELL":
+            pnl *= -1
+
+        await self.repository.close_trade(position.trade_id, exit_price, pnl, exit_reason)
+        self.position_manager.close(position.trade_id)
+        self.last_close_time = datetime.now(timezone.utc)
+        if self._update_loss_protection(pnl):
+            await self._log("WARNING", "loss_protection_enabled")
+
+        if pnl > 0:
+            self.win_count += 1
+        self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else None
+        self.snapshot["last_trade"] = f"{position.side} {exit_reason} pnl={pnl:.4f}"
+
+        await self._log("INFO", f"position_closed trade_id={position.trade_id} reason={exit_reason} exit_price={exit_price:.8f} pnl={pnl:.8f}")
+        self._sync_ui_state()
+
+        if self.state_manager:
+            self.state_manager.add_trade(
+                {
+                    "trade_id": position.trade_id,
+                    "time": datetime.utcnow().isoformat(timespec="seconds"),
+                    "pair": self.symbol,
+                    "side": position.side,
+                    "entry": position.entry_price,
+                    "exit": exit_price,
+                    "size": position.quantity,
+                    "pnl": pnl,
+                    "status": exit_reason,
+                    "entry_time": "-",
+                    "exit_time": datetime.utcnow().isoformat(timespec="seconds"),
+                    "fees": order.get("fee", {}).get("cost", 0),
+                    "confidence": None,
+                    "signal_details": exit_reason,
+                }
+            )
+        return True
 
     def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
@@ -487,8 +530,10 @@ class BotEngine:
             atr=atr,
             atr_floor_multiplier=0.5,
         )
-        qty = self.order_manager.normalize_quantity(sizing.quantity * max(size_multiplier, 0.1))
-        return float(qty)
+        # Keep raw risk-derived size here. Binance filter normalization (minQty/stepSize/minNotional)
+        # is applied centrally in execute_trade via normalize_order_quantity.
+        qty = sizing.quantity * max(size_multiplier, 0.1)
+        return float(max(qty, 0.0))
 
     def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
         frame5 = market_data.get("frame5")
@@ -603,6 +648,14 @@ class BotEngine:
         btc_balance = _as_float((btc or {}).get("free"), 0.0)
         return usdt_balance, btc_balance
 
+    async def _process_control_requests(self) -> None:
+        if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):
+            return
+        controls = self.state_manager.pop_control_requests()
+        for control in controls:
+            if control == "force_close":
+                await self.force_close_position()
+
     async def _set_state(self, new_state: BotState, context: str = "") -> None:
         if new_state == self.state:
             return
@@ -660,6 +713,7 @@ class BotEngine:
                 trades_today=self.snapshot.get("trades_today", 0),
                 win_rate=self.snapshot.get("win_rate"),
                 last_trade=self.snapshot.get("last_trade"),
+                has_open_position=bool(self.position_manager.positions),
                 cooldown=self.snapshot.get("cooldown"),
                 status=self.snapshot.get("status", "INITIALIZING"),
                 bid=self.snapshot.get("bid", self.snapshot.get("price")),
