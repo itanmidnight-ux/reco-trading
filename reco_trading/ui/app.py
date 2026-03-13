@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWebEngineWidgets import QWebEngineView
 
 try:
     from PySide6.QtWebEngineQuick import QtWebEngineQuick
@@ -14,6 +15,7 @@ from reco_trading.ui.state_manager import StateManager
 
 
 def run_gui(state_manager: StateManager) -> int:
+    _ = QWebEngineView
     if QtWebEngineQuick is not None:
         QtWebEngineQuick.initialize()
     app = QApplication.instance() or QApplication(sys.argv)

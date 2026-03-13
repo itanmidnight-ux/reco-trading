@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 
 from reco_trading.config.symbols import normalize_symbol
 from reco_trading.exchange.binance_client import BinanceClient
@@ -58,11 +58,10 @@ class OrderManager:
         symbol: str,
         price: float,
         quantity: float,
-        *,
         equity: float,
         max_trade_balance_fraction: float,
     ) -> float | None:
-        """Normalize quantity to satisfy LOT_SIZE and MIN_NOTIONAL, respecting risk caps."""
+        """Normalize quantity by Binance filters and reject orders above risk caps."""
         normalized_symbol = normalize_symbol(symbol)
         if normalized_symbol != self.symbol:
             self.symbol = normalized_symbol
@@ -82,19 +81,17 @@ class OrderManager:
         if normalized_quantity < min_qty:
             normalized_quantity = min_qty
 
-        # Rule 2 — STEP_SIZE
+        # Rule 2 — STEP_SIZE (floor)
         normalized_quantity = self._round_to_step(normalized_quantity, step_size)
-
-        # Guard against rounding to zero when min quantity itself is step-aligned.
-        if normalized_quantity < min_qty:
-            normalized_quantity = self._round_to_step(min_qty, step_size)
 
         # Rule 3 — MIN_NOTIONAL (+ 2% safety margin)
         if safe_price * normalized_quantity < min_notional:
             normalized_quantity = (min_notional * 1.02) / safe_price
-            normalized_quantity = self._round_to_step(normalized_quantity, step_size)
-            if normalized_quantity * safe_price < min_notional:
-                normalized_quantity = self._round_to_step(normalized_quantity + step_size, step_size)
+            normalized_quantity = self._round_to_step_up(normalized_quantity, step_size)
+
+        # Rule 4 — MIN_QTY again
+        if normalized_quantity < min_qty:
+            normalized_quantity = min_qty
 
         if normalized_quantity <= 0:
             return None
@@ -155,4 +152,13 @@ class OrderManager:
         dec_value = Decimal(str(value))
         dec_step = Decimal(str(step))
         rounded = (dec_value / dec_step).quantize(Decimal("1"), rounding=ROUND_DOWN) * dec_step
+        return float(rounded)
+
+    @staticmethod
+    def _round_to_step_up(value: float, step: float) -> float:
+        if step <= 0:
+            return value
+        dec_value = Decimal(str(value))
+        dec_step = Decimal(str(step))
+        rounded = (dec_value / dec_step).quantize(Decimal("1"), rounding=ROUND_UP) * dec_step
         return float(rounded)
