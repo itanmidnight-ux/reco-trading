@@ -1,114 +1,181 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Reco Trading Chart</title>
+  <title>Realtime Chart</title>
   <style>
-    html, body { margin: 0; padding: 0; background: #131722; color: #e6e8ee; height: 100%; overflow: hidden; }
-    #chart { width: 100%; height: 100%; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #131722;
+      overflow: hidden;
+      font-family: Inter, "Segoe UI", sans-serif;
+    }
+
+    #chart-root {
+      width: 100%;
+      height: 100%;
+      background: #131722;
+    }
   </style>
-  <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
-  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
 </head>
 <body>
-  <div id="chart"></div>
+  <div id="chart-root"></div>
+
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   <script>
-    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
-      layout: { background: { type: 'solid', color: '#131722' }, textColor: '#e6e8ee' },
-      grid: { vertLines: { color: '#1f2633' }, horzLines: { color: '#1f2633' } },
-      rightPriceScale: { borderColor: '#2a2f3a' },
-      timeScale: { borderColor: '#2a2f3a', rightOffset: 12, timeVisible: true },
-      crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-      handleScroll: true,
-      handleScale: true,
-      localization: { locale: 'en-US' },
+    const MAX_CANDLES = 500;
+    const BG = '#131722';
+    const GRID = '#2a2f3a';
+    const TEXT = '#9ca3af';
+    const BULL = '#16c784';
+    const BEAR = '#ea3943';
+
+    const root = document.getElementById('chart-root');
+    const chart = LightweightCharts.createChart(root, {
+      layout: { background: { color: BG }, textColor: TEXT },
+      grid: { vertLines: { color: GRID }, horzLines: { color: GRID } },
+      rightPriceScale: { borderColor: GRID },
+      timeScale: {
+        borderColor: GRID,
+        rightOffset: 5,
+        barSpacing: 10,
+        minBarSpacing: 3,
+        fixLeftEdge: false,
+        lockVisibleTimeRangeOnResize: true,
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+        vertLine: { color: '#6b7280', width: 1, style: 0 },
+        horzLine: { color: '#6b7280', width: 1, style: 0 },
+      },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      autoSize: true,
     });
 
     const candleSeries = chart.addCandlestickSeries({
-      upColor: '#16c784', downColor: '#ea3943', wickUpColor: '#16c784', wickDownColor: '#ea3943', borderVisible: false
+      upColor: BULL,
+      downColor: BEAR,
+      borderVisible: true,
+      wickUpColor: BULL,
+      wickDownColor: BEAR,
+      borderUpColor: BULL,
+      borderDownColor: BEAR,
+      priceLineVisible: true,
+      lastValueVisible: true,
     });
-    const ema20Series = chart.addLineSeries({ color: '#4da3ff', lineWidth: 2, priceLineVisible: false });
-    const ema50Series = chart.addLineSeries({ color: '#f0b90b', lineWidth: 2, priceLineVisible: false });
-    const volumeSeries = chart.addHistogramSeries({
-      color: '#3b82f6',
-      priceFormat: { type: 'volume' },
-      priceScaleId: ''
-    });
-    volumeSeries.priceScale().applyOptions({ scaleMargins: { top: 0.80, bottom: 0 } });
 
-    function ema(candles, period) {
-      if (!candles.length) return [];
+    const ema20Series = chart.addLineSeries({ color: '#4da3ff', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+    const ema50Series = chart.addLineSeries({ color: '#f0b90b', lineWidth: 2, priceLineVisible: false, lastValueVisible: false });
+
+    const volumeSeries = chart.addHistogramSeries({
+      priceFormat: { type: 'volume' },
+      priceScaleId: '',
+      scaleMargins: { top: 0.78, bottom: 0 },
+      lastValueVisible: false,
+      priceLineVisible: false,
+    });
+
+    chart.priceScale('').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+
+    let candleData = [];
+
+    function ensureSorted(data) {
+      data.sort((a, b) => a.time - b.time);
+      return data;
+    }
+
+    function ema(data, period) {
+      if (!data.length) return [];
       const alpha = 2 / (period + 1);
       const out = [];
-      let prev = candles[0].close;
-      for (const c of candles) {
-        prev = (c.close * alpha) + (prev * (1 - alpha));
-        out.push({ time: c.time, value: prev });
+      let current = data[0].close;
+      for (const point of data) {
+        current = point.close * alpha + current * (1 - alpha);
+        out.push({ time: point.time, value: current });
       }
       return out;
     }
 
-    let candles = [];
+    function volumeFromCandles(data) {
+      return data.map((c) => ({
+        time: c.time,
+        value: c.volume ?? 0,
+        color: c.close >= c.open ? 'rgba(22,199,132,0.45)' : 'rgba(234,57,67,0.45)',
+      }));
+    }
+
+    function clampData(data) {
+      return data.length > MAX_CANDLES ? data.slice(data.length - MAX_CANDLES) : data;
+    }
 
     function renderAll() {
-      candleSeries.setData(candles);
-      ema20Series.setData(ema(candles, 20));
-      ema50Series.setData(ema(candles, 50));
-      volumeSeries.setData(candles.map((c) => ({
-        time: c.time,
-        value: c.volume,
-        color: c.close >= c.open ? '#16c78488' : '#ea394388'
-      })));
+      candleSeries.setData(candleData);
+      ema20Series.setData(ema(candleData, 20));
+      ema50Series.setData(ema(candleData, 50));
+      volumeSeries.setData(volumeFromCandles(candleData));
       chart.timeScale().fitContent();
     }
 
-    function upsertLast(c) {
-      if (!candles.length) {
-        candles = [c];
-      } else if (candles[candles.length - 1].time === c.time) {
-        candles[candles.length - 1] = c;
+    function upsertLatest(candle) {
+      if (!candle || !Number.isFinite(candle.time)) return;
+
+      const last = candleData[candleData.length - 1];
+      if (!last) {
+        candleData = [candle];
+      } else if (candle.time === last.time) {
+        candleData[candleData.length - 1] = candle;
+      } else if (candle.time > last.time) {
+        candleData.push(candle);
       } else {
-        candles.push(c);
+        const idx = candleData.findIndex((item) => item.time === candle.time);
+        if (idx >= 0) candleData[idx] = candle;
       }
-      candleSeries.update(c);
-      ema20Series.setData(ema(candles, 20));
-      ema50Series.setData(ema(candles, 50));
-      volumeSeries.update({
-        time: c.time,
-        value: c.volume,
-        color: c.close >= c.open ? '#16c78488' : '#ea394388'
-      });
+
+      candleData = clampData(ensureSorted(candleData));
+      candleSeries.update(candle);
+
+      const e20 = ema(candleData, 20);
+      const e50 = ema(candleData, 50);
+      const vol = volumeFromCandles(candleData);
+      if (e20.length) ema20Series.update(e20[e20.length - 1]);
+      if (e50.length) ema50Series.update(e50[e50.length - 1]);
+      if (vol.length) volumeSeries.update(vol[vol.length - 1]);
     }
 
-    window.addEventListener('resize', () => {
-      const root = document.getElementById('chart');
-      chart.applyOptions({ width: root.clientWidth, height: root.clientHeight });
-    });
+    function applySnapshot(payload) {
+      try {
+        const parsed = JSON.parse(payload);
+        if (!Array.isArray(parsed)) return;
+        candleData = clampData(ensureSorted(parsed.filter((row) => Number.isFinite(row.time))));
+        renderAll();
+      } catch (_) {
+        // no-op
+      }
+    }
 
-    new QWebChannel(qt.webChannelTransport, (channel) => {
+    function applyUpdate(payload) {
+      try {
+        const candle = JSON.parse(payload);
+        upsertLatest(candle);
+      } catch (_) {
+        // no-op
+      }
+    }
+
+    new QWebChannel(qt.webChannelTransport, function(channel) {
       const bridge = channel.objects.chartBridge;
-      bridge.candleDataUpdated.connect((payload) => {
-        try {
-          const parsed = JSON.parse(payload);
-          const mode = parsed.mode || 'set';
-          const incoming = parsed.candles || [];
-          if (!incoming.length) return;
-
-          if (mode === 'set') {
-            candles = incoming;
-            renderAll();
-            return;
-          }
-
-          for (const c of incoming) {
-            upsertLast(c);
-          }
-        } catch (_err) {
-          // silently ignore malformed payloads
-        }
-      });
+      bridge.fullSnapshot.connect(applySnapshot);
+      bridge.candleUpdate.connect(applyUpdate);
+      bridge.js_ready();
     });
+
+    window.addEventListener('resize', () => chart.resize(root.clientWidth, root.clientHeight));
   </script>
 </body>
 </html>

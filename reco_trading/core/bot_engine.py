@@ -343,12 +343,12 @@ class BotEngine:
 
         original_qty = qty
         equity = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0)
-        qty = await self.order_manager.normalize_order_quantity(
+        qty = self.order_manager.normalize_order_quantity(
             self.symbol,
             price,
             qty,
-            equity,
-            float(self.settings.max_trade_balance_fraction),
+            equity=equity,
+            max_trade_balance_fraction=float(self.settings.max_trade_balance_fraction),
         )
         if qty is None:
             await self._log("WARNING", "order_rejected_after_normalization")
