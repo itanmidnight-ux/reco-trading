@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
 from typing import Any
 
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
@@ -60,8 +60,14 @@ class CandlestickChartWidget(QWidget):
         self._chart_view.settings().setAttribute(self._chart_view.settings().WebAttribute.Accelerated2dCanvasEnabled, True)
         self._chart_view.settings().setAttribute(self._chart_view.settings().WebAttribute.WebGLEnabled, True)
 
-        chart_path = Path(__file__).resolve().parent / "assets" / "chart.html"
-        self._chart_view.load(QUrl.fromLocalFile(str(chart_path)))
+        chart_path = os.path.abspath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "assets",
+                "chart.html",
+            )
+        )
+        self._chart_view.load(QUrl.fromLocalFile(chart_path))
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
