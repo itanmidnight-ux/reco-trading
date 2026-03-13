@@ -62,3 +62,17 @@ def test_risk_limit_protection_rejects_if_adjusted_order_exceeds_cap() -> None:
         max_trade_balance_fraction=0.2,
     )
     assert qty is None
+
+
+def test_zero_risk_quantity_can_be_upscaled_to_exchange_minimum_when_budget_allows() -> None:
+    manager = _manager_with_rules()
+    qty = manager.normalize_order_quantity(
+        symbol="BTCUSDT",
+        price=70_000,
+        quantity=0.0,
+        equity=200.0,
+        max_trade_balance_fraction=0.2,
+    )
+    assert qty is not None
+    assert qty >= manager.rules.min_qty
+    assert (70_000 * qty) >= manager.rules.min_notional

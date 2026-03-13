@@ -492,8 +492,10 @@ class BotEngine:
             atr=atr,
             atr_floor_multiplier=0.5,
         )
-        qty = self.order_manager.normalize_quantity(sizing.quantity * max(size_multiplier, 0.1))
-        return float(qty)
+        # Keep raw risk-derived size here. Binance filter normalization (minQty/stepSize/minNotional)
+        # is applied centrally in execute_trade via normalize_order_quantity.
+        qty = sizing.quantity * max(size_multiplier, 0.1)
+        return float(max(qty, 0.0))
 
     def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
         frame5 = market_data.get("frame5")
