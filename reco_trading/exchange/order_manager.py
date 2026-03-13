@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_CEILING, ROUND_DOWN
+import math
 
 from reco_trading.config.symbols import normalize_symbol
 from reco_trading.exchange.binance_client import BinanceClient
@@ -80,27 +81,45 @@ class OrderManager:
             raise ValueError(f"symbol_rules_mismatch symbol={normalized_symbol} expected={self.symbol}")
 
         safe_price = max(float(price), 1e-9)
+
+        # 1) load filter values already synced from Binance exchangeInfo.
         min_qty = float(self.rules.min_qty)
         step_size = float(self.rules.step_size)
         min_notional = float(self.rules.min_notional)
 
+        # 2) quantity required by notional.
         qty_by_notional = min_notional / safe_price
-        min_valid_qty = max(min_qty, qty_by_notional)
-        min_valid_qty = self._ceil_to_step(min_valid_qty, step_size)
 
+        # 3) minimum valid quantity considering both LOT_SIZE and MIN_NOTIONAL.
+        min_valid_qty = max(min_qty, qty_by_notional)
+
+        # 4) apply step size ceiling.
+        min_valid_qty = math.ceil(min_valid_qty / step_size) * step_size
+
+        # 5) bring the calculated quantity up if below minimum.
         normalized_quantity = float(quantity)
         if normalized_quantity < min_valid_qty:
             normalized_quantity = min_valid_qty
 
-        normalized_quantity = self._round_to_step(normalized_quantity, step_size)
+        # 6) normalize final quantity to step size.
+        normalized_quantity = math.floor(normalized_quantity / step_size) * step_size
+
+        # 7) re-check minQty.
+        if normalized_quantity < min_qty:
+            normalized_quantity = min_qty
+
         if normalized_quantity <= 0:
             return None
 
+        # 8) final notional.
         notional = safe_price * normalized_quantity
+
+        # 9) enforce risk protection.
         max_notional = max(float(equity), 0.0) * max(float(max_trade_balance_fraction), 0.0)
         if notional > max_notional:
             return None
 
+        # 10) return normalized quantity.
         return normalized_quantity
 
     def adjust_quantity_for_min_notional(
