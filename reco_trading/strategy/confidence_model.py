@@ -6,7 +6,7 @@ from reco_trading.strategy.signal_engine import SignalBundle
 class ConfidenceModel:
     """Weighted voting and confidence scoring."""
 
-    def evaluate(self, bundle: SignalBundle) -> tuple[str, float, str]:
+    def evaluate(self, bundle: SignalBundle, trade_threshold: float = 0.0) -> tuple[str, float, str]:
         weighted_votes = {
             "trend": 0.25,
             "momentum": 0.15,
@@ -33,6 +33,9 @@ class ConfidenceModel:
         else:
             side = "SELL"
             confidence = sell_score
+
+        if confidence < max(trade_threshold, 0.0):
+            side = "HOLD"
 
         if confidence >= 0.90:
             grade = "EXCEPTIONAL"

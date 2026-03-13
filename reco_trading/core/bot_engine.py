@@ -24,6 +24,7 @@ from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
+from reco_trading.strategy.market_intelligence import MarketIntelligence
 from reco_trading.strategy.signal_engine import SignalBundle, SignalEngine
 from reco_trading.ui.dashboard import TerminalDashboard
 
@@ -45,6 +46,7 @@ class BotEngine:
         self.confidence_model = ConfidenceModel()
         self.risk_manager = RiskManager(settings.daily_loss_limit_fraction, settings.max_trades_per_day)
         self.position_manager = PositionManager()
+        self.market_intelligence = MarketIntelligence(settings)
 
         self.state_manager = state_manager
         self.trades_today = 0
@@ -54,6 +56,17 @@ class BotEngine:
         self.last_close_time: datetime | None = None
         self.pause_trading_until: datetime | None = None
         self.consecutive_losses = 0
+        self.equity_peak: float | None = None
+        self.trading_paused_by_drawdown = False
+        self.exchange_failure_count = 0
+        self.exchange_failure_max = 5
+        self.exchange_failure_cooldown_seconds = 300
+        self.exchange_failure_paused_until: datetime | None = None
+
+        self._cached_frame5: Any | None = None
+        self._cached_frame15: Any | None = None
+        self._last_primary_indicator_ts: datetime | None = None
+        self._last_confirmation_indicator_ts: datetime | None = None
 
         self.dashboard = TerminalDashboard()
         self.console = Console()
@@ -62,6 +75,8 @@ class BotEngine:
             "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
             "price": None,
             "spread": None,
+            "bid": None,
+            "ask": None,
             "trend": None,
             "adx": None,
             "volatility_regime": None,
@@ -74,6 +89,7 @@ class BotEngine:
             "btc_value": 0.0,
             "total_equity": None,
             "daily_pnl": None,
+            "session_pnl": None,
             "trades_today": 0,
             "win_rate": None,
             "last_trade": None,
@@ -81,9 +97,14 @@ class BotEngine:
             "status": BotState.INITIALIZING.value,
             "signals": {},
             "volume": None,
+            "atr": None,
             "api_latency_ms": None,
             "candles_5m": [],
             "started_at": time.time(),
+            "market_regime": None,
+            "volatility_state": None,
+            "distance_to_support": None,
+            "distance_to_resistance": None,
         }
 
     async def run(self) -> None:
@@ -100,23 +121,53 @@ class BotEngine:
         with Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False) as live:
             while True:
                 try:
+                    if self.exchange_failure_paused_until and datetime.now(timezone.utc) < self.exchange_failure_paused_until:
+                        await self._set_state(BotState.PAUSED, "exchange_circuit_breaker")
+                        self.snapshot["cooldown"] = f"EXCHANGE_PAUSED until {self.exchange_failure_paused_until.isoformat(timespec='seconds')}"
+                        self._sync_ui_state()
+                        self._safe_live_update(live)
+                        await asyncio.sleep(self.settings.loop_sleep_seconds)
+                        continue
+
                     self._roll_day()
                     await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
                     market_data = await self.fetch_market_data()
+                    if not self._is_market_data_fresh(market_data):
+                        await self._set_state(BotState.WAITING_MARKET_DATA, "stale_market_data")
+                        self.snapshot["cooldown"] = "STALE_MARKET_DATA"
+                        self._sync_ui_state()
+                        self._safe_live_update(live)
+                        await asyncio.sleep(self.settings.loop_sleep_seconds)
+                        continue
                     await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
                     analysis = await self.analyze_market(market_data)
                     self._update_snapshot(market_data, analysis)
 
                     if await self.validate_trade_conditions(analysis):
-                        await self.execute_trade(analysis, market_data)
+                        intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
+                        self._apply_market_intelligence_snapshot(intelligence)
+                        if intelligence.get("approved"):
+                            await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                        else:
+                            await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
 
                     await self.manage_open_position(market_data)
+                    self.exchange_failure_count = 0
                     self._sync_ui_state()
                     self._safe_live_update(live)
                     await asyncio.sleep(self.settings.loop_sleep_seconds)
                 except KeyboardInterrupt:
                     await self._set_state(BotState.STOPPED, "manual_stop")
                     break
+                except ccxt.BaseError as exc:
+                    await self._set_state(BotState.ERROR, "exchange_error")
+                    self._register_exchange_failure()
+                    await self._log("ERROR", f"exchange_error={exc}")
+                    await self.repository.record_error(self.state.value, "exchange", str(exc))
+                    self.snapshot["status"] = BotState.ERROR.value
+                    self._sync_ui_state()
+                    self._safe_live_update(live)
+                    await asyncio.sleep(self.settings.loop_sleep_seconds)
                 except Exception as exc:  # noqa: BLE001
                     await self._set_state(BotState.ERROR, "runtime_error")
                     await self._log("ERROR", f"runtime_error={exc}")
@@ -126,8 +177,34 @@ class BotEngine:
                     await asyncio.sleep(self.settings.loop_sleep_seconds)
 
     async def fetch_market_data(self) -> dict[str, Any]:
-        frame5 = apply_indicators(await self.market_stream.fetch_frame(self.settings.primary_timeframe))
-        frame15 = apply_indicators(await self.market_stream.fetch_frame(self.settings.confirmation_timeframe))
+        raw_frame5 = await self.market_stream.fetch_frame(self.settings.primary_timeframe)
+        raw_frame15 = await self.market_stream.fetch_frame(self.settings.confirmation_timeframe)
+
+        latest_primary_ts = _timestamp_to_datetime(raw_frame5.iloc[-1].get("timestamp") if not raw_frame5.empty else None)
+        latest_confirmation_ts = _timestamp_to_datetime(raw_frame15.iloc[-1].get("timestamp") if not raw_frame15.empty else None)
+
+        if (
+            self._cached_frame5 is not None
+            and latest_primary_ts is not None
+            and latest_primary_ts == self._last_primary_indicator_ts
+        ):
+            frame5 = self._cached_frame5
+        else:
+            frame5 = apply_indicators(raw_frame5)
+            self._cached_frame5 = frame5
+            self._last_primary_indicator_ts = latest_primary_ts
+
+        if (
+            self._cached_frame15 is not None
+            and latest_confirmation_ts is not None
+            and latest_confirmation_ts == self._last_confirmation_indicator_ts
+        ):
+            frame15 = self._cached_frame15
+        else:
+            frame15 = apply_indicators(raw_frame15)
+            self._cached_frame15 = frame15
+            self._last_confirmation_indicator_ts = latest_confirmation_ts
+
         candle = frame5.iloc[-1]
         candles_5m = self._frame_to_candles(frame5)
 
@@ -181,15 +258,28 @@ class BotEngine:
         current_price = _as_float(self.snapshot.get("price"), 0.0)
         btc_value = float(btc_balance * current_price)
         total_equity = float(usdt_balance + btc_value)
-        daily_pnl = float(await self.repository.get_daily_pnl() or 0.0)
+        session_pnl = float(await self.repository.get_session_pnl() or 0.0)
 
         self.snapshot["balance"] = float(usdt_balance)
         self.snapshot["btc_balance"] = float(btc_balance)
         self.snapshot["btc_value"] = btc_value
         self.snapshot["total_equity"] = total_equity
-        self.snapshot["equity"] = total_equity + daily_pnl
-        self.snapshot["daily_pnl"] = daily_pnl
+        self.snapshot["equity"] = total_equity
+        self.snapshot["daily_pnl"] = session_pnl
+        self.snapshot["session_pnl"] = session_pnl
         self.snapshot["trades_today"] = self.trades_today
+
+        self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
+        max_drawdown_fraction = _as_float(getattr(self.settings, "max_drawdown_fraction", 0.10), 0.10)
+        if self.equity_peak > 0:
+            drawdown = max((self.equity_peak - total_equity) / self.equity_peak, 0.0)
+            if drawdown >= max_drawdown_fraction:
+                self.trading_paused_by_drawdown = True
+
+        if self.trading_paused_by_drawdown:
+            await self._set_state(BotState.PAUSED, "max_drawdown")
+            self.snapshot["cooldown"] = "MAX_DRAWDOWN"
+            return False
 
         if self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until:
             await self._set_state(BotState.PAUSED, "loss_protection_pause")
@@ -203,7 +293,7 @@ class BotEngine:
 
         risk = self.risk_manager.validate(
             balance=usdt_balance,
-            daily_pnl=daily_pnl,
+            daily_pnl=session_pnl,
             trades_today=self.trades_today,
             confidence=confidence,
             confidence_threshold=self.settings.confidence_threshold,
@@ -216,7 +306,7 @@ class BotEngine:
         self.snapshot["cooldown"] = "READY"
         return True
 
-    async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any]) -> None:
+    async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any], intelligence_size_multiplier: float = 1.0) -> None:
         bundle: SignalBundle = analysis["bundle"]
         side = str(analysis["side"])
         price = float(market_data["price"])
@@ -226,14 +316,53 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "regime_filter")
             return
 
-        if not self.position_manager.can_open(float(analysis["confidence"])):
+        if not self.position_manager.can_open(self.settings.max_concurrent_trades):
             await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
 
-        qty = self.calculate_position_size(price, float(bundle.size_multiplier))
+        spread = _as_float(market_data.get("spread"), 0.0)
+        spread_ratio = spread / max(price, 1e-9)
+        if spread_ratio > _as_float(self.settings.max_spread_ratio, 0.002):
+            await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide")
+            return
+
+        if not self._pullback_confirmed(bundle, side, market_data):
+            await self._set_state(BotState.WAITING_MARKET_DATA, "pullback_unconfirmed")
+            return
+
+        stop_loss, take_profit = self._build_stops(side, price, atr)
+        qty = self.calculate_position_size(
+            price,
+            stop_loss,
+            atr,
+            float(bundle.size_multiplier) * max(float(intelligence_size_multiplier), 0.1),
+        )
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
             return
+
+        original_qty = qty
+        qty, adjusted_for_notional = self.order_manager.adjust_quantity_for_min_notional(qty, price)
+        if qty <= 0:
+            await self._log("WARNING", "quantity_below_minimum")
+            return
+        if adjusted_for_notional:
+            max_notional = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0) * max(
+                float(self.settings.max_trade_balance_fraction),
+                0.0,
+            )
+            adjusted_notional = qty * price
+            if max_notional > 0 and adjusted_notional > max_notional:
+                await self._log(
+                    "WARNING",
+                    f"min_notional_adjustment_exceeds_risk_limit adjusted_notional={adjusted_notional:.8f} max_notional={max_notional:.8f}",
+                )
+                return
+            await self._log(
+                "INFO",
+                f"min_notional_adjustment event=min_notional_adjustment price={price:.8f} original_quantity={original_qty:.8f} adjusted_quantity={qty:.8f} min_notional={self.order_manager.rules.min_notional:.8f}",
+            )
+
         if not self.order_manager.validate_notional(qty, price):
             await self._log("WARNING", "notional_below_minimum")
             return
@@ -267,6 +396,7 @@ class BotEngine:
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 atr=max(atr, 0.0),
+                initial_risk_distance=abs(entry - stop_loss),
             )
         )
 
@@ -347,12 +477,39 @@ class BotEngine:
                     }
                 )
 
-    def calculate_position_size(self, price: float, size_multiplier: float) -> float:
-        balance = _as_float(self.snapshot.get("balance"), 0.0)
-        capital = balance * self.settings.max_trade_balance_fraction * max(size_multiplier, 0.1)
-        capital = max(capital, self.settings.min_trade_usdt)
-        qty = self.order_manager.normalize_quantity(capital / max(price, 1e-9))
+    def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
+        equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
+        sizing = self.risk_manager.position_size_for_risk(
+            equity=equity,
+            risk_fraction=self.settings.risk_per_trade_fraction,
+            price=price,
+            stop_loss_price=stop_loss,
+            atr=atr,
+            atr_floor_multiplier=0.5,
+        )
+        qty = self.order_manager.normalize_quantity(sizing.quantity * max(size_multiplier, 0.1))
         return float(qty)
+
+    def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
+        frame5 = market_data.get("frame5")
+        if frame5 is None or len(frame5) < 5:
+            return False
+        row = frame5.iloc[-1]
+        prev = frame5.iloc[-2]
+        close = _as_float(row.get("close"), _as_float(market_data.get("price"), 0.0))
+        open_px = _as_float(row.get("open"), close)
+        ema20 = _as_float(row.get("ema20"), close)
+        recent_high = _as_float(frame5["high"].tail(5).max(), close)
+        recent_low = _as_float(frame5["low"].tail(5).min(), close)
+
+        if side == "BUY":
+            pullback = close <= ema20 or close < (recent_high * 0.999)
+            reversal = close > open_px and close > _as_float(prev.get("close"), close)
+            return pullback and reversal
+
+        pullback = close >= ema20 or close > (recent_low * 1.001)
+        rejection = close < open_px and close < _as_float(prev.get("close"), close)
+        return pullback and rejection
 
     def _build_stops(self, side: str, entry: float, atr: float) -> tuple[float, float]:
         atr = max(atr, entry * 0.002)
@@ -400,11 +557,14 @@ class BotEngine:
                 "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
                 "price": market_data.get("price"),
                 "spread": market_data.get("spread"),
+                "bid": market_data.get("bid"),
+                "ask": market_data.get("ask"),
                 "trend": bundle.trend,
                 "adx": market_data.get("adx"),
                 "volatility_regime": bundle.regime,
                 "order_flow": bundle.order_flow,
                 "volume": market_data.get("volume"),
+                "atr": market_data.get("atr"),
                 "change_24h": market_data.get("change_24h"),
                 "candles_5m": list(market_data.get("candles_5m") or [])[-120:],
                 "signal": analysis.get("side"),
@@ -420,6 +580,13 @@ class BotEngine:
                 },
             }
         )
+
+
+    def _apply_market_intelligence_snapshot(self, intelligence: dict[str, Any]) -> None:
+        self.snapshot["market_regime"] = intelligence.get("market_regime")
+        self.snapshot["volatility_state"] = intelligence.get("volatility_state")
+        self.snapshot["distance_to_support"] = intelligence.get("distance_to_support")
+        self.snapshot["distance_to_resistance"] = intelligence.get("distance_to_resistance")
 
     async def _fetch_balances(self) -> tuple[float, float]:
         payload = await self.client.fetch_balance()
@@ -489,15 +656,20 @@ class BotEngine:
                 btc_value=self.snapshot.get("btc_value", 0.0),
                 total_equity=self.snapshot.get("total_equity", self.snapshot.get("equity")),
                 daily_pnl=self.snapshot.get("daily_pnl"),
+                session_pnl=self.snapshot.get("session_pnl"),
                 trades_today=self.snapshot.get("trades_today", 0),
                 win_rate=self.snapshot.get("win_rate"),
                 last_trade=self.snapshot.get("last_trade"),
                 cooldown=self.snapshot.get("cooldown"),
                 status=self.snapshot.get("status", "INITIALIZING"),
-                bid=self.snapshot.get("price"),
-                ask=self.snapshot.get("price"),
+                bid=self.snapshot.get("bid", self.snapshot.get("price")),
+                ask=self.snapshot.get("ask", self.snapshot.get("price")),
                 volume=self.snapshot.get("volume"),
-                atr=0.0,
+                market_regime=self.snapshot.get("market_regime"),
+                volatility_state=self.snapshot.get("volatility_state"),
+                distance_to_support=self.snapshot.get("distance_to_support"),
+                distance_to_resistance=self.snapshot.get("distance_to_resistance"),
+                atr=self.snapshot.get("atr", 0.0),
                 change_24h=self.snapshot.get("change_24h"),
                 signals=self.snapshot.get("signals", {}),
                 candles_5m=list(self.snapshot.get("candles_5m") or [])[-120:],
@@ -512,10 +684,10 @@ class BotEngine:
                 },
                 risk_metrics={
                     "risk_per_trade": f"{self.settings.risk_per_trade_fraction:.2%}",
-                    "max_concurrent_trades": self.settings.max_trades_per_day,
+                    "max_concurrent_trades": self.settings.max_concurrent_trades,
                     "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
-                    "current_exposure": f"{(self.settings.max_trade_balance_fraction * 100):.1f}%",
+                    "current_exposure": self._current_exposure(),
                 },
                 analytics={
                     "total_trades": self.trades_today,
@@ -530,6 +702,35 @@ class BotEngine:
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)
+
+    def _current_exposure(self) -> float:
+        equity = _as_float(self.snapshot.get("equity"), 0.0)
+        if equity <= 0:
+            return 0.0
+        mark_price = _as_float(self.snapshot.get("price"), 0.0)
+        position_value = sum(max(_as_float(p.quantity, 0.0) * mark_price, 0.0) for p in self.position_manager.positions)
+        return position_value / equity
+
+    def _is_market_data_fresh(self, market_data: dict[str, Any]) -> bool:
+        candle = market_data.get("candle")
+        candle_timestamp = _timestamp_to_datetime(candle.get("timestamp") if candle is not None else None)
+        if candle_timestamp is None:
+            return False
+        max_age_seconds = max(_timeframe_to_seconds(self.settings.primary_timeframe) * 2, 1)
+        age_seconds = (datetime.now(timezone.utc) - candle_timestamp).total_seconds()
+        return age_seconds <= max_age_seconds
+
+    def _register_exchange_failure(self) -> None:
+        self.exchange_failure_count += 1
+        if self.exchange_failure_count < self.exchange_failure_max:
+            return
+        self.exchange_failure_paused_until = datetime.now(timezone.utc) + timedelta(seconds=self.exchange_failure_cooldown_seconds)
+        self.exchange_failure_count = 0
+        self.snapshot["cooldown"] = "EXCHANGE_CIRCUIT_BREAKER"
+        self.logger.critical(
+            "exchange_circuit_breaker_triggered pause_until=%s",
+            self.exchange_failure_paused_until.isoformat(timespec="seconds"),
+        )
 
     def _frame_to_candles(self, frame: Any) -> list[dict[str, float]]:
         candles: list[dict[str, float]] = []
@@ -566,3 +767,27 @@ def _book_price(order_book: dict[str, Any], side: str, fallback: float) -> float
     if levels and levels[0]:
         return _as_float(levels[0][0], fallback)
     return fallback
+
+
+def _timeframe_to_seconds(timeframe: str) -> int:
+    unit = timeframe[-1].lower()
+    value = int(timeframe[:-1])
+    if unit == "m":
+        return value * 60
+    if unit == "h":
+        return value * 3600
+    if unit == "d":
+        return value * 86400
+    return max(value, 1)
+
+
+def _timestamp_to_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromtimestamp(float(value) / 1000, tz=timezone.utc)
+    except (TypeError, ValueError, OSError):
+        return None
+    return parsed

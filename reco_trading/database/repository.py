@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, TypeVar
 
-from sqlalchemy import func, select
+from sqlalchemy import func, inspect, select, text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from reco_trading.database.models import Base, BotLog, ErrorLog, MarketData, Signal, StateChange, Trade
@@ -41,6 +42,37 @@ class Repository:
     async def setup(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("trades")})
+            if "close_timestamp" not in columns:
+                await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP WITH TIME ZONE"))
+            await self._migrate_signals_columns(conn)
+
+    async def _migrate_signals_columns(self, conn: Any) -> None:
+        existing_columns = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns("signals"))
+        existing_column_names = {col["name"] for col in existing_columns}
+        signals_table = Signal.__table__
+        dialect = postgresql.dialect()
+        preparer = dialect.identifier_preparer
+
+        for column in signals_table.columns:
+            if column.name in existing_column_names:
+                continue
+            if column.primary_key:
+                continue
+
+            column_name = preparer.quote(column.name)
+            column_type = column.type.compile(dialect=dialect)
+            migration_sql = text(
+                f"ALTER TABLE {preparer.quote(signals_table.name)} "
+                f"ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            )
+            await conn.execute(migration_sql)
+            self.logger.info("Database migration applied: added column %s to signals table", column.name)
+
+        order_flow_column = next((col for col in existing_columns if col["name"] == "order_flow"), None)
+        if order_flow_column and getattr(order_flow_column.get("type"), "length", None) != 32:
+            await conn.execute(text("ALTER TABLE signals ALTER COLUMN order_flow TYPE VARCHAR(32)"))
+            self.logger.info("Database migration applied: widened signals.order_flow to VARCHAR(32)")
 
     @safe_db_call()
     async def record_log(self, level: str, state: str, message: str) -> None:
@@ -116,14 +148,27 @@ class Repository:
             trade.exit_price = exit_price
             trade.pnl = pnl
             trade.status = status
+            trade.close_timestamp = datetime.utcnow()
             await session.commit()
 
     @safe_db_call(default=0.0)
-    async def get_daily_pnl(self) -> float:
+    async def get_session_pnl(self) -> float:
+        now = datetime.now(timezone.utc)
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+        day_end = day_start + timedelta(days=1)
         async with self.session_factory() as session:
-            q = select(func.coalesce(func.sum(Trade.pnl), 0.0)).where(Trade.status != "OPEN")
+            q = (
+                select(func.coalesce(func.sum(Trade.pnl), 0.0))
+                .where(Trade.status != "OPEN")
+                .where(func.coalesce(Trade.close_timestamp, Trade.timestamp) >= day_start)
+                .where(func.coalesce(Trade.close_timestamp, Trade.timestamp) < day_end)
+            )
             result = await session.execute(q)
             return float(result.scalar_one())
+
+    @safe_db_call(default=0.0)
+    async def get_daily_pnl(self) -> float:
+        return await self.get_session_pnl()
 
     async def _persist(self, obj: Base) -> None:
         async with self.session_factory() as session:

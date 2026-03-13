@@ -37,13 +37,23 @@ class Settings(BaseSettings):
     # =========================
     # SIGNAL THRESHOLDS
     # =========================
-    min_signal_confidence: float = Field(default=0.75, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
+    min_signal_confidence: float = Field(default=0.45, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
     strong_signal_confidence: float = 0.85
     exceptional_signal_confidence: float = 0.90
     confidence_hold_threshold: float = 0.55
     adx_min_threshold: float = 20.0
-    max_spread_ratio: float = 0.0015
+    max_spread_ratio: float = 0.002
     min_volume_ratio: float = 0.7
+
+    # =========================
+    # MARKET INTELLIGENCE
+    # =========================
+    enable_market_intelligence: bool = True
+    volatility_filter_enabled: bool = True
+    liquidity_zone_filter_enabled: bool = True
+    market_regime_classifier_enabled: bool = True
+    market_range_filter_enabled: bool = True
+    liquidity_proximity_threshold: float = 0.0035
 
     # =========================
     # RISK MANAGEMENT
@@ -54,6 +64,7 @@ class Settings(BaseSettings):
     max_trades_per_day: int = 10
     max_trade_balance_fraction: float = 0.20
     daily_loss_limit_fraction: float = 0.03
+    max_drawdown_fraction: float = 0.10
 
     # =========================
     # COOLDOWNS

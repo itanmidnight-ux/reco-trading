@@ -41,7 +41,7 @@ class OrderManager:
         self.rules = SymbolRules(
             min_qty=float(lot_size.get("minQty") or market.get("limits", {}).get("amount", {}).get("min") or step_size),
             step_size=step_size,
-            min_notional=float(min_notional_filter.get("minNotional") or market.get("limits", {}).get("cost", {}).get("min") or 5.0),
+            min_notional=float(min_notional_filter.get("minNotional") or market.get("limits", {}).get("cost", {}).get("min") or 10.0),
             tick_size=tick_size,
         )
         return self.rules
@@ -62,6 +62,38 @@ class OrderManager:
         if not self.rules:
             raise RuntimeError("symbol_rules_not_loaded")
         return quantity * price >= self.rules.min_notional
+
+    def adjust_quantity_for_min_notional(
+        self,
+        quantity: float,
+        price: float,
+        safety_margin: float = 0.02,
+    ) -> tuple[float, bool]:
+        if not self.rules:
+            raise RuntimeError("symbol_rules_not_loaded")
+
+        safe_price = max(float(price), 1e-9)
+        normalized_quantity = self.normalize_quantity(float(quantity))
+        if normalized_quantity <= 0:
+            return 0.0, False
+        if self.validate_notional(normalized_quantity, safe_price):
+            return normalized_quantity, False
+
+        target_notional = self.rules.min_notional * (1.0 + max(float(safety_margin), 0.0))
+        required_quantity = target_notional / safe_price
+        adjusted_quantity = self.normalize_quantity(required_quantity)
+        if adjusted_quantity <= 0:
+            return 0.0, True
+        if not self.validate_notional(adjusted_quantity, safe_price):
+            adjusted_quantity = self.normalize_quantity(adjusted_quantity + self.rules.step_size)
+
+        return adjusted_quantity, True
+
+    @staticmethod
+    def validate_spread(bid: float, ask: float, price: float, max_spread_ratio: float) -> bool:
+        spread = max(float(ask) - float(bid), 0.0)
+        safe_price = max(float(price), 1e-9)
+        return (spread / safe_price) <= max(float(max_spread_ratio), 0.0)
 
     @staticmethod
     def _round_to_step(value: float, step: float) -> float:

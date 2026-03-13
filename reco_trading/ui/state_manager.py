@@ -42,6 +42,7 @@ class StateManager(QObject):
             "btc_value": 0.0,
             "total_equity": 0.0,
             "daily_pnl": 0.0,
+            "session_pnl": 0.0,
             "trades_today": 0,
             "win_rate": 0.0,
             "open_position": "NONE",

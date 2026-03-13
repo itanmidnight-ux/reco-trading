@@ -13,6 +13,7 @@ class Position:
     take_profit: float
     atr: float
     trailing_stop: float | None = None
+    initial_risk_distance: float = 0.0
 
 
 class PositionManager:
@@ -21,22 +22,30 @@ class PositionManager:
     def __init__(self) -> None:
         self.positions: list[Position] = []
 
-    def can_open(self, confidence: float) -> bool:
-        max_positions = 2 if confidence >= 0.90 else 1
-        return len(self.positions) < max_positions
+    def can_open(self, max_concurrent_trades: int) -> bool:
+        return len(self.positions) < max(int(max_concurrent_trades), 1)
 
     def open(self, position: Position) -> None:
+        if position.initial_risk_distance <= 0:
+            position.initial_risk_distance = abs(position.entry_price - position.stop_loss)
         self.positions.append(position)
 
     def check_exit(self, position: Position, current_price: float) -> str | None:
+        atr = max(position.atr, position.entry_price * 0.002)
+        risk_distance = max(position.initial_risk_distance, 1e-9)
+        activation_distance = 1.5 * atr
+        trailing_distance = 1.2 * atr
+
         if position.side == "BUY":
             if current_price <= position.stop_loss:
                 return "STOP_LOSS_HIT"
             if current_price >= position.take_profit:
                 return "TAKE_PROFIT_HIT"
-            if current_price >= position.entry_price + position.atr:
-                trail = current_price - position.atr
-                position.trailing_stop = max(position.trailing_stop or 0.0, trail)
+
+            profit = current_price - position.entry_price
+            if profit >= max(activation_distance, risk_distance):
+                trail = current_price - trailing_distance
+                position.trailing_stop = max(position.trailing_stop or position.stop_loss, trail)
             if position.trailing_stop and current_price <= position.trailing_stop:
                 return "TRAILING_STOP_HIT"
             return None
@@ -45,8 +54,10 @@ class PositionManager:
             return "STOP_LOSS_HIT"
         if current_price <= position.take_profit:
             return "TAKE_PROFIT_HIT"
-        if current_price <= position.entry_price - position.atr:
-            trail = current_price + position.atr
+
+        profit = position.entry_price - current_price
+        if profit >= max(activation_distance, risk_distance):
+            trail = current_price + trailing_distance
             position.trailing_stop = min(position.trailing_stop or position.stop_loss, trail)
         if position.trailing_stop and current_price >= position.trailing_stop:
             return "TRAILING_STOP_HIT"
