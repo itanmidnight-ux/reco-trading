@@ -342,25 +342,30 @@ class BotEngine:
             return
 
         original_qty = qty
-        qty, adjusted_for_notional = self.order_manager.adjust_quantity_for_min_notional(qty, price)
-        if qty <= 0:
-            await self._log("WARNING", "quantity_below_minimum")
-            return
-        if adjusted_for_notional:
-            max_notional = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0) * max(
-                float(self.settings.max_trade_balance_fraction),
-                0.0,
+        equity = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0)
+        normalized_qty = self.order_manager.normalize_order_quantity(
+            symbol=self.symbol,
+            price=price,
+            quantity=qty,
+            equity=equity,
+            max_trade_balance_fraction=float(self.settings.max_trade_balance_fraction),
+        )
+        if normalized_qty is None:
+            await self._log(
+                "WARNING",
+                f"order_rejected_after_normalization symbol={self.symbol} original_quantity={original_qty:.8f} price={price:.8f}",
             )
-            adjusted_notional = qty * price
-            if max_notional > 0 and adjusted_notional > max_notional:
-                await self._log(
-                    "WARNING",
-                    f"min_notional_adjustment_exceeds_risk_limit adjusted_notional={adjusted_notional:.8f} max_notional={max_notional:.8f}",
-                )
-                return
+            return
+        qty = normalized_qty
+        if abs(qty - original_qty) > 0:
+            rules = self.order_manager.rules
+            notional = qty * price
             await self._log(
                 "INFO",
-                f"min_notional_adjustment event=min_notional_adjustment price={price:.8f} original_quantity={original_qty:.8f} adjusted_quantity={qty:.8f} min_notional={self.order_manager.rules.min_notional:.8f}",
+                "Adjusted order quantity to satisfy Binance filters "
+                f"symbol={self.symbol} original_quantity={original_qty:.8f} normalized_quantity={qty:.8f} "
+                f"price={price:.8f} notional={notional:.8f} minQty={rules.min_qty:.8f} "
+                f"stepSize={rules.step_size:.8f} minNotional={rules.min_notional:.8f}",
             )
 
         if not self.order_manager.validate_notional(qty, price):
