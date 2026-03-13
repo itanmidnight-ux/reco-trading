@@ -53,6 +53,59 @@ class OrderManager:
             return 0.0
         return self._round_to_step(quantity, self.rules.step_size)
 
+    def normalize_order_quantity(
+        self,
+        symbol: str,
+        price: float,
+        quantity: float,
+        *,
+        equity: float,
+        max_trade_balance_fraction: float,
+    ) -> float | None:
+        """Normalize quantity to satisfy LOT_SIZE and MIN_NOTIONAL, respecting risk caps."""
+        normalized_symbol = normalize_symbol(symbol)
+        if normalized_symbol != self.symbol:
+            self.symbol = normalized_symbol
+            self.rules = None
+
+        if not self.rules:
+            raise RuntimeError("symbol_rules_not_loaded")
+
+        safe_price = max(float(price), 1e-9)
+        min_qty = float(self.rules.min_qty)
+        step_size = float(self.rules.step_size)
+        min_notional = float(self.rules.min_notional)
+
+        normalized_quantity = float(quantity)
+
+        # Rule 1 — MIN_QTY
+        if normalized_quantity < min_qty:
+            normalized_quantity = min_qty
+
+        # Rule 2 — STEP_SIZE
+        normalized_quantity = self._round_to_step(normalized_quantity, step_size)
+
+        # Guard against rounding to zero when min quantity itself is step-aligned.
+        if normalized_quantity < min_qty:
+            normalized_quantity = self._round_to_step(min_qty, step_size)
+
+        # Rule 3 — MIN_NOTIONAL (+ 2% safety margin)
+        if safe_price * normalized_quantity < min_notional:
+            normalized_quantity = (min_notional * 1.02) / safe_price
+            normalized_quantity = self._round_to_step(normalized_quantity, step_size)
+            if normalized_quantity * safe_price < min_notional:
+                normalized_quantity = self._round_to_step(normalized_quantity + step_size, step_size)
+
+        if normalized_quantity <= 0:
+            return None
+
+        notional = safe_price * normalized_quantity
+        max_notional = max(float(equity), 0.0) * max(float(max_trade_balance_fraction), 0.0)
+        if max_notional > 0 and notional > max_notional:
+            return None
+
+        return normalized_quantity
+
     def normalize_price(self, price: float) -> float:
         if not self.rules:
             raise RuntimeError("symbol_rules_not_loaded")
