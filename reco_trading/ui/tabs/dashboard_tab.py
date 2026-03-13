@@ -142,17 +142,22 @@ class DashboardTab(QWidget):
         self.resume_btn = AnimatedButton("Resume Bot")
         self.emergency_btn = AnimatedButton("Emergency Stop")
         self.emergency_btn.setStyleSheet("QPushButton { background:#ea3943; color:#e6e8ee; }")
+        self.close_active_trade_btn = AnimatedButton("CLOSE ACTIVE TRADE")
+        self.close_active_trade_btn.setStyleSheet("QPushButton { background:#f0b90b; color:#111827; font-weight:700; }")
+        self.close_active_trade_btn.setVisible(False)
 
         layout.addWidget(self.start_btn)
         layout.addWidget(self.pause_btn)
         layout.addWidget(self.resume_btn)
         layout.addWidget(self.emergency_btn)
+        layout.addWidget(self.close_active_trade_btn)
 
         if self.state_manager:
             self.start_btn.clicked.connect(self.state_manager.request_start)
             self.pause_btn.clicked.connect(self.state_manager.request_pause)
             self.resume_btn.clicked.connect(self.state_manager.request_resume)
             self.emergency_btn.clicked.connect(self.state_manager.request_emergency_stop)
+            self.close_active_trade_btn.clicked.connect(self.state_manager.request_force_close)
 
         self._sync_control_buttons("INITIALIZING")
         return panel
@@ -195,6 +200,7 @@ class DashboardTab(QWidget):
         trend = str(state.get("trend", "NEUTRAL"))
         status = str(state.get("status", "-"))
         self._sync_control_buttons(status)
+        self.close_active_trade_btn.setVisible(bool(state.get("has_open_position", False)))
         self.top_bar.setText(f"{pair} | {price} | {trend} | {status}")
         self.top_bar.setStyleSheet(f"color: {status_color(status)};")
 
