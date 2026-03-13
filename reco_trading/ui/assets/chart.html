@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Realtime Chart</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #0f1722;
+      overflow: hidden;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, sans-serif;
+    }
+    #chart {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+  <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body>
+  <div id="chart"></div>
+  <script>
+    const MAX_CANDLES = 400;
+    const container = document.getElementById('chart');
+
+    const chart = LightweightCharts.createChart(container, {
+      layout: {
+        background: { color: '#0f1722' },
+        textColor: '#d0d4dc',
+      },
+      grid: {
+        vertLines: { color: '#1f2937' },
+        horzLines: { color: '#1f2937' },
+      },
+      crosshair: {
+        mode: LightweightCharts.CrosshairMode.Normal,
+      },
+      rightPriceScale: {
+        borderColor: '#334155',
+      },
+      timeScale: {
+        borderColor: '#334155',
+        timeVisible: true,
+        secondsVisible: false,
+      },
+      handleScroll: true,
+      handleScale: true,
+      localization: {
+        locale: 'en-US',
+      },
+    });
+
+    const candleSeries = chart.addCandlestickSeries({
+      upColor: '#16c784',
+      downColor: '#ea3943',
+      borderVisible: true,
+      wickUpColor: '#16c784',
+      wickDownColor: '#ea3943',
+      borderUpColor: '#16c784',
+      borderDownColor: '#ea3943',
+    });
+
+    const ema20Series = chart.addLineSeries({ color: '#4da3ff', lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+    const ema50Series = chart.addLineSeries({ color: '#f0b90b', lineWidth: 2, priceLineVisible: false, lastValueVisible: true });
+
+    const volumeSeries = chart.addHistogramSeries({
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'volume',
+      base: 0,
+    });
+
+    chart.priceScale('volume').applyOptions({
+      scaleMargins: {
+        top: 0.75,
+        bottom: 0,
+      },
+      borderVisible: false,
+    });
+
+    chart.priceScale('right').applyOptions({
+      scaleMargins: {
+        top: 0.08,
+        bottom: 0.30,
+      },
+    });
+
+    let candles = [];
+
+    function ema(data, period) {
+      if (!data.length) return [];
+      const alpha = 2 / (period + 1);
+      let prev = data[0].close;
+      const out = [{ time: data[0].time, value: prev }];
+      for (let i = 1; i < data.length; i += 1) {
+        prev = (data[i].close * alpha) + (prev * (1 - alpha));
+        out.push({ time: data[i].time, value: prev });
+      }
+      return out;
+    }
+
+    function applySeriesData() {
+      candleSeries.setData(candles);
+      volumeSeries.setData(candles.map((c) => ({
+        time: c.time,
+        value: c.volume,
+        color: c.close >= c.open ? 'rgba(22, 199, 132, 0.45)' : 'rgba(234, 57, 67, 0.45)',
+      })));
+      ema20Series.setData(ema(candles, 20));
+      ema50Series.setData(ema(candles, 50));
+      chart.timeScale().fitContent();
+    }
+
+    function appendOrUpdate(incoming) {
+      for (const nextCandle of incoming) {
+        if (!candles.length) {
+          candles.push(nextCandle);
+          continue;
+        }
+        const last = candles[candles.length - 1];
+        if (nextCandle.time === last.time) {
+          candles[candles.length - 1] = nextCandle;
+        } else if (nextCandle.time > last.time) {
+          candles.push(nextCandle);
+          if (candles.length > MAX_CANDLES) {
+            candles = candles.slice(-MAX_CANDLES);
+          }
+        }
+      }
+      applySeriesData();
+    }
+
+    function resetData(incoming) {
+      candles = incoming.slice(-MAX_CANDLES);
+      applySeriesData();
+    }
+
+    function updateCandles(payload) {
+      if (!payload) return;
+      if (payload.mode === 'append') {
+        appendOrUpdate(payload.candles || []);
+      } else {
+        resetData(payload.candles || []);
+      }
+    }
+
+    window.updateCandles = updateCandles;
+
+    new ResizeObserver(() => {
+      chart.applyOptions({
+        width: container.clientWidth,
+        height: container.clientHeight,
+      });
+    }).observe(container);
+
+    new QWebChannel(qt.webChannelTransport, (channel) => {
+      const bridge = channel.objects.bridge;
+      bridge.updateCandles.connect((payload) => {
+        updateCandles(payload);
+      });
+    });
+  </script>
+</body>
+</html>
