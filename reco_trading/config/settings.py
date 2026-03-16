@@ -5,9 +5,6 @@ from typing import Optional
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
-from reco_trading.config.symbols import normalize_symbol
-
-
 class Settings(BaseSettings):
     """Runtime configuration loaded from .env and environment variables."""
 
@@ -18,6 +15,7 @@ class Settings(BaseSettings):
     binance_api_secret: str = Field(default="")
     binance_testnet: bool = True
     confirm_mainnet: bool = False
+    require_api_keys: bool = True
 
     # =========================
     # ENVIRONMENT
@@ -43,6 +41,7 @@ class Settings(BaseSettings):
     confidence_hold_threshold: float = 0.55
     adx_min_threshold: float = 20.0
     max_spread_ratio: float = 0.002
+    max_slippage_ratio: float = 0.003
     min_volume_ratio: float = 0.7
 
     # =========================
@@ -63,6 +62,7 @@ class Settings(BaseSettings):
     max_concurrent_trades: int = 1
     max_trades_per_day: int = 10
     max_trade_balance_fraction: float = 0.20
+    spot_only_mode: bool = True
     daily_loss_limit_fraction: float = 0.03
     max_drawdown_fraction: float = 0.10
 
