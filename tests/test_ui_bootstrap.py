@@ -68,9 +68,6 @@ class _Repo:
             _Log(level="INFO", message="bot_started", timestamp=datetime(2025, 1, 1, 10, 0, 0)),
         ]
 
-    async def get_runtime_settings(self):
-        return {"investment_mode": "Balanced", "capital_limit_usdt": 500.0}
-
     async def close(self) -> None:
         self.closed = True
 
@@ -88,4 +85,3 @@ def test_hydrate_state_from_database(monkeypatch) -> None:
     assert state.updated["trade_history"][0]["trade_id"] == 1
     assert len(state.updated["logs"]) == 2
     assert state.updated["logs"][0]["message"] == "bot_started"
-    assert state.updated["runtime_settings"]["capital_limit_usdt"] == 500.0

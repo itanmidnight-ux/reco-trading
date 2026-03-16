@@ -72,7 +72,6 @@ class BotEngine:
         self.runtime_max_trade_balance_fraction: float | None = None
         self.runtime_capital_limit_usdt: float | None = None
         self.runtime_investment_mode: str = "Balanced"
-        self.runtime_symbol_capital_limits: dict[str, float] = {}
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -117,7 +116,6 @@ class BotEngine:
             "distance_to_resistance": None,
             "investment_mode": self.runtime_investment_mode,
             "capital_limit_usdt": self.runtime_capital_limit_usdt,
-            "symbol_capital_limits": {},
         }
 
     async def run(self) -> None:
@@ -129,7 +127,6 @@ class BotEngine:
             await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
             await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
             await self.order_manager.sync_rules()
-            await self._load_runtime_settings()
             await self._reconcile_open_positions()
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -752,32 +749,23 @@ class BotEngine:
         usdt_balance, base_balance = await self._fetch_balances()
         self.snapshot["balance"] = usdt_balance
         self.snapshot["btc_balance"] = base_balance
+        latest = open_trades[0]
         if base_balance <= 0:
             await self._log("WARNING", "open_trade_found_without_base_balance")
             return
-        remaining_base = base_balance
-        reconciled = 0
-        for trade in open_trades:
-            if remaining_base <= 0:
-                break
-            qty = min(_as_float(trade.quantity, 0.0), remaining_base)
-            if qty <= 0:
-                continue
-            self.position_manager.open(
-                Position(
-                    trade_id=trade.id,
-                    side=trade.side,
-                    quantity=qty,
-                    entry_price=trade.entry_price,
-                    stop_loss=trade.stop_loss,
-                    take_profit=trade.take_profit,
-                    atr=0.0,
-                    initial_risk_distance=abs(trade.entry_price - trade.stop_loss),
-                )
+        self.position_manager.open(
+            Position(
+                trade_id=latest.id,
+                side=latest.side,
+                quantity=min(latest.quantity, base_balance),
+                entry_price=latest.entry_price,
+                stop_loss=latest.stop_loss,
+                take_profit=latest.take_profit,
+                atr=0.0,
+                initial_risk_distance=abs(latest.entry_price - latest.stop_loss),
             )
-            remaining_base -= qty
-            reconciled += 1
-        await self._log("INFO", f"reconciled_open_positions count={reconciled} base_balance={base_balance:.8f}")
+        )
+        await self._log("INFO", f"reconciled_open_position trade_id={latest.id} quantity={min(latest.quantity, base_balance):.8f}")
 
     async def _process_control_requests(self) -> None:
         if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):
@@ -791,28 +779,6 @@ class BotEngine:
             runtime_updates = self.state_manager.pop_runtime_settings()
             for update in runtime_updates:
                 self._apply_runtime_settings(update)
-                await self._persist_runtime_settings(update)
-
-    async def _load_runtime_settings(self) -> None:
-        payload = await self.repository.get_runtime_settings()
-        if not payload:
-            return
-        self._apply_runtime_settings(
-            {
-                "investment_mode": payload.get("investment_mode", self.runtime_investment_mode),
-                "capital_limit_usdt": payload.get("capital_limit_usdt", self.runtime_capital_limit_usdt or 0.0),
-                "risk_per_trade_fraction": payload.get("risk_per_trade_fraction", self._effective_risk_per_trade_fraction()),
-                "max_trade_balance_fraction": payload.get("max_trade_balance_fraction", self._effective_max_trade_balance_fraction()),
-                "symbol_capital_limits": payload.get("symbol_capital_limits", {}),
-            }
-        )
-
-    async def _persist_runtime_settings(self, settings_payload: dict[str, Any]) -> None:
-        await self.repository.set_runtime_setting("investment_mode", self.runtime_investment_mode)
-        await self.repository.set_runtime_setting("capital_limit_usdt", self.runtime_capital_limit_usdt or 0.0)
-        await self.repository.set_runtime_setting("risk_per_trade_fraction", self._effective_risk_per_trade_fraction())
-        await self.repository.set_runtime_setting("max_trade_balance_fraction", self._effective_max_trade_balance_fraction())
-        await self.repository.set_runtime_setting("symbol_capital_limits", self.runtime_symbol_capital_limits)
 
     def _apply_runtime_settings(self, settings_payload: dict[str, Any]) -> None:
         mode = str(settings_payload.get("investment_mode", self.runtime_investment_mode)).strip()
@@ -828,23 +794,8 @@ class BotEngine:
         self.runtime_risk_per_trade_fraction = min(max(risk_fraction, 0.001), 0.10)
         self.runtime_max_trade_balance_fraction = min(max(max_trade_fraction, 0.01), 1.0)
         self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
-        symbol_limits = settings_payload.get("symbol_capital_limits", {})
-        if isinstance(symbol_limits, dict):
-            normalized: dict[str, float] = {}
-            for raw_symbol, raw_limit in symbol_limits.items():
-                symbol_key = normalize_symbol(str(raw_symbol))
-                limit_value = _as_float(raw_limit, 0.0)
-                if limit_value > 0:
-                    normalized[symbol_key] = limit_value
-            self.runtime_symbol_capital_limits = normalized
-
-        current_balance = _as_float(self.snapshot.get("balance"), 0.0)
-        if self.runtime_capital_limit_usdt is not None and current_balance > 0 and self.runtime_capital_limit_usdt > current_balance:
-            self.runtime_capital_limit_usdt = current_balance
-            self.logger.warning("capital_limit_adjusted_to_balance balance=%s", current_balance)
         self.snapshot["investment_mode"] = self.runtime_investment_mode
         self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
-        self.snapshot["symbol_capital_limits"] = dict(self.runtime_symbol_capital_limits)
 
     def _effective_risk_per_trade_fraction(self) -> float:
         if self.runtime_risk_per_trade_fraction is not None:
@@ -857,8 +808,7 @@ class BotEngine:
         return float(self.settings.max_trade_balance_fraction)
 
     def _effective_equity_for_risk(self, equity: float) -> float:
-        symbol_limit = self.runtime_symbol_capital_limits.get(self.symbol)
-        limit = symbol_limit if symbol_limit is not None else self.runtime_capital_limit_usdt
+        limit = self.runtime_capital_limit_usdt
         if limit is None:
             return max(equity, 0.0)
         return max(min(equity, limit), 0.0)

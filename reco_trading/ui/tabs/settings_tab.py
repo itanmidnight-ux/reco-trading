@@ -78,11 +78,6 @@ class SettingsTab(QWidget):
         self.max_allocation.setDecimals(1)
         self.max_allocation.setValue(20.0)
         self.max_allocation.setSuffix(" %")
-        self.symbol_budget = QDoubleSpinBox()
-        self.symbol_budget.setRange(0.0, 10_000_000.0)
-        self.symbol_budget.setDecimals(2)
-        self.symbol_budget.setValue(0.0)
-        self.symbol_budget.setSuffix(" USDT")
 
         form.addRow("Refresh rate (ms)", self.refresh_rate)
         form.addRow("Chart visibility", self.chart_visible)
@@ -94,7 +89,6 @@ class SettingsTab(QWidget):
         form.addRow("Capital limit", self.capital_limit)
         form.addRow("Risk per trade", self.risk_per_trade)
         form.addRow("Max allocation", self.max_allocation)
-        form.addRow("Budget for pair", self.symbol_budget)
         visual_layout.addLayout(form)
 
         self.simulation_hint = QLabel("Estimated max order: 0.00 USDT")
@@ -157,7 +151,6 @@ class SettingsTab(QWidget):
         self.capital_limit.valueChanged.connect(self._emit)
         self.risk_per_trade.valueChanged.connect(self._emit)
         self.max_allocation.valueChanged.connect(self._emit)
-        self.symbol_budget.valueChanged.connect(self._emit)
 
         self.load_keys_btn.clicked.connect(self._load_keys_from_env)
         self.save_keys_btn.clicked.connect(self._save_keys_to_env)
@@ -238,7 +231,6 @@ class SettingsTab(QWidget):
                 "capital_limit_usdt": self.capital_limit.value(),
                 "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
                 "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
-                "symbol_capital_limits": dict(self._symbol_capital_limits),
                 "binance_api_key": self.api_key.text().strip(),
                 "binance_api_secret": self.api_secret.text().strip(),
             }

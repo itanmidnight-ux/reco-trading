@@ -24,8 +24,6 @@ def _format_trade(trade: object) -> dict:
         "fees": 0,
         "confidence": None,
         "signal_details": "DB_RESTORED",
-        "entry_slippage_ratio": getattr(trade, "entry_slippage_ratio", None),
-        "exit_slippage_ratio": getattr(trade, "exit_slippage_ratio", None),
     }
 
 
@@ -44,11 +42,10 @@ async def hydrate_state_from_database(settings: Any, state_manager: object) -> N
         await repository.setup()
         trades = await repository.get_recent_trades(limit=200)
         logs = await repository.get_recent_logs(limit=400)
-        runtime_settings = await repository.get_runtime_settings()
 
         trade_history = [_format_trade(t) for t in trades]
         log_history = [_format_log(log_item) for log_item in reversed(logs)]
         if hasattr(state_manager, "update"):
-            state_manager.update(trade_history=trade_history, logs=log_history, runtime_settings=runtime_settings)
+            state_manager.update(trade_history=trade_history, logs=log_history)
     finally:
         await repository.close()
