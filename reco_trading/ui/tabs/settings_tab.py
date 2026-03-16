@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -103,6 +104,8 @@ class SettingsTab(QWidget):
         layout = panel.layout()
         assert isinstance(layout, QVBoxLayout)
 
+        form = QFormLayout()
+
         self.refresh_rate = QSpinBox()
         self.refresh_rate.setRange(250, 5000)
         self.refresh_rate.setValue(1000)
@@ -191,6 +194,10 @@ class SettingsTab(QWidget):
         layout = panel.layout()
         assert isinstance(layout, QVBoxLayout)
 
+        creds_form = QGridLayout()
+        creds_form.setHorizontalSpacing(8)
+        creds_form.setVerticalSpacing(8)
+
         self.api_key = QLineEdit()
         self.api_key.setPlaceholderText("BINANCE API KEY")
         self.api_key.setEchoMode(QLineEdit.EchoMode.Password)
@@ -210,6 +217,7 @@ class SettingsTab(QWidget):
         creds_form.addWidget(QLabel("API Secret"), 1, 0)
         creds_form.addWidget(self.api_secret, 1, 1)
         creds_form.addWidget(self.toggle_secret_btn, 1, 2)
+        creds_form.setColumnStretch(1, 1)
         layout.addLayout(creds_form)
 
         actions = QHBoxLayout()
@@ -331,44 +339,6 @@ class SettingsTab(QWidget):
         if hasattr(self, "_pulse"):
             self._pulse.stop()
             self._pulse.start()
-
-        payload = {
-            "refresh_rate_ms": self.refresh_rate.value(),
-            "chart_visible": self.chart_visible.isChecked(),
-            "theme": self.theme.currentText(),
-            "log_verbosity": self.log_verbosity.currentText(),
-            "default_pair": self.default_pair.currentText(),
-            "default_timeframe": self.default_tf.currentText(),
-            "investment_mode": self.investment_mode.currentText(),
-            "capital_limit_usdt": self.capital_limit.value(),
-            "symbol_capital_limits": dict(self._symbol_capital_limits),
-            "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
-            "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
-            "binance_api_key": self.api_key.text().strip(),
-            "binance_api_secret": self.api_secret.text().strip(),
-        }
-        self.settings_changed.emit(payload)
-        self._pulse.stop()
-        self._pulse.start()
-
-        payload = {
-            "refresh_rate_ms": self.refresh_rate.value(),
-            "chart_visible": self.chart_visible.isChecked(),
-            "theme": self.theme.currentText(),
-            "log_verbosity": self.log_verbosity.currentText(),
-            "default_pair": self.default_pair.currentText(),
-            "default_timeframe": self.default_tf.currentText(),
-            "investment_mode": self.investment_mode.currentText(),
-            "capital_limit_usdt": self.capital_limit.value(),
-            "symbol_capital_limits": dict(self._symbol_capital_limits),
-            "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
-            "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
-            "binance_api_key": self.api_key.text().strip(),
-            "binance_api_secret": self.api_secret.text().strip(),
-        }
-        self.settings_changed.emit(payload)
-        self._pulse.stop()
-        self._pulse.start()
 
     def update_state(self, state: dict) -> None:
         runtime = state.get("runtime_settings")
