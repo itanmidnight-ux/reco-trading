@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
         self.analytics_tab = AnalyticsTab()
-        self.logs_tab = LogsTab()
+        self.logs_tab = LogsTab(state_manager=state_manager)
         self.risk_tab = RiskTab()
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self._refresh_from_snapshot)
-        self.refresh_timer.start(1000)
+        self.refresh_timer.start(250)
         self._last_state_event_at = 0.0
 
     def _on_state(self, state: dict) -> None:
@@ -81,7 +81,7 @@ class MainWindow(QMainWindow):
                 continue
 
     def _refresh_from_snapshot(self) -> None:
-        if (time.monotonic() - self._last_state_event_at) < 1.0:
+        if (time.monotonic() - self._last_state_event_at) < 0.25:
             return
         self._on_state(self.state_manager.snapshot())
 
