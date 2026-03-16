@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
             self.analytics_tab,
             self.logs_tab,
             self.risk_tab,
+            self.settings_tab,
             self.system_tab,
         ):
             try:

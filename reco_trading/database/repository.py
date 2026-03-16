@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -10,7 +11,7 @@ from sqlalchemy import func, inspect, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from reco_trading.database.models import Base, BotLog, ErrorLog, MarketData, Signal, StateChange, Trade
+from reco_trading.database.models import Base, BotLog, ErrorLog, MarketData, RuntimeSetting, Signal, StateChange, Trade
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 
@@ -45,6 +46,10 @@ class Repository:
             columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("trades")})
             if "close_timestamp" not in columns:
                 await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP WITH TIME ZONE"))
+            if "entry_slippage_ratio" not in columns:
+                await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_slippage_ratio DOUBLE PRECISION"))
+            if "exit_slippage_ratio" not in columns:
+                await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_slippage_ratio DOUBLE PRECISION"))
             await self._migrate_signals_columns(conn)
 
     async def _migrate_signals_columns(self, conn: Any) -> None:
@@ -126,6 +131,7 @@ class Repository:
         stop_loss: float,
         take_profit: float,
         order_id: str | None,
+        entry_slippage_ratio: float | None = None,
     ) -> Trade:
         trade = Trade(
             symbol=symbol,
@@ -135,12 +141,13 @@ class Repository:
             stop_loss=stop_loss,
             take_profit=take_profit,
             order_id=order_id,
+            entry_slippage_ratio=entry_slippage_ratio,
         )
         await self._persist(trade)
         return trade
 
     @safe_db_call()
-    async def close_trade(self, trade_id: int, exit_price: float, pnl: float, status: str) -> None:
+    async def close_trade(self, trade_id: int, exit_price: float, pnl: float, status: str, exit_slippage_ratio: float | None = None) -> None:
         async with self.session_factory() as session:
             trade = await session.get(Trade, trade_id)
             if not trade:
@@ -149,6 +156,33 @@ class Repository:
             trade.pnl = pnl
             trade.status = status
             trade.close_timestamp = datetime.utcnow()
+            trade.exit_slippage_ratio = exit_slippage_ratio
+            await session.commit()
+
+    @safe_db_call(default={})
+    async def get_runtime_settings(self) -> dict[str, Any]:
+        async with self.session_factory() as session:
+            result = await session.execute(select(RuntimeSetting))
+            payload: dict[str, Any] = {}
+            for row in result.scalars().all():
+                try:
+                    payload[row.key] = json.loads(row.value)
+                except (TypeError, ValueError):
+                    payload[row.key] = row.value
+            return payload
+
+    @safe_db_call()
+    async def set_runtime_setting(self, key: str, value: Any) -> None:
+        encoded = json.dumps(value)
+        async with self.session_factory() as session:
+            result = await session.execute(select(RuntimeSetting).where(RuntimeSetting.key == key))
+            setting = result.scalar_one_or_none()
+            if setting is None:
+                setting = RuntimeSetting(key=key, value=encoded, updated_at=datetime.utcnow())
+                session.add(setting)
+            else:
+                setting.value = encoded
+                setting.updated_at = datetime.utcnow()
             await session.commit()
 
     @safe_db_call(default=0.0)

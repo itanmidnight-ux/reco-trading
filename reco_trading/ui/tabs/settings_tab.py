@@ -27,6 +27,8 @@ class SettingsTab(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._applying_state = False
+        self._symbol_capital_limits: dict[str, float] = {}
         layout = QVBoxLayout(self)
         title = QLabel("Interface Studio")
         title.setObjectName("sectionTitle")
@@ -88,6 +90,10 @@ class SettingsTab(QWidget):
         form.addRow("Risk per trade", self.risk_per_trade)
         form.addRow("Max allocation", self.max_allocation)
         visual_layout.addLayout(form)
+
+        self.simulation_hint = QLabel("Estimated max order: 0.00 USDT")
+        self.simulation_hint.setObjectName("metricLabel")
+        visual_layout.addWidget(self.simulation_hint)
 
         creds_panel = QFrame()
         creds_panel.setObjectName("metricCard")
@@ -198,6 +204,21 @@ class SettingsTab(QWidget):
         self._emit()
 
     def _emit(self) -> None:
+        if self._applying_state:
+            return
+        pair = self.default_pair.currentText().strip()
+        budget_value = self.symbol_budget.value()
+        if pair:
+            if budget_value > 0:
+                self._symbol_capital_limits[pair] = budget_value
+            elif pair in self._symbol_capital_limits:
+                self._symbol_capital_limits.pop(pair)
+
+        capital_limit = self.capital_limit.value()
+        effective_capital = budget_value if budget_value > 0 else capital_limit
+        estimated_order = effective_capital * (self.max_allocation.value() / 100.0)
+        self.simulation_hint.setText(f"Estimated max order: {estimated_order:.2f} USDT")
+
         self.settings_changed.emit(
             {
                 "refresh_rate_ms": self.refresh_rate.value(),
@@ -214,3 +235,30 @@ class SettingsTab(QWidget):
                 "binance_api_secret": self.api_secret.text().strip(),
             }
         )
+
+    def update_state(self, state: dict) -> None:
+        runtime = state.get("runtime_settings")
+        if not isinstance(runtime, dict) or not runtime:
+            return
+        self._applying_state = True
+        try:
+            mode = str(runtime.get("investment_mode", "")).strip()
+            if mode and mode in {self.investment_mode.itemText(i) for i in range(self.investment_mode.count())}:
+                self.investment_mode.setCurrentText(mode)
+            capital_limit = float(runtime.get("capital_limit_usdt", 0.0) or 0.0)
+            self.capital_limit.setValue(max(capital_limit, 0.0))
+            risk_fraction = float(runtime.get("risk_per_trade_fraction", 0.01) or 0.01)
+            self.risk_per_trade.setValue(max(risk_fraction * 100.0, 0.1))
+            max_trade_fraction = float(runtime.get("max_trade_balance_fraction", 0.2) or 0.2)
+            self.max_allocation.setValue(max(max_trade_fraction * 100.0, 1.0))
+            symbol_limits = runtime.get("symbol_capital_limits", {})
+            if isinstance(symbol_limits, dict):
+                self._symbol_capital_limits = {str(k): float(v) for k, v in symbol_limits.items() if float(v) > 0}
+                active_pair = self.default_pair.currentText().strip()
+                if active_pair in self._symbol_capital_limits:
+                    self.symbol_budget.setValue(self._symbol_capital_limits[active_pair])
+        except Exception:
+            pass
+        finally:
+            self._applying_state = False
+        self._emit()

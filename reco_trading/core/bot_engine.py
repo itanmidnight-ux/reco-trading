@@ -466,6 +466,7 @@ class BotEngine:
             stop_loss=stop_loss,
             take_profit=take_profit,
             order_id=str(order.get("id")),
+            entry_slippage_ratio=slippage_ratio,
         )
 
         self.position_manager.open(
@@ -504,6 +505,7 @@ class BotEngine:
                     "fees": order.get("fee", {}).get("cost", 0),
                     "confidence": analysis.get("confidence"),
                     "signal_details": str(bundle),
+                    "entry_slippage_ratio": slippage_ratio,
                 }
             )
 
@@ -566,7 +568,14 @@ class BotEngine:
         if position.side == "SELL":
             pnl *= -1
 
-        await self.repository.close_trade(position.trade_id, exit_price, pnl, exit_reason)
+        exit_slippage_ratio = abs(exit_price - reference_price) / max(reference_price, 1e-9)
+        await self.repository.close_trade(
+            position.trade_id,
+            exit_price,
+            pnl,
+            exit_reason,
+            exit_slippage_ratio=exit_slippage_ratio,
+        )
         self.position_manager.close(position.trade_id)
         self.last_close_time = datetime.now(timezone.utc)
         if self._update_loss_protection(pnl):
@@ -597,6 +606,7 @@ class BotEngine:
                     "fees": order.get("fee", {}).get("cost", 0),
                     "confidence": None,
                     "signal_details": exit_reason,
+                    "exit_slippage_ratio": exit_slippage_ratio,
                 }
             )
         return True
