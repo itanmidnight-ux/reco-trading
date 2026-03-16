@@ -17,6 +17,7 @@ from reco_trading.data.market_stream import MarketStream
 from reco_trading.database.repository import Repository
 from reco_trading.exchange.binance_client import BinanceClient
 from reco_trading.exchange.order_manager import OrderManager
+from reco_trading.performance.metrics import PerformanceMetricsCollector
 from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.advanced_risk_manager import AdvancedRiskManager
 from reco_trading.risk.risk_manager import RiskManager
@@ -52,6 +53,7 @@ class BotEngine:
         )
         self.position_manager = PositionManager()
         self.market_intelligence = MarketIntelligence(settings)
+        self.performance_metrics = PerformanceMetricsCollector()
 
         self.state_manager = state_manager
         self.trades_today = 0
@@ -600,6 +602,7 @@ class BotEngine:
         if self._update_loss_protection(pnl):
             await self._log("WARNING", "loss_protection_enabled")
 
+        self.performance_metrics.on_trade_closed(pnl)
         if pnl > 0:
             self.win_count += 1
         self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else None
@@ -837,9 +840,60 @@ class BotEngine:
 
         self.runtime_risk_per_trade_fraction = min(max(risk_fraction, 0.001), 0.10)
         self.runtime_max_trade_balance_fraction = min(max(max_trade_fraction, 0.01), 1.0)
-        self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
+
+        configured_pair = str(settings_payload.get("default_pair", "")).strip()
+        normalized_pair = normalize_symbol(configured_pair) if configured_pair else self.symbol
+
+        symbol_limits = settings_payload.get("symbol_capital_limits", {})
+        if isinstance(symbol_limits, dict):
+            normalized_limits: dict[str, float] = {}
+            for key, value in symbol_limits.items():
+                normalized_key = normalize_symbol(str(key))
+                normalized_limits[normalized_key] = _as_float(value, 0.0)
+            pair_capital = _as_float(normalized_limits.get(normalized_pair), 0.0)
+            if pair_capital > 0:
+                self.runtime_capital_limit_usdt = pair_capital
+            else:
+                self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
+        else:
+            self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
+
+        if normalized_pair and normalized_pair != self.symbol:
+            self.symbol = normalized_pair
+            self.order_manager.symbol = normalized_pair
+            self.market_stream.symbol = normalized_pair
+            self.snapshot["pair"] = normalized_pair
+            self._cached_frame5 = None
+            self._cached_frame15 = None
+            self._last_primary_indicator_ts = None
+            self._last_confirmation_indicator_ts = None
+
+        timeframe_cfg = str(settings_payload.get("default_timeframe", "")).strip()
+        if "/" in timeframe_cfg:
+            primary_raw, confirmation_raw = [part.strip() for part in timeframe_cfg.split("/", 1)]
+            if primary_raw:
+                self.settings.timeframe = primary_raw
+            if confirmation_raw:
+                self.settings.confirmation_timeframe = confirmation_raw
+
+        primary_tf = str(getattr(self.settings, "timeframe", getattr(self.settings, "primary_timeframe", "5m")))
+        confirm_tf = str(getattr(self.settings, "confirmation_timeframe", "15m"))
+        self.snapshot["timeframe"] = f"{primary_tf} / {confirm_tf}"
         self.snapshot["investment_mode"] = self.runtime_investment_mode
         self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
+        self.snapshot["runtime_settings"] = {
+            "investment_mode": self.runtime_investment_mode,
+            "capital_limit_usdt": self.runtime_capital_limit_usdt or 0.0,
+            "risk_per_trade_fraction": self.runtime_risk_per_trade_fraction,
+            "max_trade_balance_fraction": self.runtime_max_trade_balance_fraction,
+            "default_pair": self.symbol,
+            "default_timeframe": self.snapshot.get("timeframe"),
+            "symbol_capital_limits": settings_payload.get("symbol_capital_limits", {}),
+            "theme": settings_payload.get("theme", "Dark"),
+            "log_verbosity": settings_payload.get("log_verbosity", "INFO"),
+            "chart_visible": bool(settings_payload.get("chart_visible", True)),
+            "refresh_rate_ms": int(settings_payload.get("refresh_rate_ms", 1000) or 1000),
+        }
 
     def _effective_risk_per_trade_fraction(self) -> float:
         if self.runtime_risk_per_trade_fraction is not None:
@@ -893,6 +947,10 @@ class BotEngine:
         if not self.state_manager:
             return
         try:
+            current_equity = _as_float(self.snapshot.get("equity"), 0.0)
+            if current_equity > 0:
+                self.performance_metrics.on_equity_update(current_equity)
+            perf = self.performance_metrics.snapshot()
             self.state_manager.update(
                 pair=self.snapshot.get("pair", ""),
                 timeframe=self.snapshot.get("timeframe", ""),
@@ -945,15 +1003,18 @@ class BotEngine:
                     "consecutive_losses": self.consecutive_losses,
                     "current_exposure": self._current_exposure(),
                 },
+                runtime_settings=self.snapshot.get("runtime_settings", {}),
                 analytics={
-                    "total_trades": self.trades_today,
-                    "win_rate": self.snapshot.get("win_rate") or 0.0,
-                    "profit_factor": 0.0,
-                    "average_win": 0.0,
-                    "average_loss": 0.0,
-                    "largest_win": 0.0,
-                    "largest_loss": 0.0,
-                    "equity_curve": [self.snapshot.get("equity") or 0.0],
+                    "total_trades": perf.total_trades,
+                    "win_rate": perf.win_rate,
+                    "profit_factor": perf.profit_factor,
+                    "average_win": perf.average_profit,
+                    "average_loss": perf.average_loss,
+                    "largest_win": perf.largest_win,
+                    "largest_loss": perf.largest_loss,
+                    "expectancy": perf.expectancy,
+                    "max_drawdown": perf.max_drawdown,
+                    "equity_curve": list(perf.equity_curve),
                 },
             )
         except Exception as exc:  # noqa: BLE001

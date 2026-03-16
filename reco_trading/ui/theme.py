@@ -17,8 +17,12 @@ COLORS = {
 }
 
 
-def app_stylesheet() -> str:
+def app_stylesheet(variant: str = "Dark") -> str:
     try:
+        is_contrast = variant.strip().lower().startswith("dark+")
+        border_color = "#3d5b93" if is_contrast else COLORS["border"]
+        panel_from = "#182849" if is_contrast else COLORS["panel"]
+        panel_to = "#213565" if is_contrast else COLORS["panel_alt"]
         style = f"""
         QWidget {{
             background-color: {COLORS['background']};
@@ -27,7 +31,7 @@ def app_stylesheet() -> str:
             selection-background-color: rgba(122, 97, 255, 0.4);
         }}
         QMainWindow, QTabWidget::pane {{
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {border_color};
             border-radius: 12px;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                 stop:0 {COLORS['background']}, stop:1 {COLORS['background_alt']});
@@ -35,7 +39,7 @@ def app_stylesheet() -> str:
         QTabBar::tab {{
             background: {COLORS['panel']};
             color: {COLORS['text_secondary']};
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {border_color};
             border-bottom: none;
             padding: 11px 18px;
             margin-right: 6px;
@@ -54,8 +58,8 @@ def app_stylesheet() -> str:
         }}
         QFrame#metricCard, QFrame#panelCard {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {COLORS['panel']}, stop:1 {COLORS['panel_alt']});
-            border: 1px solid {COLORS['border']};
+                stop:0 {panel_from}, stop:1 {panel_to});
+            border: 1px solid {border_color};
             border-radius: 12px;
         }}
         QLabel#sectionTitle {{
@@ -79,9 +83,9 @@ def app_stylesheet() -> str:
             font-size: 14px;
             font-weight: 600;
         }}
-        QTableWidget, QTextEdit {{
+        QTableWidget, QTextEdit, QListWidget {{
             background: {COLORS['panel']};
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {border_color};
             border-radius: 10px;
             gridline-color: {COLORS['border']};
         }}
@@ -92,7 +96,7 @@ def app_stylesheet() -> str:
             padding: 7px;
         }}
         QProgressBar {{
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {border_color};
             border-radius: 6px;
             text-align: center;
             background: rgba(20, 29, 53, 0.8);
@@ -102,16 +106,16 @@ def app_stylesheet() -> str:
             background-color: {COLORS['info']};
             border-radius: 6px;
         }}
-        QLineEdit, QComboBox, QSpinBox {{
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
             background: #101933;
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {border_color};
             border-radius: 8px;
             padding: 7px;
         }}
         QPushButton {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                 stop:0 {COLORS['accent']}, stop:1 {COLORS['info']});
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {border_color};
             border-radius: 8px;
             padding: 8px 12px;
             color: white;
