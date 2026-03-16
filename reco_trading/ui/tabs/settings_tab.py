@@ -351,6 +351,25 @@ class SettingsTab(QWidget):
         self._pulse.stop()
         self._pulse.start()
 
+        payload = {
+            "refresh_rate_ms": self.refresh_rate.value(),
+            "chart_visible": self.chart_visible.isChecked(),
+            "theme": self.theme.currentText(),
+            "log_verbosity": self.log_verbosity.currentText(),
+            "default_pair": self.default_pair.currentText(),
+            "default_timeframe": self.default_tf.currentText(),
+            "investment_mode": self.investment_mode.currentText(),
+            "capital_limit_usdt": self.capital_limit.value(),
+            "symbol_capital_limits": dict(self._symbol_capital_limits),
+            "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
+            "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
+            "binance_api_key": self.api_key.text().strip(),
+            "binance_api_secret": self.api_secret.text().strip(),
+        }
+        self.settings_changed.emit(payload)
+        self._pulse.stop()
+        self._pulse.start()
+
     def update_state(self, state: dict) -> None:
         runtime = state.get("runtime_settings")
         if not isinstance(runtime, dict) or not runtime:
