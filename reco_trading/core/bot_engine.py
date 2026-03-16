@@ -68,6 +68,10 @@ class BotEngine:
         self.exchange_failure_max = 5
         self.exchange_failure_cooldown_seconds = 300
         self.exchange_failure_paused_until: datetime | None = None
+        self.runtime_risk_per_trade_fraction: float | None = None
+        self.runtime_max_trade_balance_fraction: float | None = None
+        self.runtime_capital_limit_usdt: float | None = None
+        self.runtime_investment_mode: str = "Balanced"
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -110,6 +114,8 @@ class BotEngine:
             "volatility_state": None,
             "distance_to_support": None,
             "distance_to_resistance": None,
+            "investment_mode": self.runtime_investment_mode,
+            "capital_limit_usdt": self.runtime_capital_limit_usdt,
         }
 
     async def run(self) -> None:
@@ -405,7 +411,7 @@ class BotEngine:
             price=price,
             quantity=qty,
             equity=equity,
-            max_trade_balance_fraction=float(self.settings.max_trade_balance_fraction),
+            max_trade_balance_fraction=self._effective_max_trade_balance_fraction(),
         )
         if normalized_qty is None:
             await self._log(
@@ -597,9 +603,10 @@ class BotEngine:
 
     def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
+        equity = self._effective_equity_for_risk(equity)
         sizing = self.risk_manager.position_size_for_risk(
             equity=equity,
-            risk_fraction=self.settings.risk_per_trade_fraction,
+            risk_fraction=self._effective_risk_per_trade_fraction(),
             price=price,
             stop_loss_price=stop_loss,
             atr=atr,
@@ -758,6 +765,44 @@ class BotEngine:
             if control == "force_close":
                 await self.force_close_position()
 
+        if hasattr(self.state_manager, "pop_runtime_settings"):
+            runtime_updates = self.state_manager.pop_runtime_settings()
+            for update in runtime_updates:
+                self._apply_runtime_settings(update)
+
+    def _apply_runtime_settings(self, settings_payload: dict[str, Any]) -> None:
+        mode = str(settings_payload.get("investment_mode", self.runtime_investment_mode)).strip()
+        self.runtime_investment_mode = mode or self.runtime_investment_mode
+
+        risk_fraction = _as_float(settings_payload.get("risk_per_trade_fraction"), self._effective_risk_per_trade_fraction())
+        max_trade_fraction = _as_float(
+            settings_payload.get("max_trade_balance_fraction"),
+            self._effective_max_trade_balance_fraction(),
+        )
+        capital_limit = _as_float(settings_payload.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+
+        self.runtime_risk_per_trade_fraction = min(max(risk_fraction, 0.001), 0.10)
+        self.runtime_max_trade_balance_fraction = min(max(max_trade_fraction, 0.01), 1.0)
+        self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
+        self.snapshot["investment_mode"] = self.runtime_investment_mode
+        self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
+
+    def _effective_risk_per_trade_fraction(self) -> float:
+        if self.runtime_risk_per_trade_fraction is not None:
+            return self.runtime_risk_per_trade_fraction
+        return float(self.settings.risk_per_trade_fraction)
+
+    def _effective_max_trade_balance_fraction(self) -> float:
+        if self.runtime_max_trade_balance_fraction is not None:
+            return self.runtime_max_trade_balance_fraction
+        return float(self.settings.max_trade_balance_fraction)
+
+    def _effective_equity_for_risk(self, equity: float) -> float:
+        limit = self.runtime_capital_limit_usdt
+        if limit is None:
+            return max(equity, 0.0)
+        return max(min(equity, limit), 0.0)
+
     async def _set_state(self, new_state: BotState, context: str = "") -> None:
         if new_state == self.state:
             return
@@ -839,8 +884,9 @@ class BotEngine:
                     "last_server_sync": datetime.utcnow().isoformat(timespec="seconds"),
                 },
                 risk_metrics={
-                    "risk_per_trade": f"{self.settings.risk_per_trade_fraction:.2%}",
+                    "risk_per_trade": f"{self._effective_risk_per_trade_fraction():.2%}",
                     "max_concurrent_trades": self.settings.max_concurrent_trades,
+                    "max_trade_allocation": f"{self._effective_max_trade_balance_fraction():.2%}",
                     "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
                     "consecutive_losses": self.consecutive_losses,
                     "current_exposure": self._current_exposure(),
