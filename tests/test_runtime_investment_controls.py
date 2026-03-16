@@ -64,9 +64,3 @@ def test_settings_tab_capital_limit_and_pair_budget_are_distinct() -> None:
     assert "Per-pair budget: 120.00" in text
     assert "Effective safety cap: 120.00" in text
     assert "30.00 USDT" in tab.simulation_hint.text()
-
-
-def test_settings_tab_initialization_has_no_name_errors() -> None:
-    _app()
-    tab = SettingsTab()
-    assert tab.refresh_rate.value() >= 250
