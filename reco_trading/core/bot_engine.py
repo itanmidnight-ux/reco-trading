@@ -732,32 +732,23 @@ class BotEngine:
         usdt_balance, base_balance = await self._fetch_balances()
         self.snapshot["balance"] = usdt_balance
         self.snapshot["btc_balance"] = base_balance
+        latest = open_trades[0]
         if base_balance <= 0:
             await self._log("WARNING", "open_trade_found_without_base_balance")
             return
-        remaining_base = base_balance
-        reconciled = 0
-        for trade in open_trades:
-            if remaining_base <= 0:
-                break
-            qty = min(_as_float(trade.quantity, 0.0), remaining_base)
-            if qty <= 0:
-                continue
-            self.position_manager.open(
-                Position(
-                    trade_id=trade.id,
-                    side=trade.side,
-                    quantity=qty,
-                    entry_price=trade.entry_price,
-                    stop_loss=trade.stop_loss,
-                    take_profit=trade.take_profit,
-                    atr=0.0,
-                    initial_risk_distance=abs(trade.entry_price - trade.stop_loss),
-                )
+        self.position_manager.open(
+            Position(
+                trade_id=latest.id,
+                side=latest.side,
+                quantity=min(latest.quantity, base_balance),
+                entry_price=latest.entry_price,
+                stop_loss=latest.stop_loss,
+                take_profit=latest.take_profit,
+                atr=0.0,
+                initial_risk_distance=abs(latest.entry_price - latest.stop_loss),
             )
-            remaining_base -= qty
-            reconciled += 1
-        await self._log("INFO", f"reconciled_open_positions count={reconciled} base_balance={base_balance:.8f}")
+        )
+        await self._log("INFO", f"reconciled_open_position trade_id={latest.id} quantity={min(latest.quantity, base_balance):.8f}")
 
     async def _process_control_requests(self) -> None:
         if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):
