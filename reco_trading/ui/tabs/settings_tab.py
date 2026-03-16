@@ -68,6 +68,11 @@ class SettingsTab(QWidget):
         self.capital_limit.setDecimals(2)
         self.capital_limit.setValue(0.0)
         self.capital_limit.setSuffix(" USDT")
+        self.symbol_budget = QDoubleSpinBox()
+        self.symbol_budget.setRange(0.0, 10_000_000.0)
+        self.symbol_budget.setDecimals(2)
+        self.symbol_budget.setValue(0.0)
+        self.symbol_budget.setSuffix(" USDT")
         self.risk_per_trade = QDoubleSpinBox()
         self.risk_per_trade.setRange(0.1, 10.0)
         self.risk_per_trade.setDecimals(2)
@@ -87,6 +92,7 @@ class SettingsTab(QWidget):
         form.addRow("Default timeframe", self.default_tf)
         form.addRow("Investment mode", self.investment_mode)
         form.addRow("Capital limit", self.capital_limit)
+        form.addRow("Per-pair budget", self.symbol_budget)
         form.addRow("Risk per trade", self.risk_per_trade)
         form.addRow("Max allocation", self.max_allocation)
         visual_layout.addLayout(form)
@@ -145,10 +151,11 @@ class SettingsTab(QWidget):
         self.chart_visible.stateChanged.connect(self._emit)
         self.theme.currentTextChanged.connect(self._emit)
         self.log_verbosity.currentTextChanged.connect(self._emit)
-        self.default_pair.currentTextChanged.connect(self._emit)
+        self.default_pair.currentTextChanged.connect(self._on_default_pair_changed)
         self.default_tf.currentTextChanged.connect(self._emit)
         self.investment_mode.currentTextChanged.connect(self._apply_investment_preset)
         self.capital_limit.valueChanged.connect(self._emit)
+        self.symbol_budget.valueChanged.connect(self._emit)
         self.risk_per_trade.valueChanged.connect(self._emit)
         self.max_allocation.valueChanged.connect(self._emit)
 
@@ -156,6 +163,7 @@ class SettingsTab(QWidget):
         self.save_keys_btn.clicked.connect(self._save_keys_to_env)
 
         self._load_keys_from_env()
+        self._on_default_pair_changed(self.default_pair.currentText())
         self._apply_investment_preset(self.investment_mode.currentText())
 
     def _section_title(self, text: str) -> QLabel:
@@ -203,6 +211,13 @@ class SettingsTab(QWidget):
             self.max_allocation.setValue(35.0)
         self._emit()
 
+    def _on_default_pair_changed(self, pair: str) -> None:
+        budget = float(self._symbol_capital_limits.get(pair.strip(), 0.0))
+        self.symbol_budget.blockSignals(True)
+        self.symbol_budget.setValue(max(budget, 0.0))
+        self.symbol_budget.blockSignals(False)
+        self._emit()
+
     def _emit(self) -> None:
         if self._applying_state:
             return
@@ -229,6 +244,7 @@ class SettingsTab(QWidget):
                 "default_timeframe": self.default_tf.currentText(),
                 "investment_mode": self.investment_mode.currentText(),
                 "capital_limit_usdt": self.capital_limit.value(),
+                "symbol_capital_limits": dict(self._symbol_capital_limits),
                 "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
                 "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
                 "binance_api_key": self.api_key.text().strip(),
@@ -254,9 +270,7 @@ class SettingsTab(QWidget):
             symbol_limits = runtime.get("symbol_capital_limits", {})
             if isinstance(symbol_limits, dict):
                 self._symbol_capital_limits = {str(k): float(v) for k, v in symbol_limits.items() if float(v) > 0}
-                active_pair = self.default_pair.currentText().strip()
-                if active_pair in self._symbol_capital_limits:
-                    self.symbol_budget.setValue(self._symbol_capital_limits[active_pair])
+                self._on_default_pair_changed(self.default_pair.currentText())
         except Exception:
             pass
         finally:
