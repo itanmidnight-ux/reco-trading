@@ -8,9 +8,12 @@ from reco_trading.performance.trade_statistics import TradeStatistics
 
 @dataclass(slots=True)
 class PerformanceSnapshot:
+    total_trades: int
     win_rate: float
     average_profit: float
     average_loss: float
+    largest_win: float
+    largest_loss: float
     profit_factor: float
     expectancy: float
     equity_curve: list[float]
@@ -32,10 +35,15 @@ class PerformanceMetricsCollector:
         self.equity_tracker.add_point(equity)
 
     def snapshot(self) -> PerformanceSnapshot:
+        wins = [p for p in self.trade_stats.pnls if p > 0]
+        losses = [p for p in self.trade_stats.pnls if p < 0]
         return PerformanceSnapshot(
+            total_trades=len(self.trade_stats.pnls),
             win_rate=self.trade_stats.win_rate,
             average_profit=self.trade_stats.average_profit,
             average_loss=self.trade_stats.average_loss,
+            largest_win=max(wins) if wins else 0.0,
+            largest_loss=min(losses) if losses else 0.0,
             profit_factor=self.trade_stats.profit_factor,
             expectancy=self.trade_stats.expectancy,
             equity_curve=list(self.equity_tracker.points),
