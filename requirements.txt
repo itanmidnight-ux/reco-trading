@@ -13,3 +13,4 @@ matplotlib
 PySide6
 psutil
 pyqtgraph
+pydantic
