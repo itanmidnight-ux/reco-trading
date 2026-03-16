@@ -74,6 +74,7 @@ class BotEngine:
         self.runtime_max_trade_balance_fraction: float | None = None
         self.runtime_capital_limit_usdt: float | None = None
         self.runtime_investment_mode: str = "Balanced"
+        self._runtime_persist_task: asyncio.Task[Any] | None = None
         self.manual_pause = False
         self.emergency_stop_active = False
 
@@ -126,6 +127,7 @@ class BotEngine:
         try:
             await self._set_state(BotState.INITIALIZING, "initialize_settings")
             await self.repository.setup()
+            await self._restore_runtime_settings()
             await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
             await self.client.sync_time()
             await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
@@ -140,6 +142,8 @@ class BotEngine:
                     try:
                         await self._process_control_requests()
                         await self.client.periodic_time_resync(interval_seconds=1800.0)
+                        await self._process_control_requests()
+
                         if self.emergency_stop_active:
                             await self._set_state(BotState.PAUSED, "emergency_stop")
                             self.snapshot["cooldown"] = "EMERGENCY_STOP"
@@ -211,6 +215,11 @@ class BotEngine:
                         self._safe_live_update(live)
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
         finally:
+            if self._runtime_persist_task and not self._runtime_persist_task.done():
+                try:
+                    await self._runtime_persist_task
+                except Exception:
+                    pass
             await self.client.close()
             await self.repository.close()
 
@@ -813,6 +822,21 @@ class BotEngine:
             runtime_updates = self.state_manager.pop_runtime_settings()
             for update in runtime_updates:
                 self._apply_runtime_settings(update)
+                self._schedule_runtime_settings_persist()
+
+    async def _restore_runtime_settings(self) -> None:
+        persisted = await self.repository.get_runtime_settings()
+        runtime_settings = persisted.get("runtime_settings") if isinstance(persisted, dict) else None
+        if isinstance(runtime_settings, dict) and runtime_settings:
+            self._apply_runtime_settings(runtime_settings)
+
+    def _schedule_runtime_settings_persist(self) -> None:
+        if self._runtime_persist_task and not self._runtime_persist_task.done():
+            self._runtime_persist_task.cancel()
+        self._runtime_persist_task = asyncio.create_task(self._persist_runtime_settings())
+
+    async def _persist_runtime_settings(self) -> None:
+        await self.repository.set_runtime_setting("runtime_settings", self.snapshot.get("runtime_settings", {}))
 
     async def _sleep_with_responsiveness(self, seconds: float) -> None:
         total = max(float(seconds), 0.0)
