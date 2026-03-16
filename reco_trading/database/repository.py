@@ -216,6 +216,22 @@ class Repository:
             result = await session.execute(q)
             return list(result.scalars().all())
 
+    @safe_db_call(default=[])
+    async def get_recent_trades(self, limit: int = 200) -> list[Trade]:
+        capped_limit = max(1, int(limit))
+        async with self.session_factory() as session:
+            q = select(Trade).order_by(Trade.timestamp.desc()).limit(capped_limit)
+            result = await session.execute(q)
+            return list(result.scalars().all())
+
+    @safe_db_call(default=[])
+    async def get_recent_logs(self, limit: int = 400) -> list[BotLog]:
+        capped_limit = max(1, int(limit))
+        async with self.session_factory() as session:
+            q = select(BotLog).order_by(BotLog.timestamp.desc()).limit(capped_limit)
+            result = await session.execute(q)
+            return list(result.scalars().all())
+
     async def close(self) -> None:
         await self.engine.dispose()
 
