@@ -25,10 +25,6 @@ def run() -> None:
         raise RuntimeError("BINANCE_API_KEY and BINANCE_API_SECRET are required")
     if not settings.binance_testnet and not settings.confirm_mainnet:
         raise RuntimeError("Mainnet trading blocked: set CONFIRM_MAINNET=true to proceed")
-    if settings.environment.lower() == "production" and settings.binance_testnet:
-        raise RuntimeError("ENVIRONMENT=production requires BINANCE_TESTNET=false")
-    if settings.runtime_profile.lower() == "live" and settings.binance_testnet:
-        raise RuntimeError("RUNTIME_PROFILE=live requires BINANCE_TESTNET=false")
 
     try:
         from reco_trading.ui import StateManager, run_gui
