@@ -8,6 +8,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -58,6 +59,23 @@ class SettingsTab(QWidget):
         self.default_pair.addItems(["BTC/USDT", "ETH/USDT", "SOL/USDT"])
         self.default_tf = QComboBox()
         self.default_tf.addItems(["1m / 5m", "5m / 15m", "15m / 1h"])
+        self.investment_mode = QComboBox()
+        self.investment_mode.addItems(["Conservative", "Balanced", "Aggressive", "Custom"])
+        self.capital_limit = QDoubleSpinBox()
+        self.capital_limit.setRange(0.0, 10_000_000.0)
+        self.capital_limit.setDecimals(2)
+        self.capital_limit.setValue(0.0)
+        self.capital_limit.setSuffix(" USDT")
+        self.risk_per_trade = QDoubleSpinBox()
+        self.risk_per_trade.setRange(0.1, 10.0)
+        self.risk_per_trade.setDecimals(2)
+        self.risk_per_trade.setValue(1.0)
+        self.risk_per_trade.setSuffix(" %")
+        self.max_allocation = QDoubleSpinBox()
+        self.max_allocation.setRange(1.0, 100.0)
+        self.max_allocation.setDecimals(1)
+        self.max_allocation.setValue(20.0)
+        self.max_allocation.setSuffix(" %")
 
         form.addRow("Refresh rate (ms)", self.refresh_rate)
         form.addRow("Chart visibility", self.chart_visible)
@@ -65,6 +83,10 @@ class SettingsTab(QWidget):
         form.addRow("Log verbosity", self.log_verbosity)
         form.addRow("Default pair", self.default_pair)
         form.addRow("Default timeframe", self.default_tf)
+        form.addRow("Investment mode", self.investment_mode)
+        form.addRow("Capital limit", self.capital_limit)
+        form.addRow("Risk per trade", self.risk_per_trade)
+        form.addRow("Max allocation", self.max_allocation)
         visual_layout.addLayout(form)
 
         creds_panel = QFrame()
@@ -119,11 +141,16 @@ class SettingsTab(QWidget):
         self.log_verbosity.currentTextChanged.connect(self._emit)
         self.default_pair.currentTextChanged.connect(self._emit)
         self.default_tf.currentTextChanged.connect(self._emit)
+        self.investment_mode.currentTextChanged.connect(self._apply_investment_preset)
+        self.capital_limit.valueChanged.connect(self._emit)
+        self.risk_per_trade.valueChanged.connect(self._emit)
+        self.max_allocation.valueChanged.connect(self._emit)
 
         self.load_keys_btn.clicked.connect(self._load_keys_from_env)
         self.save_keys_btn.clicked.connect(self._save_keys_to_env)
 
         self._load_keys_from_env()
+        self._apply_investment_preset(self.investment_mode.currentText())
 
     def _section_title(self, text: str) -> QLabel:
         title = QLabel(text)
@@ -157,6 +184,19 @@ class SettingsTab(QWidget):
 
         self._emit()
 
+    def _apply_investment_preset(self, mode: str) -> None:
+        normalized = mode.strip().lower()
+        if normalized == "conservative":
+            self.risk_per_trade.setValue(0.5)
+            self.max_allocation.setValue(10.0)
+        elif normalized == "balanced":
+            self.risk_per_trade.setValue(1.0)
+            self.max_allocation.setValue(20.0)
+        elif normalized == "aggressive":
+            self.risk_per_trade.setValue(2.0)
+            self.max_allocation.setValue(35.0)
+        self._emit()
+
     def _emit(self) -> None:
         self.settings_changed.emit(
             {
@@ -166,6 +206,10 @@ class SettingsTab(QWidget):
                 "log_verbosity": self.log_verbosity.currentText(),
                 "default_pair": self.default_pair.currentText(),
                 "default_timeframe": self.default_tf.currentText(),
+                "investment_mode": self.investment_mode.currentText(),
+                "capital_limit_usdt": self.capital_limit.value(),
+                "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
+                "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
                 "binance_api_key": self.api_key.text().strip(),
                 "binance_api_secret": self.api_secret.text().strip(),
             }

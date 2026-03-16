@@ -21,6 +21,7 @@ class StateManager(QObject):
         super().__init__()
         self._lock = threading.RLock()
         self._control_queue: list[str] = []
+        self._runtime_settings_queue: list[dict[str, Any]] = []
         self._state: dict[str, Any] = {
             "pair": "BTC/USDT",
             "timeframe": "5m / 15m",
@@ -114,4 +115,14 @@ class StateManager(QObject):
         with self._lock:
             pending = list(self._control_queue)
             self._control_queue.clear()
+        return pending
+
+    def push_runtime_settings(self, settings: dict[str, Any]) -> None:
+        with self._lock:
+            self._runtime_settings_queue.append(deepcopy(settings))
+
+    def pop_runtime_settings(self) -> list[dict[str, Any]]:
+        with self._lock:
+            pending = list(self._runtime_settings_queue)
+            self._runtime_settings_queue.clear()
         return pending

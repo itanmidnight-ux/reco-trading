@@ -47,8 +47,18 @@ class BinanceClient:
     async def fetch_balance(self) -> dict[str, Any]:
         return await self._call_with_retry(self.exchange.fetch_balance)
 
-    async def create_market_order(self, symbol: str, side: str, amount: float) -> dict[str, Any]:
-        return await self._call_with_retry(self.exchange.create_order, symbol, "market", side, amount)
+    async def create_market_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        *,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if client_order_id:
+            params["newClientOrderId"] = client_order_id
+        return await self._call_with_retry(self.exchange.create_order, symbol, "market", side, amount, None, params)
 
     async def close(self) -> None:
         await asyncio.to_thread(self.exchange.close)
