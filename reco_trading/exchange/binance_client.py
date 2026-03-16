@@ -27,39 +27,66 @@ class BinanceClient:
             self.exchange.set_sandbox_mode(True)
 
     async def sync_time(self) -> None:
-        server_ms = await self._call_with_retry(self.exchange.fetch_time)
+        server_ms = await self._call_with_retry(self.exchange.fetch_time, operation="sync_time", retries=5)
         local_ms = int(time.time() * 1000)
         self.time_offset_ms = int(server_ms) - local_ms
         self.exchange.options["timeDifference"] = self.time_offset_ms
 
     async def load_markets(self) -> dict[str, Any]:
-        return await self._call_with_retry(self.exchange.load_markets)
+        return await self._call_with_retry(self.exchange.load_markets, operation="load_markets", retries=5)
 
     async def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int) -> list[list[float]]:
-        return await self._call_with_retry(self.exchange.fetch_ohlcv, symbol, timeframe, None, limit)
+        return await self._call_with_retry(self.exchange.fetch_ohlcv, symbol, timeframe, None, limit, operation="fetch_ohlcv")
 
     async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
-        return await self._call_with_retry(self.exchange.fetch_ticker, symbol)
+        return await self._call_with_retry(self.exchange.fetch_ticker, symbol, operation="fetch_ticker")
 
     async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any]:
-        return await self._call_with_retry(self.exchange.fetch_order_book, symbol, limit)
+        return await self._call_with_retry(self.exchange.fetch_order_book, symbol, limit, operation="fetch_order_book")
 
     async def fetch_balance(self) -> dict[str, Any]:
-        return await self._call_with_retry(self.exchange.fetch_balance)
+        return await self._call_with_retry(self.exchange.fetch_balance, operation="fetch_balance")
 
-    async def create_market_order(self, symbol: str, side: str, amount: float) -> dict[str, Any]:
-        return await self._call_with_retry(self.exchange.create_order, symbol, "market", side, amount)
+    async def create_market_order(
+        self,
+        symbol: str,
+        side: str,
+        amount: float,
+        *,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if client_order_id:
+            params["newClientOrderId"] = client_order_id
+        return await self._call_with_retry(
+            self.exchange.create_order,
+            symbol,
+            "market",
+            side,
+            amount,
+            None,
+            params,
+            operation="create_market_order",
+            retries=4,
+        )
 
     async def close(self) -> None:
         await asyncio.to_thread(self.exchange.close)
 
-    async def _call_with_retry(self, fn: Callable[..., Any], *args: Any, retries: int = 3, **kwargs: Any) -> Any:
+    async def _call_with_retry(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        retries: int = 3,
+        operation: str = "unknown",
+        **kwargs: Any,
+    ) -> Any:
         delay = 1.0
         for attempt in range(retries):
             try:
                 return await asyncio.to_thread(fn, *args, **kwargs)
             except (ccxt.NetworkError, ccxt.ExchangeNotAvailable, ccxt.RequestTimeout) as exc:
-                self.logger.warning("binance_retry attempt=%s error=%s", attempt + 1, exc)
+                self.logger.warning("binance_retry op=%s attempt=%s/%s error=%s", operation, attempt + 1, retries, exc)
                 if attempt == retries - 1:
                     raise
                 await asyncio.sleep(delay)

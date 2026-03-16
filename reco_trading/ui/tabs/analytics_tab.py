@@ -71,6 +71,16 @@ class AnalyticsTab(QWidget):
             ("Expectancy", analytics.get("expectancy", "-")),
             ("Avg Duration", analytics.get("avg_trade_duration", "-")),
         ]
+        trade_history = state.get("trade_history", [])
+        slippage_values: list[float] = []
+        for trade in trade_history:
+            for key in ("entry_slippage_ratio", "exit_slippage_ratio"):
+                value = trade.get(key)
+                if isinstance(value, (int, float)):
+                    slippage_values.append(float(value))
+        if slippage_values:
+            avg_slippage = sum(slippage_values) / len(slippage_values)
+            metric_rows.append(("Avg Slippage", f"{avg_slippage:.4%}"))
         self.analysis_table.setRowCount(0)
         for row, (name, value) in enumerate(metric_rows):
             self.analysis_table.insertRow(row)

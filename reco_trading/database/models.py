@@ -26,6 +26,17 @@ class Trade(Base):
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="OPEN")
     order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_slippage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_slippage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class RuntimeSetting(Base):
+    __tablename__ = "runtime_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 
 
 class Signal(Base):

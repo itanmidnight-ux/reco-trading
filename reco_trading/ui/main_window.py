@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
             self.analytics_tab,
             self.logs_tab,
             self.risk_tab,
+            self.settings_tab,
             self.system_tab,
         ):
             try:
@@ -87,6 +88,7 @@ class MainWindow(QMainWindow):
     def _on_ui_settings(self, settings: dict) -> None:
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
         self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
+        self.state_manager.push_runtime_settings(settings)
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)

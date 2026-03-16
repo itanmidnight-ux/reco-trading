@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QPushButton, QToolButton, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QPushButton, QToolButton, QVBoxLayout
 
 
 class Sidebar(QFrame):
