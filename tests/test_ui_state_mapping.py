@@ -95,3 +95,25 @@ def test_dashboard_controls_and_status_colors_match_engine_states() -> None:
 
     tab.update_state({"status": "error"})
     assert "#ea3943" in tab.top_bar.styleSheet()
+
+def test_analytics_computes_metrics_from_trade_history() -> None:
+    _app()
+    tab = AnalyticsTab()
+    snapshot = {
+        "confidence": 0.7,
+        "signal": "BUY",
+        "open_position": "NONE",
+        "trades_today": 2,
+        "session_pnl": 15.0,
+        "analytics": {"equity_curve": [1000.0]},
+        "trade_history": [
+            {"pnl": 10.0, "entry_slippage_ratio": 0.001},
+            {"pnl": -5.0, "exit_slippage_ratio": 0.002},
+        ],
+    }
+    tab.update_state(snapshot)
+
+    assert tab.cards["total_trades"].value.text() == "2"
+    assert tab.cards["win_rate"].value.text() == "50.00%"
+    assert tab.analysis_table.rowCount() >= 5
+    assert tab.quality_bar.value() > 0
