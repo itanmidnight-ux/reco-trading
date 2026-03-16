@@ -48,3 +48,19 @@ def test_settings_tab_emits_investment_payload() -> None:
     assert payload["capital_limit_usdt"] == 250.0
     assert payload["risk_per_trade_fraction"] == pytest.approx(0.015)
     assert payload["max_trade_balance_fraction"] == pytest.approx(0.30)
+
+
+def test_settings_tab_capital_limit_and_pair_budget_are_distinct() -> None:
+    _app()
+    tab = SettingsTab()
+
+    tab.capital_limit.setValue(500.0)
+    tab.symbol_budget.setValue(120.0)
+    tab.max_allocation.setValue(25.0)
+    tab._emit()
+
+    text = tab.capital_breakdown.text()
+    assert "Global capital limit: 500.00" in text
+    assert "Per-pair budget: 120.00" in text
+    assert "Effective safety cap: 120.00" in text
+    assert "30.00 USDT" in tab.simulation_hint.text()
