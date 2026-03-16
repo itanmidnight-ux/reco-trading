@@ -14,3 +14,4 @@ PySide6
 psutil
 pyqtgraph
 pydantic
+pydantic-settings
