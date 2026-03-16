@@ -48,3 +48,27 @@ def test_logs_clear_button_clears_widget_and_shared_state() -> None:
 
     assert tab.text.toPlainText() == ""
     assert manager.snapshot().get("logs") == []
+
+from reco_trading.ui.main_window import MainWindow
+
+
+def test_main_window_applies_ui_settings_to_runtime_and_chart_visibility() -> None:
+    _app()
+    manager = StateManager()
+    window = MainWindow(manager)
+
+    window._on_ui_settings(
+        {
+            "refresh_rate_ms": 700,
+            "chart_visible": False,
+            "theme": "Dark+Contrast",
+            "log_verbosity": "ERROR",
+            "default_pair": "ETH/USDT",
+        }
+    )
+
+    assert window.refresh_timer.interval() == 700
+    assert window.dashboard_tab.chart_panel.isVisible() is False
+    pending = manager.pop_runtime_settings()
+    assert pending
+    assert pending[-1]["default_pair"] == "ETH/USDT"

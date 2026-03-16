@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
@@ -25,7 +26,7 @@ class MainWindow(QMainWindow):
         try:
             from reco_trading.ui.theme import app_stylesheet
 
-            self.setStyleSheet(app_stylesheet())
+            self.setStyleSheet(app_stylesheet("Dark"))
         except Exception as exc:  # noqa: BLE001
             print(f"Theme loading failed: {exc}")
 
@@ -88,6 +89,19 @@ class MainWindow(QMainWindow):
     def _on_ui_settings(self, settings: dict) -> None:
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
         self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
+
+        try:
+            from reco_trading.ui.theme import app_stylesheet
+
+            selected_theme = str(settings.get("theme", "Dark"))
+            self.setStyleSheet(app_stylesheet(selected_theme))
+        except Exception:
+            pass
+
+        level_name = str(settings.get("log_verbosity", "INFO")).upper()
+        level = getattr(logging, level_name, logging.INFO)
+        logging.getLogger().setLevel(level)
+
         self.state_manager.push_runtime_settings(settings)
 
     def _notify(self, title: str, message: str) -> None:
