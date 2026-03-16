@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import pandas as pd
-
 from reco_trading.data.candle_builder import ohlcv_to_frame
 from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.risk_manager import RiskManager

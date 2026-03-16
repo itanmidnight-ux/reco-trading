@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
         self.analytics_tab = AnalyticsTab()
-        self.logs_tab = LogsTab()
+        self.logs_tab = LogsTab(state_manager=state_manager)
         self.risk_tab = RiskTab()
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self._refresh_from_snapshot)
-        self.refresh_timer.start(1000)
+        self.refresh_timer.start(250)
         self._last_state_event_at = 0.0
 
     def _on_state(self, state: dict) -> None:
@@ -72,6 +72,7 @@ class MainWindow(QMainWindow):
             self.analytics_tab,
             self.logs_tab,
             self.risk_tab,
+            self.settings_tab,
             self.system_tab,
         ):
             try:
@@ -80,13 +81,14 @@ class MainWindow(QMainWindow):
                 continue
 
     def _refresh_from_snapshot(self) -> None:
-        if (time.monotonic() - self._last_state_event_at) < 1.0:
+        if (time.monotonic() - self._last_state_event_at) < 0.25:
             return
         self._on_state(self.state_manager.snapshot())
 
     def _on_ui_settings(self, settings: dict) -> None:
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
         self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
+        self.state_manager.push_runtime_settings(settings)
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)

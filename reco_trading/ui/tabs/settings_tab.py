@@ -8,6 +8,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -26,6 +27,8 @@ class SettingsTab(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._applying_state = False
+        self._symbol_capital_limits: dict[str, float] = {}
         layout = QVBoxLayout(self)
         title = QLabel("Interface Studio")
         title.setObjectName("sectionTitle")
@@ -58,6 +61,28 @@ class SettingsTab(QWidget):
         self.default_pair.addItems(["BTC/USDT", "ETH/USDT", "SOL/USDT"])
         self.default_tf = QComboBox()
         self.default_tf.addItems(["1m / 5m", "5m / 15m", "15m / 1h"])
+        self.investment_mode = QComboBox()
+        self.investment_mode.addItems(["Conservative", "Balanced", "Aggressive", "Custom"])
+        self.capital_limit = QDoubleSpinBox()
+        self.capital_limit.setRange(0.0, 10_000_000.0)
+        self.capital_limit.setDecimals(2)
+        self.capital_limit.setValue(0.0)
+        self.capital_limit.setSuffix(" USDT")
+        self.symbol_budget = QDoubleSpinBox()
+        self.symbol_budget.setRange(0.0, 10_000_000.0)
+        self.symbol_budget.setDecimals(2)
+        self.symbol_budget.setValue(0.0)
+        self.symbol_budget.setSuffix(" USDT")
+        self.risk_per_trade = QDoubleSpinBox()
+        self.risk_per_trade.setRange(0.1, 10.0)
+        self.risk_per_trade.setDecimals(2)
+        self.risk_per_trade.setValue(1.0)
+        self.risk_per_trade.setSuffix(" %")
+        self.max_allocation = QDoubleSpinBox()
+        self.max_allocation.setRange(1.0, 100.0)
+        self.max_allocation.setDecimals(1)
+        self.max_allocation.setValue(20.0)
+        self.max_allocation.setSuffix(" %")
 
         form.addRow("Refresh rate (ms)", self.refresh_rate)
         form.addRow("Chart visibility", self.chart_visible)
@@ -65,7 +90,16 @@ class SettingsTab(QWidget):
         form.addRow("Log verbosity", self.log_verbosity)
         form.addRow("Default pair", self.default_pair)
         form.addRow("Default timeframe", self.default_tf)
+        form.addRow("Investment mode", self.investment_mode)
+        form.addRow("Capital limit", self.capital_limit)
+        form.addRow("Per-pair budget", self.symbol_budget)
+        form.addRow("Risk per trade", self.risk_per_trade)
+        form.addRow("Max allocation", self.max_allocation)
         visual_layout.addLayout(form)
+
+        self.simulation_hint = QLabel("Estimated max order: 0.00 USDT")
+        self.simulation_hint.setObjectName("metricLabel")
+        visual_layout.addWidget(self.simulation_hint)
 
         creds_panel = QFrame()
         creds_panel.setObjectName("metricCard")
@@ -117,13 +151,20 @@ class SettingsTab(QWidget):
         self.chart_visible.stateChanged.connect(self._emit)
         self.theme.currentTextChanged.connect(self._emit)
         self.log_verbosity.currentTextChanged.connect(self._emit)
-        self.default_pair.currentTextChanged.connect(self._emit)
+        self.default_pair.currentTextChanged.connect(self._on_default_pair_changed)
         self.default_tf.currentTextChanged.connect(self._emit)
+        self.investment_mode.currentTextChanged.connect(self._apply_investment_preset)
+        self.capital_limit.valueChanged.connect(self._emit)
+        self.symbol_budget.valueChanged.connect(self._emit)
+        self.risk_per_trade.valueChanged.connect(self._emit)
+        self.max_allocation.valueChanged.connect(self._emit)
 
         self.load_keys_btn.clicked.connect(self._load_keys_from_env)
         self.save_keys_btn.clicked.connect(self._save_keys_to_env)
 
         self._load_keys_from_env()
+        self._on_default_pair_changed(self.default_pair.currentText())
+        self._apply_investment_preset(self.investment_mode.currentText())
 
     def _section_title(self, text: str) -> QLabel:
         title = QLabel(text)
@@ -157,7 +198,42 @@ class SettingsTab(QWidget):
 
         self._emit()
 
+    def _apply_investment_preset(self, mode: str) -> None:
+        normalized = mode.strip().lower()
+        if normalized == "conservative":
+            self.risk_per_trade.setValue(0.5)
+            self.max_allocation.setValue(10.0)
+        elif normalized == "balanced":
+            self.risk_per_trade.setValue(1.0)
+            self.max_allocation.setValue(20.0)
+        elif normalized == "aggressive":
+            self.risk_per_trade.setValue(2.0)
+            self.max_allocation.setValue(35.0)
+        self._emit()
+
+    def _on_default_pair_changed(self, pair: str) -> None:
+        budget = float(self._symbol_capital_limits.get(pair.strip(), 0.0))
+        self.symbol_budget.blockSignals(True)
+        self.symbol_budget.setValue(max(budget, 0.0))
+        self.symbol_budget.blockSignals(False)
+        self._emit()
+
     def _emit(self) -> None:
+        if self._applying_state:
+            return
+        pair = self.default_pair.currentText().strip()
+        budget_value = self.symbol_budget.value()
+        if pair:
+            if budget_value > 0:
+                self._symbol_capital_limits[pair] = budget_value
+            elif pair in self._symbol_capital_limits:
+                self._symbol_capital_limits.pop(pair)
+
+        capital_limit = self.capital_limit.value()
+        effective_capital = budget_value if budget_value > 0 else capital_limit
+        estimated_order = effective_capital * (self.max_allocation.value() / 100.0)
+        self.simulation_hint.setText(f"Estimated max order: {estimated_order:.2f} USDT")
+
         self.settings_changed.emit(
             {
                 "refresh_rate_ms": self.refresh_rate.value(),
@@ -166,7 +242,37 @@ class SettingsTab(QWidget):
                 "log_verbosity": self.log_verbosity.currentText(),
                 "default_pair": self.default_pair.currentText(),
                 "default_timeframe": self.default_tf.currentText(),
+                "investment_mode": self.investment_mode.currentText(),
+                "capital_limit_usdt": self.capital_limit.value(),
+                "symbol_capital_limits": dict(self._symbol_capital_limits),
+                "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
+                "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
                 "binance_api_key": self.api_key.text().strip(),
                 "binance_api_secret": self.api_secret.text().strip(),
             }
         )
+
+    def update_state(self, state: dict) -> None:
+        runtime = state.get("runtime_settings")
+        if not isinstance(runtime, dict) or not runtime:
+            return
+        self._applying_state = True
+        try:
+            mode = str(runtime.get("investment_mode", "")).strip()
+            if mode and mode in {self.investment_mode.itemText(i) for i in range(self.investment_mode.count())}:
+                self.investment_mode.setCurrentText(mode)
+            capital_limit = float(runtime.get("capital_limit_usdt", 0.0) or 0.0)
+            self.capital_limit.setValue(max(capital_limit, 0.0))
+            risk_fraction = float(runtime.get("risk_per_trade_fraction", 0.01) or 0.01)
+            self.risk_per_trade.setValue(max(risk_fraction * 100.0, 0.1))
+            max_trade_fraction = float(runtime.get("max_trade_balance_fraction", 0.2) or 0.2)
+            self.max_allocation.setValue(max(max_trade_fraction * 100.0, 1.0))
+            symbol_limits = runtime.get("symbol_capital_limits", {})
+            if isinstance(symbol_limits, dict):
+                self._symbol_capital_limits = {str(k): float(v) for k, v in symbol_limits.items() if float(v) > 0}
+                self._on_default_pair_changed(self.default_pair.currentText())
+        except Exception:
+            pass
+        finally:
+            self._applying_state = False
+        self._emit()
