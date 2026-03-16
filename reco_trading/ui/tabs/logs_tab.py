@@ -3,21 +3,24 @@ from __future__ import annotations
 from PySide6.QtGui import QColor, QFont, QTextCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QTextEdit, QVBoxLayout, QWidget
 
+from reco_trading.ui.state_manager import StateManager
+
 
 class LogsTab(QWidget):
     COLORS = {"INFO": "#e6e8ee", "WARNING": "#f0b90b", "ERROR": "#ea3943"}
 
-    def __init__(self) -> None:
+    def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
+        self.state_manager = state_manager
         layout = QVBoxLayout(self)
         head = QHBoxLayout()
         title = QLabel("System Logs")
         title.setObjectName("sectionTitle")
-        clear = QPushButton("Clear")
-        clear.clicked.connect(lambda: self.text.clear())
+        self.clear_btn = QPushButton("Clear")
+        self.clear_btn.clicked.connect(self._clear_logs)
         head.addWidget(title)
         head.addStretch(1)
-        head.addWidget(clear)
+        head.addWidget(self.clear_btn)
         layout.addLayout(head)
 
         subtitle = QLabel("Realtime event stream and diagnostics")
@@ -39,6 +42,13 @@ class LogsTab(QWidget):
         layout.addWidget(panel)
         self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
 
+    def _clear_logs(self) -> None:
+        self.text.clear()
+        self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
+        self.summary.setText("INFO: 0 | WARNING: 0 | ERROR: 0")
+        if self.state_manager:
+            self.state_manager.clear_logs()
+
     def add_log(self, entry: dict) -> None:
         level = entry.get("level", "INFO").upper()
         self.text.setTextColor(QColor(self.COLORS.get(level, "#e6e8ee")))
@@ -54,6 +64,9 @@ class LogsTab(QWidget):
     def update_state(self, state: dict) -> None:
         logs = state.get("logs", [])
         if not logs:
+            self.text.clear()
+            self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
+            self.summary.setText("INFO: 0 | WARNING: 0 | ERROR: 0")
             return
         self.text.clear()
         self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}

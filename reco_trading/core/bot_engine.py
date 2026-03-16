@@ -72,6 +72,8 @@ class BotEngine:
         self.runtime_max_trade_balance_fraction: float | None = None
         self.runtime_capital_limit_usdt: float | None = None
         self.runtime_investment_mode: str = "Balanced"
+        self.manual_pause = False
+        self.emergency_stop_active = False
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -134,12 +136,30 @@ class BotEngine:
             with Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False) as live:
                 while True:
                     try:
+                        await self._process_control_requests()
+                        await self.client.periodic_time_resync(interval_seconds=1800.0)
+                        if self.emergency_stop_active:
+                            await self._set_state(BotState.PAUSED, "emergency_stop")
+                            self.snapshot["cooldown"] = "EMERGENCY_STOP"
+                            self._sync_ui_state()
+                            self._safe_live_update(live)
+                            await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
+                            continue
+
+                        if self.manual_pause:
+                            await self._set_state(BotState.PAUSED, "manual_pause")
+                            self.snapshot["cooldown"] = "MANUAL_PAUSE"
+                            self._sync_ui_state()
+                            self._safe_live_update(live)
+                            await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
+                            continue
+
                         if self.exchange_failure_paused_until and datetime.now(timezone.utc) < self.exchange_failure_paused_until:
                             await self._set_state(BotState.PAUSED, "exchange_circuit_breaker")
                             self.snapshot["cooldown"] = f"EXCHANGE_PAUSED until {self.exchange_failure_paused_until.isoformat(timespec='seconds')}"
                             self._sync_ui_state()
                             self._safe_live_update(live)
-                            await asyncio.sleep(self.settings.loop_sleep_seconds)
+                            await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
                             continue
 
                         self._roll_day()
@@ -150,9 +170,8 @@ class BotEngine:
                             self.snapshot["cooldown"] = "STALE_MARKET_DATA"
                             self._sync_ui_state()
                             self._safe_live_update(live)
-                            await asyncio.sleep(self.settings.loop_sleep_seconds)
+                            await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
                             continue
-                        await self._process_control_requests()
                         await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
                         analysis = await self.analyze_market(market_data)
                         self._update_snapshot(market_data, analysis)
@@ -169,7 +188,7 @@ class BotEngine:
                         self.exchange_failure_count = 0
                         self._sync_ui_state()
                         self._safe_live_update(live)
-                        await asyncio.sleep(self.settings.loop_sleep_seconds)
+                        await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
                     except KeyboardInterrupt:
                         await self._set_state(BotState.STOPPED, "manual_stop")
                         break
@@ -181,14 +200,14 @@ class BotEngine:
                         self.snapshot["status"] = BotState.ERROR.value
                         self._sync_ui_state()
                         self._safe_live_update(live)
-                        await asyncio.sleep(self.settings.loop_sleep_seconds)
+                        await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
                     except Exception as exc:  # noqa: BLE001
                         await self._set_state(BotState.ERROR, "runtime_error")
                         await self._log("ERROR", f"runtime_error={exc}")
                         await self.repository.record_error(self.state.value, "runtime", str(exc))
                         self.snapshot["status"] = BotState.ERROR.value
                         self._safe_live_update(live)
-                        await asyncio.sleep(self.settings.loop_sleep_seconds)
+                        await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
         finally:
             await self.client.close()
             await self.repository.close()
@@ -774,11 +793,36 @@ class BotEngine:
         for control in controls:
             if control == "force_close":
                 await self.force_close_position()
+            elif control == "pause":
+                self.manual_pause = True
+                await self._log("WARNING", "manual_pause_requested")
+            elif control in {"start", "resume"}:
+                self.manual_pause = False
+                self.emergency_stop_active = False
+                await self._log("INFO", f"manual_control_{control}")
+            elif control == "emergency_stop":
+                self.emergency_stop_active = True
+                self.manual_pause = True
+                await self._log("ERROR", "emergency_stop_requested")
+                await self.force_close_position()
 
         if hasattr(self.state_manager, "pop_runtime_settings"):
             runtime_updates = self.state_manager.pop_runtime_settings()
             for update in runtime_updates:
                 self._apply_runtime_settings(update)
+
+    async def _sleep_with_responsiveness(self, seconds: float) -> None:
+        total = max(float(seconds), 0.0)
+        if total <= 0:
+            return
+        elapsed = 0.0
+        step = 0.25
+        while elapsed < total:
+            chunk = min(step, total - elapsed)
+            await asyncio.sleep(chunk)
+            elapsed += chunk
+            await self._process_control_requests()
+            self._sync_ui_state()
 
     def _apply_runtime_settings(self, settings_payload: dict[str, Any]) -> None:
         mode = str(settings_payload.get("investment_mode", self.runtime_investment_mode)).strip()

@@ -95,15 +95,23 @@ class StateManager(QObject):
         self.notification.emit(title, message)
 
     def request_start(self) -> None:
+        with self._lock:
+            self._control_queue.append("start")
         self.control_requested.emit("start")
 
     def request_pause(self) -> None:
+        with self._lock:
+            self._control_queue.append("pause")
         self.control_requested.emit("pause")
 
     def request_resume(self) -> None:
+        with self._lock:
+            self._control_queue.append("resume")
         self.control_requested.emit("resume")
 
     def request_emergency_stop(self) -> None:
+        with self._lock:
+            self._control_queue.append("emergency_stop")
         self.control_requested.emit("emergency_stop")
 
     def request_force_close(self) -> None:
@@ -126,3 +134,9 @@ class StateManager(QObject):
             pending = list(self._runtime_settings_queue)
             self._runtime_settings_queue.clear()
         return pending
+
+    def clear_logs(self) -> None:
+        with self._lock:
+            self._state["logs"] = []
+            state_copy = deepcopy(self._state)
+        self.state_changed.emit(state_copy)
