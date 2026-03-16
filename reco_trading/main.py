@@ -28,8 +28,10 @@ def run() -> None:
 
     try:
         from reco_trading.ui import StateManager, run_gui
+        from reco_trading.ui.bootstrap import hydrate_state_from_database
 
         state_manager = StateManager()
+        asyncio.run(hydrate_state_from_database(settings, state_manager))
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).exception("UI initialization failed, running bot headless: %s", exc)
         _run_bot(settings, None)

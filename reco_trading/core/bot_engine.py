@@ -18,6 +18,7 @@ from reco_trading.database.repository import Repository
 from reco_trading.exchange.binance_client import BinanceClient
 from reco_trading.exchange.order_manager import OrderManager
 from reco_trading.risk.position_manager import Position, PositionManager
+from reco_trading.risk.advanced_risk_manager import AdvancedRiskManager
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
@@ -45,6 +46,10 @@ class BotEngine:
         self.signal_engine = SignalEngine()
         self.confidence_model = ConfidenceModel()
         self.risk_manager = RiskManager(settings.daily_loss_limit_fraction, settings.max_trades_per_day)
+        self.advanced_risk_manager = AdvancedRiskManager(
+            max_daily_loss_percent=max(float(settings.daily_loss_limit_fraction), 0.0) * 100,
+            max_drawdown_percent=max(float(getattr(settings, "max_drawdown_fraction", 0.10)), 0.0) * 100,
+        )
         self.position_manager = PositionManager()
         self.market_intelligence = MarketIntelligence(settings)
 
@@ -57,6 +62,7 @@ class BotEngine:
         self.pause_trading_until: datetime | None = None
         self.consecutive_losses = 0
         self.equity_peak: float | None = None
+        self.starting_equity: float | None = None
         self.trading_paused_by_drawdown = False
         self.exchange_failure_count = 0
         self.exchange_failure_max = 5
@@ -290,6 +296,8 @@ class BotEngine:
         self.snapshot["trades_today"] = self.trades_today
 
         self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
+        if self.starting_equity is None:
+            self.starting_equity = max(total_equity, 1.0)
         max_drawdown_fraction = _as_float(getattr(self.settings, "max_drawdown_fraction", 0.10), 0.10)
         if self.equity_peak > 0:
             drawdown = max((self.equity_peak - total_equity) / self.equity_peak, 0.0)
@@ -322,6 +330,25 @@ class BotEngine:
             await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_MARKET_DATA, risk.reason)
             self.snapshot["cooldown"] = risk.reason
             return False
+
+        volatility_ratio = _as_float(self.snapshot.get("atr"), 0.0) / max(current_price, 1e-9)
+        advanced = self.advanced_risk_manager.evaluate(
+            daily_pnl=session_pnl,
+            starting_equity=max(_as_float(self.starting_equity, total_equity), 1.0),
+            consecutive_losses=self.consecutive_losses,
+            current_equity=total_equity,
+            peak_equity=max(_as_float(self.equity_peak, total_equity), 1.0),
+            volatility_ratio=volatility_ratio,
+        )
+        if not advanced.approved:
+            await self._set_state(BotState.PAUSED, advanced.reason)
+            self.snapshot["cooldown"] = advanced.reason
+            if advanced.pause_trading:
+                self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self.settings.loss_pause_minutes)
+            return False
+
+        self.snapshot["advanced_risk_reason"] = advanced.reason
+        self.snapshot["advanced_size_multiplier"] = advanced.size_multiplier
 
         self.snapshot["cooldown"] = "READY"
         return True
@@ -363,7 +390,9 @@ class BotEngine:
             price,
             stop_loss,
             atr,
-            float(bundle.size_multiplier) * max(float(intelligence_size_multiplier), 0.1),
+            float(bundle.size_multiplier)
+            * max(float(intelligence_size_multiplier), 0.1)
+            * max(_as_float(self.snapshot.get("advanced_size_multiplier"), 1.0), 0.1),
         )
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
