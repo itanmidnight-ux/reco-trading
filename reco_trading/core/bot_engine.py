@@ -3,18 +3,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import ccxt
-from rich.console import Console
-from rich.layout import Layout
 from rich.live import Live
-from rich.panel import Panel
-from rich.table import Table
 
 from reco_trading.config.settings import Settings
-from reco_trading.config.symbols import normalize_symbol
+from reco_trading.config.symbols import normalize_symbol, split_symbol
 from reco_trading.core.state_machine import BotState
 from reco_trading.data.market_stream import MarketStream
 from reco_trading.database.repository import Repository
@@ -27,6 +24,9 @@ from reco_trading.strategy.indicators import apply_indicators
 from reco_trading.strategy.market_intelligence import MarketIntelligence
 from reco_trading.strategy.signal_engine import SignalBundle, SignalEngine
 from reco_trading.ui.dashboard import TerminalDashboard
+
+if TYPE_CHECKING:
+    from reco_trading.ui.state_manager import StateManager
 
 
 class BotEngine:
@@ -69,7 +69,6 @@ class BotEngine:
         self._last_confirmation_indicator_ts: datetime | None = None
 
         self.dashboard = TerminalDashboard()
-        self.console = Console()
         self.snapshot: dict[str, Any] = {
             "pair": self.symbol,
             "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
@@ -108,78 +107,85 @@ class BotEngine:
         }
 
     async def run(self) -> None:
-        await self._set_state(BotState.INITIALIZING, "initialize_settings")
-        await self.repository.setup()
-        await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
-        await self.client.sync_time()
-        await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
-        await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
-        await self.order_manager.sync_rules()
-        await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
-        self._sync_ui_state()
+        try:
+            await self._set_state(BotState.INITIALIZING, "initialize_settings")
+            await self.repository.setup()
+            await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
+            await self.client.sync_time()
+            await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
+            await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
+            await self.order_manager.sync_rules()
+            await self._reconcile_open_positions()
+            await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
+            self._sync_ui_state()
 
-        with Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False) as live:
-            while True:
-                try:
-                    if self.exchange_failure_paused_until and datetime.now(timezone.utc) < self.exchange_failure_paused_until:
-                        await self._set_state(BotState.PAUSED, "exchange_circuit_breaker")
-                        self.snapshot["cooldown"] = f"EXCHANGE_PAUSED until {self.exchange_failure_paused_until.isoformat(timespec='seconds')}"
+            with Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False) as live:
+                while True:
+                    try:
+                        if self.exchange_failure_paused_until and datetime.now(timezone.utc) < self.exchange_failure_paused_until:
+                            await self._set_state(BotState.PAUSED, "exchange_circuit_breaker")
+                            self.snapshot["cooldown"] = f"EXCHANGE_PAUSED until {self.exchange_failure_paused_until.isoformat(timespec='seconds')}"
+                            self._sync_ui_state()
+                            self._safe_live_update(live)
+                            await asyncio.sleep(self.settings.loop_sleep_seconds)
+                            continue
+
+                        self._roll_day()
+                        await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
+                        market_data = await self.fetch_market_data()
+                        if not self._is_market_data_fresh(market_data):
+                            await self._set_state(BotState.WAITING_MARKET_DATA, "stale_market_data")
+                            self.snapshot["cooldown"] = "STALE_MARKET_DATA"
+                            self._sync_ui_state()
+                            self._safe_live_update(live)
+                            await asyncio.sleep(self.settings.loop_sleep_seconds)
+                            continue
+                        await self._process_control_requests()
+                        await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
+                        analysis = await self.analyze_market(market_data)
+                        self._update_snapshot(market_data, analysis)
+
+                        if await self.validate_trade_conditions(analysis):
+                            intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
+                            self._apply_market_intelligence_snapshot(intelligence)
+                            if intelligence.get("approved"):
+                                await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                            else:
+                                await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
+
+                        await self.manage_open_position(market_data)
+                        self.exchange_failure_count = 0
                         self._sync_ui_state()
                         self._safe_live_update(live)
                         await asyncio.sleep(self.settings.loop_sleep_seconds)
-                        continue
-
-                    self._roll_day()
-                    await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
-                    market_data = await self.fetch_market_data()
-                    if not self._is_market_data_fresh(market_data):
-                        await self._set_state(BotState.WAITING_MARKET_DATA, "stale_market_data")
-                        self.snapshot["cooldown"] = "STALE_MARKET_DATA"
+                    except KeyboardInterrupt:
+                        await self._set_state(BotState.STOPPED, "manual_stop")
+                        break
+                    except ccxt.BaseError as exc:
+                        await self._set_state(BotState.ERROR, "exchange_error")
+                        self._register_exchange_failure()
+                        await self._log("ERROR", f"exchange_error={exc}")
+                        await self.repository.record_error(self.state.value, "exchange", str(exc))
+                        self.snapshot["status"] = BotState.ERROR.value
                         self._sync_ui_state()
                         self._safe_live_update(live)
                         await asyncio.sleep(self.settings.loop_sleep_seconds)
-                        continue
-                    await self._process_control_requests()
-                    await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
-                    analysis = await self.analyze_market(market_data)
-                    self._update_snapshot(market_data, analysis)
-
-                    if await self.validate_trade_conditions(analysis):
-                        intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
-                        self._apply_market_intelligence_snapshot(intelligence)
-                        if intelligence.get("approved"):
-                            await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
-                        else:
-                            await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
-
-                    await self.manage_open_position(market_data)
-                    self.exchange_failure_count = 0
-                    self._sync_ui_state()
-                    self._safe_live_update(live)
-                    await asyncio.sleep(self.settings.loop_sleep_seconds)
-                except KeyboardInterrupt:
-                    await self._set_state(BotState.STOPPED, "manual_stop")
-                    break
-                except ccxt.BaseError as exc:
-                    await self._set_state(BotState.ERROR, "exchange_error")
-                    self._register_exchange_failure()
-                    await self._log("ERROR", f"exchange_error={exc}")
-                    await self.repository.record_error(self.state.value, "exchange", str(exc))
-                    self.snapshot["status"] = BotState.ERROR.value
-                    self._sync_ui_state()
-                    self._safe_live_update(live)
-                    await asyncio.sleep(self.settings.loop_sleep_seconds)
-                except Exception as exc:  # noqa: BLE001
-                    await self._set_state(BotState.ERROR, "runtime_error")
-                    await self._log("ERROR", f"runtime_error={exc}")
-                    await self.repository.record_error(self.state.value, "runtime", str(exc))
-                    self.snapshot["status"] = BotState.ERROR.value
-                    self._safe_live_update(live)
-                    await asyncio.sleep(self.settings.loop_sleep_seconds)
+                    except Exception as exc:  # noqa: BLE001
+                        await self._set_state(BotState.ERROR, "runtime_error")
+                        await self._log("ERROR", f"runtime_error={exc}")
+                        await self.repository.record_error(self.state.value, "runtime", str(exc))
+                        self.snapshot["status"] = BotState.ERROR.value
+                        self._safe_live_update(live)
+                        await asyncio.sleep(self.settings.loop_sleep_seconds)
+        finally:
+            await self.client.close()
+            await self.repository.close()
 
     async def fetch_market_data(self) -> dict[str, Any]:
-        raw_frame5 = await self.market_stream.fetch_frame(self.settings.primary_timeframe)
-        raw_frame15 = await self.market_stream.fetch_frame(self.settings.confirmation_timeframe)
+        raw_frame5, raw_frame15 = await asyncio.gather(
+            self.market_stream.fetch_frame(self.settings.primary_timeframe),
+            self.market_stream.fetch_frame(self.settings.confirmation_timeframe),
+        )
 
         latest_primary_ts = _timestamp_to_datetime(raw_frame5.iloc[-1].get("timestamp") if not raw_frame5.empty else None)
         latest_confirmation_ts = _timestamp_to_datetime(raw_frame15.iloc[-1].get("timestamp") if not raw_frame15.empty else None)
@@ -210,8 +216,10 @@ class BotEngine:
         candles_5m = self._frame_to_candles(frame5)
 
         tick_start = time.perf_counter()
-        ticker = await self.client.fetch_ticker(self.symbol)
-        order_book = await self.client.fetch_order_book(self.symbol)
+        ticker, order_book = await asyncio.gather(
+            self.client.fetch_ticker(self.symbol),
+            self.client.fetch_order_book(self.symbol),
+        )
         self.snapshot["api_latency_ms"] = (time.perf_counter() - tick_start) * 1000
         price = _as_float(ticker.get("last"), _as_float(candle.get("close"), 0.0))
         bid = _book_price(order_book, "bids", price)
@@ -255,6 +263,17 @@ class BotEngine:
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
         confidence = float(analysis["confidence"])
+        side = str(analysis.get("side", "HOLD")).upper()
+        if side == "HOLD":
+            await self._set_state(BotState.WAITING_MARKET_DATA, "hold_signal")
+            self.snapshot["cooldown"] = "HOLD_SIGNAL"
+            return False
+
+        if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self.position_manager.positions:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "spot_short_blocked")
+            self.snapshot["cooldown"] = "SPOT_SHORT_BLOCKED"
+            return False
+
         usdt_balance, btc_balance = await self._fetch_balances()
         current_price = _as_float(self.snapshot.get("price"), 0.0)
         btc_value = float(btc_balance * current_price)
@@ -309,9 +328,17 @@ class BotEngine:
 
     async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any], intelligence_size_multiplier: float = 1.0) -> None:
         bundle: SignalBundle = analysis["bundle"]
-        side = str(analysis["side"])
+        side = str(analysis["side"]).upper()
         price = float(market_data["price"])
         atr = float(market_data.get("atr", 0.0))
+
+        if side not in {"BUY", "SELL"}:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "invalid_side")
+            return
+
+        if getattr(self.settings, "spot_only_mode", True) and side != "BUY":
+            await self._set_state(BotState.WAITING_MARKET_DATA, "spot_open_only_buy")
+            return
 
         if not bundle.regime_trade_allowed:
             await self._set_state(BotState.WAITING_MARKET_DATA, "regime_filter")
@@ -375,13 +402,26 @@ class BotEngine:
 
         await self._set_state(BotState.PLACING_ORDER)
         try:
-            order = await self.client.create_market_order(self.symbol, side.lower(), qty)
+            intent_id = f"reco-open-{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
+            order = await self.client.create_market_order(self.symbol, side.lower(), qty, client_order_id=intent_id)
         except ccxt.BaseError as exc:
             await self._log("ERROR", f"order_rejected error={exc}")
             await self.repository.record_error(self.state.value, "order", str(exc))
             return
 
         entry = _as_float(order.get("average"), _as_float(order.get("price"), price))
+        slippage_ratio = abs(entry - price) / max(price, 1e-9)
+        if slippage_ratio > _as_float(self.settings.max_slippage_ratio, 0.003):
+            await self._log("ERROR", f"slippage_too_high slippage_ratio={slippage_ratio:.6f}")
+            try:
+                close_side = "sell" if side == "BUY" else "buy"
+                close_intent = f"reco-close-{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
+                await self.client.create_market_order(self.symbol, close_side, qty, client_order_id=close_intent)
+            except ccxt.BaseError as exc:
+                await self.repository.record_error(self.state.value, "slippage_exit", str(exc))
+            self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=15)
+            return
+
         stop_loss, take_profit = self._build_stops(side, entry, atr)
         trade = await self.repository.create_trade(
             symbol=self.symbol,
@@ -466,7 +506,13 @@ class BotEngine:
         order = None
         for attempt in range(1, 4):
             try:
-                order = await self.client.create_market_order(self.symbol, close_side, position.quantity)
+                intent_id = f"reco-close-{position.trade_id}-{attempt}-{uuid.uuid4().hex[:6]}"
+                order = await self.client.create_market_order(
+                    self.symbol,
+                    close_side,
+                    position.quantity,
+                    client_order_id=intent_id,
+                )
                 break
             except ccxt.BaseError as exc:
                 await self._log(
@@ -635,18 +681,45 @@ class BotEngine:
 
     async def _fetch_balances(self) -> tuple[float, float]:
         payload = await self.client.fetch_balance()
+        base_asset, quote_asset = split_symbol(self.symbol)
+        quote_asset = quote_asset or "USDT"
 
         total_balances = payload.get("total") if isinstance(payload, dict) else None
         if isinstance(total_balances, dict):
-            usdt_balance = _as_float(total_balances.get("USDT"), 0.0)
-            btc_balance = _as_float(total_balances.get("BTC"), 0.0)
-            return usdt_balance, btc_balance
+            quote_balance = _as_float(total_balances.get(quote_asset), 0.0)
+            base_balance = _as_float(total_balances.get(base_asset), 0.0)
+            return quote_balance, base_balance
 
-        usdt = payload.get("USDT") if isinstance(payload, dict) else {}
-        btc = payload.get("BTC") if isinstance(payload, dict) else {}
-        usdt_balance = _as_float((usdt or {}).get("free"), 0.0)
-        btc_balance = _as_float((btc or {}).get("free"), 0.0)
-        return usdt_balance, btc_balance
+        quote = payload.get(quote_asset) if isinstance(payload, dict) else {}
+        base = payload.get(base_asset) if isinstance(payload, dict) else {}
+        quote_balance = _as_float((quote or {}).get("free"), 0.0)
+        base_balance = _as_float((base or {}).get("free"), 0.0)
+        return quote_balance, base_balance
+
+    async def _reconcile_open_positions(self) -> None:
+        open_trades = await self.repository.get_open_trades(self.symbol)
+        if not open_trades:
+            return
+        usdt_balance, base_balance = await self._fetch_balances()
+        self.snapshot["balance"] = usdt_balance
+        self.snapshot["btc_balance"] = base_balance
+        latest = open_trades[0]
+        if base_balance <= 0:
+            await self._log("WARNING", "open_trade_found_without_base_balance")
+            return
+        self.position_manager.open(
+            Position(
+                trade_id=latest.id,
+                side=latest.side,
+                quantity=min(latest.quantity, base_balance),
+                entry_price=latest.entry_price,
+                stop_loss=latest.stop_loss,
+                take_profit=latest.take_profit,
+                atr=0.0,
+                initial_risk_distance=abs(latest.entry_price - latest.stop_loss),
+            )
+        )
+        await self._log("INFO", f"reconciled_open_position trade_id={latest.id} quantity={min(latest.quantity, base_balance):.8f}")
 
     async def _process_control_requests(self) -> None:
         if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):

@@ -170,6 +170,21 @@ class Repository:
     async def get_daily_pnl(self) -> float:
         return await self.get_session_pnl()
 
+    @safe_db_call(default=[])
+    async def get_open_trades(self, symbol: str) -> list[Trade]:
+        async with self.session_factory() as session:
+            q = (
+                select(Trade)
+                .where(Trade.symbol == symbol)
+                .where(Trade.status == "OPEN")
+                .order_by(Trade.timestamp.desc())
+            )
+            result = await session.execute(q)
+            return list(result.scalars().all())
+
+    async def close(self) -> None:
+        await self.engine.dispose()
+
     async def _persist(self, obj: Base) -> None:
         async with self.session_factory() as session:
             session.add(obj)

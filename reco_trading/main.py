@@ -21,6 +21,10 @@ def run() -> None:
     settings = Settings()
     if not settings.postgres_dsn:
         raise RuntimeError("POSTGRES_DSN is required")
+    if settings.require_api_keys and (not settings.binance_api_key or not settings.binance_api_secret):
+        raise RuntimeError("BINANCE_API_KEY and BINANCE_API_SECRET are required")
+    if not settings.binance_testnet and not settings.confirm_mainnet:
+        raise RuntimeError("Mainnet trading blocked: set CONFIRM_MAINNET=true to proceed")
 
     try:
         from reco_trading.ui import StateManager, run_gui
