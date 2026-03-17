@@ -63,6 +63,15 @@ def create_app(runtime_control: RuntimeControl) -> FastAPI:
             "symbol": snapshot.get("pair"),
         }
 
+
+
+    @app.get("/public-url")
+    async def public_url() -> dict[str, Any]:
+        url = os.getenv("PUBLIC_API_URL", "").strip()
+        if url and not url.startswith("https://"):
+            return {"url": None, "error": "invalid_public_url"}
+        return {"url": url or None}
+
     @app.post("/close-position", dependencies=[Depends(require_auth)])
     async def close_position(payload: ClosePositionPayload) -> dict[str, Any]:
         state = runtime_control.snapshot()

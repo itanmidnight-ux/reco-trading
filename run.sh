@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+BACKEND_PID=""
+NGROK_PID=""
+
+cleanup() {
+  if [ -n "${NGROK_PID}" ] && kill -0 "${NGROK_PID}" 2>/dev/null; then
+    kill "${NGROK_PID}" 2>/dev/null || true
+  fi
+  if [ -n "${BACKEND_PID}" ] && kill -0 "${BACKEND_PID}" 2>/dev/null; then
+    kill "${BACKEND_PID}" 2>/dev/null || true
+  fi
+}
+
+trap cleanup EXIT INT TERM
+
 upsert_env_var() {
   local env_file="$1"
   local key="$2"
@@ -36,6 +50,92 @@ sync_mode_to_env() {
     upsert_env_var "${env_file}" "ENVIRONMENT" "production"
     upsert_env_var "${env_file}" "RUNTIME_PROFILE" "production"
   fi
+}
+
+log_info() {
+  echo "[run.sh] $*"
+}
+
+extract_ngrok_public_url() {
+  python3 - <<'PY'
+import json
+import urllib.request
+
+try:
+    with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=2) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+except Exception:
+    print("")
+    raise SystemExit(0)
+
+for tunnel in payload.get("tunnels", []):
+    public_url = str(tunnel.get("public_url", "")).strip()
+    if public_url.startswith("https://"):
+        print(public_url)
+        raise SystemExit(0)
+
+print("")
+PY
+}
+
+wait_for_api_ready() {
+  local max_attempts="$1"
+  local attempt=1
+
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    if curl -fsS --max-time 2 "http://127.0.0.1:8000/openapi.json" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+wait_for_ngrok_url() {
+  local max_attempts="$1"
+  local attempt=1
+
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    local extracted
+    extracted="$(extract_ngrok_public_url || true)"
+    if [[ "${extracted}" =~ ^https:// ]]; then
+      printf '%s\n' "${extracted}"
+      return 0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+
+  return 1
+}
+
+start_ngrok() {
+  ngrok http 8000 --log=stdout > ngrok.log 2>&1 &
+  NGROK_PID=$!
+  log_info "ngrok iniciado (pid=${NGROK_PID})"
+}
+
+monitor_ngrok() {
+  local current_url="$1"
+
+  while kill -0 "${BACKEND_PID}" 2>/dev/null; do
+    sleep 10
+
+    if ! kill -0 "${NGROK_PID}" 2>/dev/null; then
+      log_info "ngrok se detuvo; reiniciando túnel"
+      start_ngrok
+    fi
+
+    local latest_url
+    latest_url="$(extract_ngrok_public_url || true)"
+    if [[ "${latest_url}" =~ ^https:// ]] && [ "${latest_url}" != "${current_url}" ]; then
+      current_url="${latest_url}"
+      upsert_env_var .env PUBLIC_API_URL "${current_url}"
+      export PUBLIC_API_URL="${current_url}"
+      log_info "PUBLIC_API_URL actualizada tras cambio de túnel: ${current_url}"
+    fi
+  done
 }
 
 if [ -f .venv/bin/activate ]; then
@@ -115,4 +215,36 @@ if [ ${#missing_vars[@]} -gt 0 ]; then
   exit 1
 fi
 
-python main.py
+if ! command -v ngrok >/dev/null 2>&1; then
+  echo "Error: ngrok no está instalado o no está en PATH. Instálelo desde https://ngrok.com/download"
+  exit 1
+fi
+
+log_info "Iniciando backend (bot + API)..."
+python3 main.py > backend.log 2>&1 &
+BACKEND_PID=$!
+
+if ! wait_for_api_ready 60; then
+  echo "Error: la API no respondió en http://127.0.0.1:8000/openapi.json"
+  echo "Revise backend.log para más detalles."
+  exit 1
+fi
+log_info "API disponible en puerto 8000"
+
+start_ngrok
+
+PUBLIC_URL="$(wait_for_ngrok_url 60 || true)"
+if [[ ! "${PUBLIC_URL}" =~ ^https:// ]]; then
+  echo "Error: no se pudo obtener una URL pública válida de ngrok. Revise ngrok.log"
+  exit 1
+fi
+
+upsert_env_var .env PUBLIC_API_URL "${PUBLIC_URL}"
+export PUBLIC_API_URL="${PUBLIC_URL}"
+log_info "URL pública detectada: ${PUBLIC_API_URL}"
+
+monitor_ngrok "${PUBLIC_URL}" &
+MONITOR_PID=$!
+
+wait "${BACKEND_PID}"
+kill "${MONITOR_PID}" 2>/dev/null || true
