@@ -144,78 +144,33 @@ validate_java17_ready() {
 install_java17_manually() {
   log "Java 17 not found → installing"
 
-  local sdkman_init="$HOME/.sdkman/bin/sdkman-init.sh"
-  local sdk_java_candidate=""
-
-  if [[ ! -s "$sdkman_init" ]]; then
-    log "SDKMAN no detectado. Instalando SDKMAN..."
-    if have_cmd curl; then
-      curl -s "https://get.sdkman.io" | bash || fail "Falló instalación de SDKMAN."
-    else
-      fail "curl es requerido para instalar SDKMAN."
-    fi
-  fi
-
-  [[ -s "$sdkman_init" ]] || fail "SDKMAN no quedó instalado correctamente."
-
-  # shellcheck disable=SC1090
-  source "$sdkman_init"
-  have_cmd sdk || fail "El comando sdk no está disponible tras inicializar SDKMAN."
-
-  if sdk current java 2>/dev/null | grep -qE 'Using java version .*17'; then
-    sdk_java_candidate="$(sdk current java 2>/dev/null | awk '/Using java version/ {print $5}')"
-    log "SDKMAN ya tiene Java 17 activo: $sdk_java_candidate"
-  fi
-
-  if [[ -z "$sdk_java_candidate" ]]; then
-    log "Buscando un candidato Java 17 de Temurin en SDKMAN..."
-    sdk_java_candidate="$(sdk list java | awk '/\|/ && $0 ~ /tem/ && $0 ~ /17\./ {gsub(/^[ 	]+|[ 	]+$/, "", $NF); print $NF; exit}')"
-  fi
-
-  if [[ -z "$sdk_java_candidate" ]]; then
-    log "No se encontró candidato Temurin 17 en SDKMAN; usando instalación binaria directa."
-
-    mkdir -p "$JAVA_INSTALL_DIR"
-    local tmp_dir archive extracted_dir
-    tmp_dir="$(mktemp -d)"
-    archive="$tmp_dir/jdk17.tar.gz"
-
-    log "Downloading JDK..."
-    if have_cmd curl; then
-      curl -fL --retry 3 --connect-timeout 20 -o "$archive" "$JDK17_URL" || fail "Falló la descarga de JDK con curl."
-    elif have_cmd wget; then
-      wget -O "$archive" "$JDK17_URL" || fail "Falló la descarga de JDK con wget."
-    else
-      fail "Ni curl ni wget están instalados para descargar JDK 17."
-    fi
-
-    [[ -s "$archive" ]] || fail "El archivo descargado de JDK está vacío o inválido."
-
-    log "Extracting..."
-    tar -xzf "$archive" -C "$JAVA_INSTALL_DIR" || fail "Falló la extracción del archivo JDK."
-
-    extracted_dir="$(tar -tzf "$archive" 2>/dev/null | head -n1 | cut -d/ -f1)"
-    [[ -n "$extracted_dir" ]] || fail "No se pudo detectar carpeta extraída del JDK."
-    [[ -d "$JAVA_INSTALL_DIR/$extracted_dir" ]] || fail "La carpeta extraída esperada no existe: $JAVA_INSTALL_DIR/$extracted_dir"
-
-    rm -rf "$JAVA_HOME_TARGET"
-    mv "$JAVA_INSTALL_DIR/$extracted_dir" "$JAVA_HOME_TARGET" || fail "No se pudo mover JDK a $JAVA_HOME_TARGET"
-
-    rm -rf "$tmp_dir"
-    return
-  fi
-
-  log "Instalando Java 17 desde SDKMAN ($sdk_java_candidate)..."
-  sdk install java "$sdk_java_candidate" || fail "Falló la instalación de Java 17 con SDKMAN."
-  sdk default java "$sdk_java_candidate" || fail "No se pudo fijar Java 17 como default en SDKMAN."
-
-  local sdk_java_home
-  sdk_java_home="$(sdk home java "$sdk_java_candidate" 2>/dev/null || true)"
-  [[ -n "$sdk_java_home" && -d "$sdk_java_home" ]] || fail "SDKMAN no devolvió un JAVA_HOME válido para $sdk_java_candidate"
-
   mkdir -p "$JAVA_INSTALL_DIR"
+  local tmp_dir archive extracted_dir
+  tmp_dir="$(mktemp -d)"
+  archive="$tmp_dir/jdk17.tar.gz"
+
+  log "Downloading JDK..."
+  if have_cmd curl; then
+    curl -fL --retry 3 --connect-timeout 20 -o "$archive" "$JDK17_URL" || fail "Falló la descarga de JDK con curl."
+  elif have_cmd wget; then
+    wget -O "$archive" "$JDK17_URL" || fail "Falló la descarga de JDK con wget."
+  else
+    fail "Ni curl ni wget están instalados para descargar JDK 17."
+  fi
+
+  [[ -s "$archive" ]] || fail "El archivo descargado de JDK está vacío o inválido."
+
+  log "Extracting..."
+  tar -xzf "$archive" -C "$JAVA_INSTALL_DIR" || fail "Falló la extracción del archivo JDK."
+
+  extracted_dir="$(tar -tzf "$archive" 2>/dev/null | head -n1 | cut -d/ -f1)"
+  [[ -n "$extracted_dir" ]] || fail "No se pudo detectar carpeta extraída del JDK."
+  [[ -d "$JAVA_INSTALL_DIR/$extracted_dir" ]] || fail "La carpeta extraída esperada no existe: $JAVA_INSTALL_DIR/$extracted_dir"
+
   rm -rf "$JAVA_HOME_TARGET"
-  ln -s "$sdk_java_home" "$JAVA_HOME_TARGET" || fail "No se pudo enlazar JAVA_HOME_TARGET a instalación SDKMAN."
+  mv "$JAVA_INSTALL_DIR/$extracted_dir" "$JAVA_HOME_TARGET" || fail "No se pudo mover JDK a $JAVA_HOME_TARGET"
+
+  rm -rf "$tmp_dir"
 }
 
 set_java_home_and_validate() {
@@ -241,7 +196,7 @@ install_system_deps_if_needed() {
 
   log "Gestor de paquetes detectado: $pm"
 
-  local cmd_deps=(git zip unzip python3 pip3 curl wget)
+  local cmd_deps=(git zip unzip python3 pip3)
   local missing_cmds=()
   for dep in "${cmd_deps[@]}"; do
     if ! have_cmd "$dep"; then
@@ -287,11 +242,8 @@ install_system_deps_if_needed() {
     log "Dependencias base ya instaladas, no se reinstalan."
   fi
 
-  if [[ -x "$JAVA_HOME_TARGET/bin/java" ]] && [[ "$($JAVA_HOME_TARGET/bin/java -version 2>&1 | head -n1)" == *"17"* ]]; then
+  if have_cmd java && [[ "$(java_major_version)" == "17" ]] && [[ -x "$JAVA_HOME_TARGET/bin/java" ]]; then
     log "Java 17 ya instalado, reutilizando $JAVA_HOME_TARGET"
-  elif have_cmd java && [[ "$(java_major_version)" == "17" ]]; then
-    log "Java 17 detectado en sistema, pero se normaliza en $JAVA_HOME_TARGET para build reproducible"
-    install_java17_manually
   else
     install_java17_manually
   fi
