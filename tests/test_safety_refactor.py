@@ -40,7 +40,7 @@ def test_risk_position_sizing_uses_stop_distance() -> None:
 
 def test_max_concurrent_trades_enforced() -> None:
     pm = PositionManager()
-    pm.open(Position(1, "BUY", 0.1, 100, 95, 110, 2))
+    pm.open(Position(1, "BTC/USDT", "BUY", 0.1, 100, 95, 110, 2))
     assert pm.can_open(1) is False
     assert pm.can_open(2) is True
 

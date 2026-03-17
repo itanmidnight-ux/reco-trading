@@ -71,6 +71,7 @@ class BotEngine:
         self.runtime_risk_per_trade_fraction: float | None = None
         self.runtime_max_trade_balance_fraction: float | None = None
         self.runtime_capital_limit_usdt: float | None = None
+        self.runtime_symbol_capital_limits: dict[str, float] = {}
         self.runtime_investment_mode: str = "Balanced"
         self.manual_pause = False
         self.emergency_stop_active = False
@@ -196,7 +197,7 @@ class BotEngine:
                         await self._set_state(BotState.ERROR, "exchange_error")
                         self._register_exchange_failure()
                         await self._log("ERROR", f"exchange_error={exc}")
-                        await self.repository.record_error(self.state.value, "exchange", str(exc))
+                        await self.repository.record_error(self.state.value, "exchange", str(exc), symbol=self.symbol)
                         self.snapshot["status"] = BotState.ERROR.value
                         self._sync_ui_state()
                         self._safe_live_update(live)
@@ -204,7 +205,7 @@ class BotEngine:
                     except Exception as exc:  # noqa: BLE001
                         await self._set_state(BotState.ERROR, "runtime_error")
                         await self._log("ERROR", f"runtime_error={exc}")
-                        await self.repository.record_error(self.state.value, "runtime", str(exc))
+                        await self.repository.record_error(self.state.value, "runtime", str(exc), symbol=self.symbol)
                         self.snapshot["status"] = BotState.ERROR.value
                         self._safe_live_update(live)
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
@@ -460,7 +461,7 @@ class BotEngine:
             order = await self.client.create_market_order(self.symbol, side.lower(), qty, client_order_id=intent_id)
         except ccxt.BaseError as exc:
             await self._log("ERROR", f"order_rejected error={exc}")
-            await self.repository.record_error(self.state.value, "order", str(exc))
+            await self.repository.record_error(self.state.value, "order", str(exc), symbol=self.symbol)
             return
 
         entry = _as_float(order.get("average"), _as_float(order.get("price"), price))
@@ -472,7 +473,7 @@ class BotEngine:
                 close_intent = f"reco-close-{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
                 await self.client.create_market_order(self.symbol, close_side, qty, client_order_id=close_intent)
             except ccxt.BaseError as exc:
-                await self.repository.record_error(self.state.value, "slippage_exit", str(exc))
+                await self.repository.record_error(self.state.value, "slippage_exit", str(exc), symbol=self.symbol)
             self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=15)
             return
 
@@ -491,6 +492,7 @@ class BotEngine:
         self.position_manager.open(
             Position(
                 trade_id=trade.id,
+                symbol=self.symbol,
                 side=side,
                 quantity=qty,
                 entry_price=entry,
@@ -534,7 +536,7 @@ class BotEngine:
 
         price = float(market_data["price"])
         await self._set_state(BotState.POSITION_OPEN)
-        for position in list(self.position_manager.positions):
+        for position in list(self.position_manager.by_symbol(self.symbol)):
             exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
@@ -551,7 +553,7 @@ class BotEngine:
             return
 
         await self._set_state(BotState.COOLDOWN)
-        for position in list(self.position_manager.positions):
+        for position in list(self.position_manager.by_symbol(self.symbol)):
             await self._log("INFO", f"MANUAL_TRADE_CLOSE requested trade_id={position.trade_id}")
             closed = await self._close_position(position, "MANUAL_TRADE_CLOSE", _as_float(self.snapshot.get("price"), position.entry_price))
             if not closed:
@@ -559,12 +561,13 @@ class BotEngine:
 
     async def _close_position(self, position: Position, exit_reason: str, reference_price: float) -> bool:
         close_side = "sell" if position.side == "BUY" else "buy"
+        close_intent_base = f"reco-close-{position.trade_id}-{int(time.time()*1000)}"
         order = None
         for attempt in range(1, 4):
             try:
-                intent_id = f"reco-close-{position.trade_id}-{attempt}-{uuid.uuid4().hex[:6]}"
+                intent_id = f"{close_intent_base}-{attempt}"
                 order = await self.client.create_market_order(
-                    self.symbol,
+                    position.symbol,
                     close_side,
                     position.quantity,
                     client_order_id=intent_id,
@@ -579,7 +582,12 @@ class BotEngine:
                     await asyncio.sleep(1)
 
         if order is None:
-            await self.repository.record_error(self.state.value, "close_order", f"trade_id={position.trade_id} reason={exit_reason}")
+            await self.repository.record_error(
+                self.state.value,
+                "close_order",
+                f"trade_id={position.trade_id} reason={exit_reason}",
+                symbol=position.symbol,
+            )
             return False
 
         exit_price = _as_float(order.get("average"), _as_float(order.get("price"), reference_price))
@@ -632,7 +640,7 @@ class BotEngine:
 
     def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
-        equity = self._effective_equity_for_risk(equity)
+        equity = self._effective_equity_for_risk(equity, self.symbol)
         sizing = self.risk_manager.position_size_for_risk(
             equity=equity,
             risk_fraction=self._effective_risk_per_trade_fraction(),
@@ -775,6 +783,7 @@ class BotEngine:
         self.position_manager.open(
             Position(
                 trade_id=latest.id,
+                symbol=self.symbol,
                 side=latest.side,
                 quantity=min(latest.quantity, base_balance),
                 entry_price=latest.entry_price,
@@ -834,10 +843,19 @@ class BotEngine:
             self._effective_max_trade_balance_fraction(),
         )
         capital_limit = _as_float(settings_payload.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+        raw_symbol_limits = settings_payload.get("symbol_capital_limits", {})
 
         self.runtime_risk_per_trade_fraction = min(max(risk_fraction, 0.001), 0.10)
         self.runtime_max_trade_balance_fraction = min(max(max_trade_fraction, 0.01), 1.0)
         self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
+        if isinstance(raw_symbol_limits, dict):
+            parsed_limits: dict[str, float] = {}
+            for raw_symbol, raw_limit in raw_symbol_limits.items():
+                normalized = normalize_symbol(str(raw_symbol))
+                parsed = _as_float(raw_limit, 0.0)
+                if parsed > 0:
+                    parsed_limits[normalized] = parsed
+            self.runtime_symbol_capital_limits = parsed_limits
         self.snapshot["investment_mode"] = self.runtime_investment_mode
         self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
 
@@ -851,7 +869,11 @@ class BotEngine:
             return self.runtime_max_trade_balance_fraction
         return float(self.settings.max_trade_balance_fraction)
 
-    def _effective_equity_for_risk(self, equity: float) -> float:
+    def _effective_equity_for_risk(self, equity: float, symbol: str | None = None) -> float:
+        if symbol:
+            symbol_limit = self.runtime_symbol_capital_limits.get(normalize_symbol(symbol))
+            if symbol_limit is not None:
+                equity = min(equity, symbol_limit)
         limit = self.runtime_capital_limit_usdt
         if limit is None:
             return max(equity, 0.0)
@@ -863,11 +885,11 @@ class BotEngine:
         previous = self.state
         self.state = new_state
         self.snapshot["status"] = new_state.value
-        await self.repository.record_state_change(previous.value, new_state.value, context)
+        await self.repository.record_state_change(previous.value, new_state.value, context, symbol=self.symbol)
 
     async def _log(self, level: str, message: str) -> None:
         getattr(self.logger, level.lower(), self.logger.info)(message)
-        await self.repository.record_log(level, self.state.value, message)
+        await self.repository.record_log(level, self.state.value, message, symbol=self.symbol)
         if self.state_manager:
             self.state_manager.add_log(level, message)
 

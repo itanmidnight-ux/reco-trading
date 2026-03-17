@@ -6,6 +6,7 @@ from dataclasses import dataclass
 @dataclass(slots=True)
 class Position:
     trade_id: int
+    symbol: str
     side: str
     quantity: float
     entry_price: float
@@ -24,6 +25,12 @@ class PositionManager:
 
     def can_open(self, max_concurrent_trades: int) -> bool:
         return len(self.positions) < max(int(max_concurrent_trades), 1)
+
+    def has_symbol_open(self, symbol: str) -> bool:
+        return any(position.symbol == symbol for position in self.positions)
+
+    def by_symbol(self, symbol: str) -> list[Position]:
+        return [position for position in self.positions if position.symbol == symbol]
 
     def open(self, position: Position) -> None:
         if position.initial_risk_distance <= 0:

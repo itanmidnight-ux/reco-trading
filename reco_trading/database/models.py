@@ -78,6 +78,7 @@ class StateChange(Base):
     from_state: Mapped[str] = mapped_column(String(40))
     to_state: Mapped[str] = mapped_column(String(40), index=True)
     context: Mapped[str] = mapped_column(Text, default="")
+    symbol: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
 
 class ErrorLog(Base):
@@ -88,6 +89,7 @@ class ErrorLog(Base):
     state: Mapped[str] = mapped_column(String(40), index=True)
     category: Mapped[str] = mapped_column(String(32), index=True)
     message: Mapped[str] = mapped_column(Text)
+    symbol: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
 
 class BotLog(Base):
@@ -98,3 +100,4 @@ class BotLog(Base):
     level: Mapped[str] = mapped_column(String(10), index=True)
     state: Mapped[str] = mapped_column(String(40), index=True)
     message: Mapped[str] = mapped_column(Text)
+    symbol: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
