@@ -2,184 +2,14 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SCRIPT_DIR"
-
-CONFIG_FILE="$SCRIPT_DIR/runtime_config.json"
-KEEP_RUNTIME_CONFIG="${KEEP_RUNTIME_CONFIG:-0}"
-PREPARE_ONLY=0
-ALLOW_INSTALL=0
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --prepare-only)
-      PREPARE_ONLY=1
-      shift
-      ;;
-    --allow-install)
-      ALLOW_INSTALL=1
-      shift
-      ;;
-    *)
-      break
-      ;;
-  esac
-done
-
-log() {
-  printf '[build_apk] %s\n' "$*"
-}
-
-require_cmd() {
-  local cmd="$1"
-  local hint="$2"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "❌ Falta comando requerido: $cmd" >&2
-    echo "   $hint" >&2
-    exit 1
-  fi
-}
-
-validate_local_java() {
-  require_cmd java "Instala JDK 17 y vuelve a ejecutar build_apk.sh"
-  require_cmd javac "Instala JDK 17 (javac) y vuelve a ejecutar build_apk.sh"
-
-  local jv major
-  jv="$(java -version 2>&1 | head -n 1 || true)"
-  major="$(python3 - <<'PY' "$jv"
-import re
-import sys
-
-text = sys.argv[1]
-match = re.search(r'"([0-9]+)', text)
-print(match.group(1) if match else "")
-PY
-)"
-  if [[ -z "$major" || "$major" -lt 17 ]]; then
-    echo "❌ Java detectado es incompatible: $jv" >&2
-    echo "   Corrige JAVA_HOME/PATH para usar Java >= 17." >&2
-    exit 1
-  fi
-}
-
-extract_ngrok_public_url() {
-  python3 - <<'PY'
-import json
-import urllib.request
-
-try:
-    with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=2) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-except Exception:
-    print("")
-    raise SystemExit(0)
-
-for tunnel in payload.get("tunnels", []):
-    public_url = str(tunnel.get("public_url", "")).strip()
-    if public_url.startswith("https://"):
-        print(public_url)
-        raise SystemExit(0)
-
-print("")
-PY
-}
-
-load_env_file() {
-  local env_file="$1"
-  if [[ -f "$env_file" ]]; then
-    # shellcheck disable=SC1090
-    source "$env_file"
-  fi
-}
-
-generate_runtime_config() {
-  set -a
-  load_env_file "$PROJECT_ROOT/.env"
-  load_env_file "$SCRIPT_DIR/.env"
-  set +a
-
-  local public_url="${PUBLIC_API_URL:-}"
-  local api_url="${RECO_API_URL:-}"
-  local bootstrap_url="${RECO_BOOTSTRAP_URL:-}"
-  local api_key="${RECO_API_KEY:-${API_AUTH_KEY:-change-me}}"
-
-  if [[ -z "$public_url" ]]; then
-    public_url="$(extract_ngrok_public_url || true)"
-  fi
-
-  if [[ -z "$api_url" && -n "$public_url" ]]; then
-    api_url="$public_url"
-  fi
-
-  if [[ -z "$bootstrap_url" ]]; then
-    bootstrap_url="${api_url:-http://10.0.2.2:8000}"
-  fi
-
-  if [[ -z "$api_url" ]]; then
-    echo "❌ No se pudo inferir RECO_API_URL/PUBLIC_API_URL para la APK." >&2
-    echo "   Configura .env con PUBLIC_API_URL o RECO_API_URL antes de compilar." >&2
-    exit 1
-  fi
-
-  if [[ "$api_key" == "change-me" || -z "$api_key" ]]; then
-    echo "❌ Falta RECO_API_KEY/API_AUTH_KEY válido para embebido en APK." >&2
-    echo "   Define RECO_API_KEY o API_AUTH_KEY en .env antes de compilar." >&2
-    exit 1
-  fi
-
-  python3 - <<PY
-import json
-from pathlib import Path
-
-config = {
-    "RECO_AUTO_DISCOVERY": "true",
-    "RECO_API_URL": "${api_url}".rstrip("/"),
-    "RECO_BOOTSTRAP_URL": "${bootstrap_url}".rstrip("/"),
-    "PUBLIC_API_URL": "${public_url}".rstrip("/"),
-    "RECO_API_KEY": "${api_key}",
-    "RECO_API_URL_CANDIDATES": [
-        "${api_url}".rstrip("/"),
-        "${public_url}".rstrip("/") if "${public_url}" else "",
-        "http://10.0.2.2:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
-    ],
-}
-config["RECO_API_URL_CANDIDATES"] = [c for c in config["RECO_API_URL_CANDIDATES"] if c]
-Path("${CONFIG_FILE}").write_text(json.dumps(config, indent=2), encoding="utf-8")
-print("runtime_config.json generado")
-PY
-
-  log "Configuración embebida para APK: api_url=${api_url} public_url=${public_url:-n/a}"
-}
-
-cleanup_runtime_config() {
-  if [[ "$KEEP_RUNTIME_CONFIG" != "1" && -f "$CONFIG_FILE" ]]; then
-    rm -f "$CONFIG_FILE"
-    log "runtime_config.json removido del workspace local (ya fue usado para compilar)"
-  fi
-}
 
 if [[ ! -x "$SCRIPT_DIR/build_android_auto.sh" ]]; then
   chmod +x "$SCRIPT_DIR/build_android_auto.sh"
 fi
 
-require_cmd python3 "Instala Python 3 para generar runtime_config.json"
-validate_local_java
-
-generate_runtime_config
-
-if [[ "$PREPARE_ONLY" == "1" ]]; then
-  log "Modo --prepare-only: configuración generada, se omite compilación."
-  exit 0
-fi
-
-log "Build automático iniciado..."
-if [[ "$ALLOW_INSTALL" == "1" ]]; then
-  "$SCRIPT_DIR/build_android_auto.sh" "$@"
-else
-  "$SCRIPT_DIR/build_android_auto.sh" --no-install "$@"
-fi
+echo "[Reco Trading Android] Build automático iniciado..."
+"$SCRIPT_DIR/build_android_auto.sh" "$@"
 
 APK_PATH="$(find "$SCRIPT_DIR/bin" -maxdepth 1 -type f -name '*.apk' | sort | tail -n 1 || true)"
 if [[ -z "$APK_PATH" ]]; then
@@ -187,6 +17,4 @@ if [[ -z "$APK_PATH" ]]; then
   exit 1
 fi
 
-cleanup_runtime_config
-
-echo "✅ APK listo y preconfigurado: $APK_PATH"
+echo "✅ APK listo: $APK_PATH"

@@ -253,25 +253,6 @@ cd app_android
 ./build_apk.sh
 ```
 
-`build_apk.sh` ahora genera `app_android/runtime_config.json` antes de compilar, tomando datos de `.env` (como `PUBLIC_API_URL`, `RECO_API_URL`, `RECO_API_KEY`) o detectando URL de ngrok local si está activo. Así la APK queda lista para instalar en otro teléfono sin configuración manual posterior.
-
-Comportamiento importante:
-- **No instala OpenJDK por defecto** (ejecuta `build_android_auto.sh --no-install`).
-- Valida que `java`/`javac` ya existan y sean Java 17.
-- Falla rápido si faltan datos críticos (`RECO_API_URL`/`PUBLIC_API_URL` y `RECO_API_KEY` o `API_AUTH_KEY`).
-
-Validación sin compilar (solo preparar configuración):
-```bash
-cd app_android
-./build_apk.sh --prepare-only
-```
-
-Si quieres permitir instalación de dependencias del sistema de forma explícita:
-```bash
-cd app_android
-./build_apk.sh --allow-install
-```
-
 Compilación manual:
 ```bash
 cd app_android

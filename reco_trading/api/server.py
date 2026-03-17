@@ -45,8 +45,6 @@ def _safe_settings_payload(settings: Settings | None) -> dict[str, Any]:
         "max_trade_balance_fraction": settings.max_trade_balance_fraction,
         "daily_loss_limit_fraction": settings.daily_loss_limit_fraction,
         "max_drawdown_fraction": settings.max_drawdown_fraction,
-        "cooldown_minutes": settings.cooldown_minutes,
-        "loss_pause_minutes": settings.loss_pause_minutes,
     }
 
 
@@ -92,10 +90,7 @@ def create_app(runtime_control: RuntimeControl, settings: Settings | None = None
 
     @app.get("/runtime", dependencies=[Depends(require_auth)])
     async def runtime() -> dict[str, Any]:
-        state = runtime_control.snapshot()
-        state["server_epoch_seconds"] = time.time()
-        state["transport"] = "https"
-        return state
+        return runtime_control.snapshot()
 
     @app.get("/settings", dependencies=[Depends(require_auth)])
     async def runtime_settings() -> dict[str, Any]:
