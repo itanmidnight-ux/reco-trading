@@ -51,6 +51,7 @@ class Repository:
             if "exit_slippage_ratio" not in columns:
                 await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_slippage_ratio DOUBLE PRECISION"))
             await self._migrate_signals_columns(conn)
+            await self._migrate_symbol_columns(conn)
 
     async def _migrate_signals_columns(self, conn: Any) -> None:
         existing_columns = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns("signals"))
@@ -79,17 +80,22 @@ class Repository:
             await conn.execute(text("ALTER TABLE signals ALTER COLUMN order_flow TYPE VARCHAR(32)"))
             self.logger.info("Database migration applied: widened signals.order_flow to VARCHAR(32)")
 
-    @safe_db_call()
-    async def record_log(self, level: str, state: str, message: str) -> None:
-        await self._persist(BotLog(level=level, state=state, message=message, timestamp=datetime.utcnow()))
+    async def _migrate_symbol_columns(self, conn: Any) -> None:
+        await conn.execute(text("ALTER TABLE bot_logs ADD COLUMN IF NOT EXISTS symbol VARCHAR(20)"))
+        await conn.execute(text("ALTER TABLE error_logs ADD COLUMN IF NOT EXISTS symbol VARCHAR(20)"))
+        await conn.execute(text("ALTER TABLE state_changes ADD COLUMN IF NOT EXISTS symbol VARCHAR(20)"))
 
     @safe_db_call()
-    async def record_error(self, state: str, category: str, message: str) -> None:
-        await self._persist(ErrorLog(state=state, category=category, message=message, timestamp=datetime.utcnow()))
+    async def record_log(self, level: str, state: str, message: str, symbol: str | None = None) -> None:
+        await self._persist(BotLog(level=level, state=state, message=message, symbol=symbol, timestamp=datetime.utcnow()))
 
     @safe_db_call()
-    async def record_state_change(self, from_state: str, to_state: str, context: str = "") -> None:
-        await self._persist(StateChange(from_state=from_state, to_state=to_state, context=context, timestamp=datetime.utcnow()))
+    async def record_error(self, state: str, category: str, message: str, symbol: str | None = None) -> None:
+        await self._persist(ErrorLog(state=state, category=category, message=message, symbol=symbol, timestamp=datetime.utcnow()))
+
+    @safe_db_call()
+    async def record_state_change(self, from_state: str, to_state: str, context: str = "", symbol: str | None = None) -> None:
+        await self._persist(StateChange(from_state=from_state, to_state=to_state, context=context, symbol=symbol, timestamp=datetime.utcnow()))
 
     @safe_db_call()
     async def record_signal(self, symbol: str, payload: Mapping[str, str], confidence: float, action: str) -> None:
