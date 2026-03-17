@@ -164,9 +164,6 @@ class APIClient:
     def settings(self) -> dict[str, Any]:
         return self._request("GET", "/settings", retries=2)
 
-    def start(self) -> dict[str, Any]:
-        return self._request("POST", "/start", retries=2)
-
     def pause(self) -> dict[str, Any]:
         return self._request("POST", "/pause", retries=2)
 
@@ -178,6 +175,3 @@ class APIClient:
 
     def kill_switch(self) -> dict[str, Any]:
         return self._request("POST", "/kill-switch", retries=2)
-
-    def apply_runtime_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", "/runtime-settings", json=payload, retries=2)
