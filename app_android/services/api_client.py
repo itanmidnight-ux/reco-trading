@@ -5,6 +5,8 @@ import time
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from config import (
     API_KEY,
@@ -16,9 +18,10 @@ from config import (
     DISCOVERY_BACKOFF_MAX_SECONDS,
     DISCOVERY_MAX_RETRIES,
     PUBLIC_API_URL,
+    REQUEST_BACKOFF_FACTOR,
+    REQUEST_RETRY_TOTAL,
     REQUEST_TIMEOUT_SECONDS,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,17 @@ class APIClient:
         self.base_url = API_URL.rstrip("/")
         self.headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
         self._session = requests.Session()
+        retry = Retry(
+            total=max(0, REQUEST_RETRY_TOTAL),
+            connect=max(0, REQUEST_RETRY_TOTAL),
+            read=max(0, REQUEST_RETRY_TOTAL),
+            backoff_factor=max(0.1, REQUEST_BACKOFF_FACTOR),
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset({"GET", "POST"}),
+        )
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=20, pool_maxsize=20)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
         self._refresh_candidates()
 
     def _refresh_candidates(self) -> None:
