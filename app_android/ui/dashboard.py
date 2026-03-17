@@ -7,7 +7,7 @@ from kivy.uix.label import Label
 
 from config import REFRESH_INTERVAL_SECONDS
 from services.api_client import APIClient
-from ui.components import ActionButton, Card
+from ui.components import Card, PrimaryButton
 
 
 class Dashboard(BoxLayout):
@@ -16,17 +16,19 @@ class Dashboard(BoxLayout):
         self.client = APIClient()
 
         self.header = Label(text="Reco Trading Control", font_size="22sp", bold=True, size_hint_y=None, height=dp(42))
+        self.connection = Label(text="DISCONNECTED", font_size="14sp", size_hint_y=None, height=dp(24), color=(1, 0.4, 0.4, 1))
         self.status = Card("Bot Status")
         self.balance = Card("Balance")
         self.pnl = Card("Daily PnL")
         self.positions = Card("Trades Activos")
 
-        self.pause_btn = ActionButton("Pausar Bot")
+        self.pause_btn = PrimaryButton("Pausar Bot")
         self.pause_btn.bind(on_release=lambda *_: self._run_action(self.client.pause))
-        self.resume_btn = ActionButton("Reanudar Bot")
+        self.resume_btn = PrimaryButton("Reanudar Bot")
         self.resume_btn.bind(on_release=lambda *_: self._run_action(self.client.resume))
 
         self.add_widget(self.header)
+        self.add_widget(self.connection)
         self.add_widget(self.status)
         self.add_widget(self.balance)
         self.add_widget(self.pnl)
@@ -36,6 +38,14 @@ class Dashboard(BoxLayout):
 
         Clock.schedule_interval(lambda *_: self.refresh(), REFRESH_INTERVAL_SECONDS)
         self.refresh()
+
+    def set_connection(self, connected: bool, base_url: str = "") -> None:
+        if connected:
+            self.connection.text = f"CONNECTED - {base_url}"
+            self.connection.color = (0.4, 0.95, 0.4, 1)
+        else:
+            self.connection.text = "DISCONNECTED"
+            self.connection.color = (1, 0.4, 0.4, 1)
 
     def _run_action(self, action) -> None:
         result = action()
