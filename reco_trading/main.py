@@ -52,7 +52,7 @@ def _start_api_server(settings: Settings, runtime_control: RuntimeControl) -> th
     app = create_app(runtime_control)
 
     def _serve() -> None:
-        uvicorn.run(app, host=settings.api_host, port=settings.api_port, log_level="info")
+        uvicorn.run(app, host="0.0.0.0", port=settings.api_port, log_level="info")
 
     thread = threading.Thread(target=_serve, daemon=True, name="api-server")
     thread.start()
