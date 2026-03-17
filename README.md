@@ -253,14 +253,6 @@ cd app_android
 ./build_apk.sh
 ```
 
-`build_apk.sh` ahora genera `app_android/runtime_config.json` antes de compilar, tomando datos de `.env` (como `PUBLIC_API_URL`, `RECO_API_URL`, `RECO_API_KEY`) o detectando URL de ngrok local si está activo. Así la APK queda lista para instalar en otro teléfono sin configuración manual posterior.
-
-Validación sin compilar (solo preparar configuración):
-```bash
-cd app_android
-./build_apk.sh --prepare-only
-```
-
 Compilación manual:
 ```bash
 cd app_android
