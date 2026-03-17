@@ -802,11 +802,16 @@ class BotEngine:
 
     async def _process_control_requests(self) -> None:
         controls: list[str] = []
+        runtime_updates: list[dict[str, Any]] = []
         if self.runtime_control is not None:
             for command in self.runtime_control.pop_commands():
                 action = str(command.get("action", "")).lower()
                 if action in {"pause", "resume", "force_close", "emergency_stop", "kill_switch"}:
                     controls.append(action)
+                elif action == "runtime_settings":
+                    payload = command.get("payload") if isinstance(command, dict) else None
+                    if isinstance(payload, dict):
+                        runtime_updates.append(payload)
 
         if self.state_manager and hasattr(self.state_manager, "pop_control_requests"):
             controls.extend(self.state_manager.pop_control_requests())
@@ -842,9 +847,10 @@ class BotEngine:
                 await self.force_close_position()
 
         if self.state_manager and hasattr(self.state_manager, "pop_runtime_settings"):
-            runtime_updates = self.state_manager.pop_runtime_settings()
-            for update in runtime_updates:
-                self._apply_runtime_settings(update)
+            runtime_updates.extend(self.state_manager.pop_runtime_settings())
+
+        for update in runtime_updates:
+            self._apply_runtime_settings(update)
 
     async def _sleep_with_responsiveness(self, seconds: float) -> None:
         total = max(float(seconds), 0.0)

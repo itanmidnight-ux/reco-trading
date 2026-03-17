@@ -197,6 +197,8 @@ The bot is optimized for conservative operation:
   - `POST /pause`
   - `POST /resume`
   - `POST /kill-switch`
+  - `POST /runtime-settings`
+  - `POST /start`
 - Seguridad por header:
   - `Authorization: Bearer <API_AUTH_KEY>`
 - Variables requeridas:
@@ -224,7 +226,13 @@ journalctl -u reco-trading.service -f
 ### App Android (Buildozer)
 Estructura en `app_android/` lista para compilar.
 
-Compilación APK:
+Compilación automática (recomendada):
+```bash
+cd app_android
+./build_apk.sh
+```
+
+Compilación manual:
 ```bash
 cd app_android
 pip install -r requirements.txt
