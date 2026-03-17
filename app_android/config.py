@@ -1,15 +1,46 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
+from typing import Any
 
-AUTO_DISCOVERY = os.getenv("RECO_AUTO_DISCOVERY", "true").strip().lower() in {"1", "true", "yes", "on"}
-API_URL = os.getenv("RECO_API_URL", "").strip().rstrip("/")
-API_URL_CANDIDATES = tuple(
-    url.strip().rstrip("/")
-    for url in os.getenv(
+
+def _load_runtime_config() -> dict[str, Any]:
+    config_path = Path(__file__).resolve().parent / "runtime_config.json"
+    if not config_path.exists():
+        return {}
+    try:
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+_RUNTIME_CONFIG = _load_runtime_config()
+
+
+def _value(name: str, default: str = "") -> str:
+    if name in _RUNTIME_CONFIG and _RUNTIME_CONFIG[name] is not None:
+        return str(_RUNTIME_CONFIG[name]).strip()
+    return os.getenv(name, default).strip()
+
+
+AUTO_DISCOVERY = _value("RECO_AUTO_DISCOVERY", "true").lower() in {"1", "true", "yes", "on"}
+API_URL = _value("RECO_API_URL", "").rstrip("/")
+
+_candidates_raw = _RUNTIME_CONFIG.get("RECO_API_URL_CANDIDATES")
+if isinstance(_candidates_raw, list):
+    _raw_candidates_text = ",".join(str(item) for item in _candidates_raw)
+else:
+    _raw_candidates_text = _value(
         "RECO_API_URL_CANDIDATES",
         "http://10.0.2.2:8000,http://127.0.0.1:8000,http://localhost:8000",
-    ).split(",")
+    )
+
+API_URL_CANDIDATES = tuple(
+    url.strip().rstrip("/")
+    for url in _raw_candidates_text.split(",")
     if url.strip()
 )
 BOOTSTRAP_URL = os.getenv("RECO_BOOTSTRAP_URL", "http://10.0.2.2:8000").strip().rstrip("/")
