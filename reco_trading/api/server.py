@@ -44,8 +44,6 @@ def _safe_settings_payload(settings: Settings | None) -> dict[str, Any]:
         "max_trade_balance_fraction": settings.max_trade_balance_fraction,
         "daily_loss_limit_fraction": settings.daily_loss_limit_fraction,
         "max_drawdown_fraction": settings.max_drawdown_fraction,
-        "cooldown_minutes": settings.cooldown_minutes,
-        "loss_pause_minutes": settings.loss_pause_minutes,
     }
 
 
