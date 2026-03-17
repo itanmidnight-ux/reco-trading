@@ -144,6 +144,12 @@ class APIClient:
     def positions(self) -> dict[str, Any]:
         return self._request("GET", "/positions", retries=2)
 
+    def runtime(self) -> dict[str, Any]:
+        return self._request("GET", "/runtime", retries=2)
+
+    def settings(self) -> dict[str, Any]:
+        return self._request("GET", "/settings", retries=2)
+
     def pause(self) -> dict[str, Any]:
         return self._request("POST", "/pause", retries=2)
 
@@ -152,3 +158,6 @@ class APIClient:
 
     def close_position(self, symbol: str) -> dict[str, Any]:
         return self._request("POST", "/close-position", json={"symbol": symbol}, retries=2)
+
+    def kill_switch(self) -> dict[str, Any]:
+        return self._request("POST", "/kill-switch", retries=2)

@@ -6,6 +6,7 @@ from typing import Any
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel
 
+from reco_trading.config.settings import Settings
 from reco_trading.core.runtime_control import RuntimeControl
 
 
@@ -23,7 +24,22 @@ def _auth_guard(expected_key: str, authorization: str | None = Header(default=No
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token")
 
 
-def create_app(runtime_control: RuntimeControl) -> FastAPI:
+def _safe_settings_payload(settings: Settings | None) -> dict[str, Any]:
+    if settings is None:
+        return {}
+    return {
+        "environment": settings.environment,
+        "runtime_profile": settings.runtime_profile,
+        "symbol": settings.symbol,
+        "timeframe": f"{settings.primary_timeframe}/{settings.confirmation_timeframe}",
+        "risk_per_trade_fraction": settings.risk_per_trade_fraction,
+        "max_trade_balance_fraction": settings.max_trade_balance_fraction,
+        "daily_loss_limit_fraction": settings.daily_loss_limit_fraction,
+        "max_drawdown_fraction": settings.max_drawdown_fraction,
+    }
+
+
+def create_app(runtime_control: RuntimeControl, settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="reco_trading control API", version="1.0.0")
 
     def require_auth(authorization: str | None = Header(default=None)) -> None:
@@ -63,7 +79,13 @@ def create_app(runtime_control: RuntimeControl) -> FastAPI:
             "symbol": snapshot.get("pair"),
         }
 
+    @app.get("/runtime", dependencies=[Depends(require_auth)])
+    async def runtime() -> dict[str, Any]:
+        return runtime_control.snapshot()
 
+    @app.get("/settings", dependencies=[Depends(require_auth)])
+    async def runtime_settings() -> dict[str, Any]:
+        return _safe_settings_payload(settings)
 
     @app.get("/public-url")
     async def public_url() -> dict[str, Any]:
