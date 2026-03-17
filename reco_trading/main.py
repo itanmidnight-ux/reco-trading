@@ -49,7 +49,7 @@ def _run_bot_loop(settings: Settings, state_manager: object | None, runtime_cont
 
 
 def _start_api_server(settings: Settings, runtime_control: RuntimeControl) -> threading.Thread:
-    app = create_app(runtime_control)
+    app = create_app(runtime_control, settings=settings)
 
     def _serve() -> None:
         uvicorn.run(app, host="0.0.0.0", port=settings.api_port, log_level="info")
