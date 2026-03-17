@@ -3,14 +3,19 @@ set -euo pipefail
 
 BACKEND_PID=""
 NGROK_PID=""
+MONITOR_PID=""
+
+: "${NGROK_CHECK_INTERVAL_SECONDS:=8}"
+: "${NGROK_MAX_RESTARTS_PER_HOUR:=30}"
+: "${NGROK_REGION:=}"
+: "${NGROK_DOMAIN:=}"
 
 cleanup() {
-  if [ -n "${NGROK_PID}" ] && kill -0 "${NGROK_PID}" 2>/dev/null; then
-    kill "${NGROK_PID}" 2>/dev/null || true
-  fi
-  if [ -n "${BACKEND_PID}" ] && kill -0 "${BACKEND_PID}" 2>/dev/null; then
-    kill "${BACKEND_PID}" 2>/dev/null || true
-  fi
+  for pid in "${MONITOR_PID}" "${NGROK_PID}" "${BACKEND_PID}"; do
+    if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+      kill "${pid}" 2>/dev/null || true
+    fi
+  done
 }
 
 trap cleanup EXIT INT TERM
@@ -111,20 +116,74 @@ wait_for_ngrok_url() {
 }
 
 start_ngrok() {
-  ngrok http 8000 --log=stdout > ngrok.log 2>&1 &
+  local args=(http 8000 --log=stdout)
+  if [ -n "${NGROK_REGION}" ]; then
+    args+=(--region "${NGROK_REGION}")
+  fi
+  if [ -n "${NGROK_DOMAIN}" ]; then
+    args+=(--domain "${NGROK_DOMAIN}")
+  fi
+  if [ -n "${NGROK_AUTHTOKEN:-}" ]; then
+    args+=(--authtoken "${NGROK_AUTHTOKEN}")
+  fi
+
+  ngrok "${args[@]}" > ngrok.log 2>&1 &
   NGROK_PID=$!
   log_info "ngrok iniciado (pid=${NGROK_PID})"
 }
 
-monitor_ngrok() {
+restart_ngrok_if_unhealthy() {
   local current_url="$1"
+  local restarted=0
+
+  if ! kill -0 "${NGROK_PID}" 2>/dev/null; then
+    restarted=1
+  elif ! curl -fsS --max-time 5 "${current_url}/public-url" >/dev/null 2>&1; then
+    restarted=1
+  fi
+
+  if [ "${restarted}" -eq 1 ]; then
+    log_info "ngrok no saludable; reiniciando túnel"
+    if [ -n "${NGROK_PID}" ] && kill -0 "${NGROK_PID}" 2>/dev/null; then
+      kill "${NGROK_PID}" 2>/dev/null || true
+    fi
+    start_ngrok
+    local new_url
+    new_url="$(wait_for_ngrok_url 45 || true)"
+    if [[ "${new_url}" =~ ^https:// ]]; then
+      upsert_env_var .env PUBLIC_API_URL "${new_url}"
+      export PUBLIC_API_URL="${new_url}"
+      log_info "PUBLIC_API_URL actualizada tras reinicio: ${new_url}"
+      printf '%s\n' "${new_url}"
+      return 0
+    fi
+  fi
+
+  printf '%s\n' "${current_url}"
+  return 0
+}
+
+monitor_tunnel_and_backend() {
+  local current_url="$1"
+  local restart_counter=0
+  local window_start
+  window_start="$(date +%s)"
 
   while kill -0 "${BACKEND_PID}" 2>/dev/null; do
-    sleep 10
+    sleep "${NGROK_CHECK_INTERVAL_SECONDS}"
 
-    if ! kill -0 "${NGROK_PID}" 2>/dev/null; then
-      log_info "ngrok se detuvo; reiniciando túnel"
-      start_ngrok
+    local now
+    now="$(date +%s)"
+    if [ $((now - window_start)) -ge 3600 ]; then
+      restart_counter=0
+      window_start="${now}"
+    fi
+
+    local updated_url
+    updated_url="$(restart_ngrok_if_unhealthy "${current_url}")"
+    if [ "${updated_url}" != "${current_url}" ]; then
+      current_url="${updated_url}"
+      restart_counter=$((restart_counter + 1))
     fi
 
     local latest_url
@@ -134,6 +193,11 @@ monitor_ngrok() {
       upsert_env_var .env PUBLIC_API_URL "${current_url}"
       export PUBLIC_API_URL="${current_url}"
       log_info "PUBLIC_API_URL actualizada tras cambio de túnel: ${current_url}"
+    fi
+
+    if [ "${restart_counter}" -gt "${NGROK_MAX_RESTARTS_PER_HOUR}" ]; then
+      log_info "Demasiados reinicios de ngrok en 1h (${restart_counter}). Saliendo por seguridad."
+      break
     fi
   done
 }
@@ -163,10 +227,13 @@ if [ -z "${POSTGRES_DSN:-}" ] && [ -f config/database.env ]; then
   fi
 fi
 
-echo "Seleccione modo de ejecución:"
-echo "1) Binance Testnet (Sandbox - ÓRDENES REALES EN TESTNET)"
-echo "2) Binance Producción Real (Mainnet - Dinero real)"
-read -r -p "Ingrese opción (1 o 2): " MODE_OPTION
+MODE_OPTION="${RUN_MODE:-}"
+if [ -z "${MODE_OPTION}" ]; then
+  echo "Seleccione modo de ejecución:"
+  echo "1) Binance Testnet (Sandbox - ÓRDENES REALES EN TESTNET)"
+  echo "2) Binance Producción Real (Mainnet - Dinero real)"
+  read -r -p "Ingrese opción (1 o 2): " MODE_OPTION
+fi
 
 if [ "$MODE_OPTION" = "1" ]; then
   export BINANCE_TESTNET=true
@@ -177,7 +244,11 @@ if [ "$MODE_OPTION" = "1" ]; then
   echo "Modo TESTNET activado."
 elif [ "$MODE_OPTION" = "2" ]; then
   export BINANCE_TESTNET=false
-  read -r -p "⚠️  Está a punto de operar con dinero real. Escriba CONFIRMAR para continuar: " CONFIRM
+  if [ "${RUN_MODE:-}" = "2" ]; then
+    CONFIRM="CONFIRMAR"
+  else
+    read -r -p "⚠️  Está a punto de operar con dinero real. Escriba CONFIRMAR para continuar: " CONFIRM
+  fi
   if [ "$CONFIRM" != "CONFIRMAR" ]; then
     echo "Operación cancelada."
     exit 1
@@ -205,13 +276,6 @@ done
 
 if [ ${#missing_vars[@]} -gt 0 ]; then
   echo "Error: faltan variables obligatorias: ${missing_vars[*]}"
-  echo "Sugerencia rápida:"
-  echo "  1) Ejecuta ./install.sh para preparar PostgreSQL y sincronizar el DSN."
-  echo "  2) Edita .env con tus credenciales de Binance."
-  echo "     Variables requeridas en .env:"
-  echo "       BINANCE_API_KEY=tu_api_key"
-  echo "       BINANCE_API_SECRET=tu_api_secret"
-  echo "       POSTGRES_DSN=postgresql+asyncpg://trading:***@localhost:5432/reco_trading_prod"
   exit 1
 fi
 
@@ -243,7 +307,7 @@ upsert_env_var .env PUBLIC_API_URL "${PUBLIC_URL}"
 export PUBLIC_API_URL="${PUBLIC_URL}"
 log_info "URL pública detectada: ${PUBLIC_API_URL}"
 
-monitor_ngrok "${PUBLIC_URL}" &
+monitor_tunnel_and_backend "${PUBLIC_URL}" &
 MONITOR_PID=$!
 
 wait "${BACKEND_PID}"

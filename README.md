@@ -197,6 +197,8 @@ The bot is optimized for conservative operation:
   - `POST /pause`
   - `POST /resume`
   - `POST /kill-switch`
+  - `POST /runtime-settings`
+  - `POST /start`
 - Seguridad por header:
   - `Authorization: Bearer <API_AUTH_KEY>`
 - Variables requeridas:
@@ -221,10 +223,45 @@ Logs en vivo:
 journalctl -u reco-trading.service -f
 ```
 
+
+### Conexión móvil robusta (ngrok + auto-recuperación)
+Para mantener la app Android conectada de forma estable y en tiempo real:
+
+- `run.sh` ahora monitorea salud del túnel (`/public-url`) y reinicia ngrok si detecta caída.
+- Actualiza automáticamente `PUBLIC_API_URL` en `.env` cuando cambia la URL del túnel.
+- Soporta configuración estable de ngrok con:
+  - `NGROK_AUTHTOKEN`
+  - `NGROK_DOMAIN` (dominio reservado, recomendado)
+  - `NGROK_REGION`
+  - `NGROK_CHECK_INTERVAL_SECONDS`
+  - `NGROK_MAX_RESTARTS_PER_HOUR`
+- Soporta modo no interactivo con `RUN_MODE=1` (testnet) o `RUN_MODE=2` (mainnet).
+
+Ejemplo:
+```bash
+RUN_MODE=1 NGROK_AUTHTOKEN=xxx NGROK_DOMAIN=tu-dominio.ngrok.app ./run.sh
+```
+
+> Recomendación operativa: usar dominio reservado de ngrok + authtoken para sesiones duraderas y reconexión más predecible en múltiples teléfonos.
+
 ### App Android (Buildozer)
 Estructura en `app_android/` lista para compilar.
 
-Compilación APK:
+Compilación automática (recomendada):
+```bash
+cd app_android
+./build_apk.sh
+```
+
+`build_apk.sh` ahora genera `app_android/runtime_config.json` antes de compilar, tomando datos de `.env` (como `PUBLIC_API_URL`, `RECO_API_URL`, `RECO_API_KEY`) o detectando URL de ngrok local si está activo. Así la APK queda lista para instalar en otro teléfono sin configuración manual posterior.
+
+Validación sin compilar (solo preparar configuración):
+```bash
+cd app_android
+./build_apk.sh --prepare-only
+```
+
+Compilación manual:
 ```bash
 cd app_android
 pip install -r requirements.txt
