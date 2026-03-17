@@ -1,21 +1,49 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any
 
 import requests
 
-from config import API_KEY, API_URL, API_URL_CANDIDATES, REQUEST_TIMEOUT_SECONDS
+from config import (
+    API_KEY,
+    API_URL,
+    API_URL_CANDIDATES,
+    AUTO_DISCOVERY,
+    BOOTSTRAP_URL,
+    DISCOVERY_BACKOFF_BASE_SECONDS,
+    DISCOVERY_BACKOFF_MAX_SECONDS,
+    DISCOVERY_MAX_RETRIES,
+    PUBLIC_API_URL,
+    REQUEST_TIMEOUT_SECONDS,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class APIClient:
     def __init__(self) -> None:
         self.base_url = API_URL.rstrip("/")
-        self.url_candidates = tuple(dict.fromkeys((self.base_url, *API_URL_CANDIDATES)))
         self.headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
         self._session = requests.Session()
+        self._refresh_candidates()
+
+    def _refresh_candidates(self) -> None:
+        candidates = []
+        if self.base_url:
+            candidates.append(self.base_url)
+        candidates.extend(API_URL_CANDIDATES)
+        if BOOTSTRAP_URL:
+            candidates.append(BOOTSTRAP_URL)
+        if PUBLIC_API_URL:
+            candidates.append(PUBLIC_API_URL)
+        self.url_candidates = tuple(dict.fromkeys(url.rstrip("/") for url in candidates if url))
 
     def set_base_url(self, base_url: str) -> None:
         self.base_url = base_url.rstrip("/")
+        self._refresh_candidates()
 
     def _request(
         self,
@@ -52,14 +80,59 @@ class APIClient:
                 last_error = str(exc)
         return {"error": last_error}
 
-    def detect_reachable_base_url(self) -> str | None:
+    def _validate_candidate(self, candidate: str, timeout: int | float = 3) -> bool:
+        self.set_base_url(candidate)
+        result = self._request("GET", "/health", retries=1, timeout=timeout)
+        return not result.get("error")
+
+    def _discover_public_url_from_bootstrap(self) -> str | None:
+        bootstrap = BOOTSTRAP_URL.rstrip("/")
+        if not bootstrap:
+            return None
+
         original = self.base_url
-        for candidate in self.url_candidates:
-            self.set_base_url(candidate)
-            result = self._request("GET", "/health", retries=1, timeout=min(3, REQUEST_TIMEOUT_SECONDS))
-            if not result.get("error"):
-                return candidate
+        self.set_base_url(bootstrap)
+        payload = self._request("GET", "/public-url", retries=1, timeout=min(3, REQUEST_TIMEOUT_SECONDS))
         self.set_base_url(original)
+
+        if payload.get("error"):
+            return None
+
+        discovered = str(payload.get("url") or "").strip().rstrip("/")
+        if not discovered.startswith("https://"):
+            return None
+        return discovered
+
+    def detect_reachable_base_url(self) -> str | None:
+        self._refresh_candidates()
+
+        for candidate in self.url_candidates:
+            logger.info("Trying API candidate: %s", candidate)
+            if self._validate_candidate(candidate):
+                logger.info("Connected to API candidate: %s", candidate)
+                return candidate
+
+        if not AUTO_DISCOVERY:
+            return None
+
+        delay = max(DISCOVERY_BACKOFF_BASE_SECONDS, 0.2)
+        for _ in range(max(1, DISCOVERY_MAX_RETRIES)):
+            discovered = self._discover_public_url_from_bootstrap()
+            if discovered:
+                logger.info("Discovered public API URL from bootstrap: %s", discovered)
+            if discovered and self._validate_candidate(discovered, timeout=REQUEST_TIMEOUT_SECONDS):
+                logger.info("Connected to discovered API URL: %s", discovered)
+                return discovered
+
+            if PUBLIC_API_URL:
+                logger.info("Trying PUBLIC_API_URL fallback: %s", PUBLIC_API_URL)
+            if PUBLIC_API_URL and self._validate_candidate(PUBLIC_API_URL, timeout=REQUEST_TIMEOUT_SECONDS):
+                logger.info("Connected via PUBLIC_API_URL fallback: %s", PUBLIC_API_URL)
+                return PUBLIC_API_URL
+
+            time.sleep(delay)
+            delay = min(delay * 2, DISCOVERY_BACKOFF_MAX_SECONDS)
+
         return None
 
     def health(self) -> dict[str, Any]:
