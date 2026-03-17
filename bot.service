@@ -1,0 +1,18 @@
+[Unit]
+Description=reco_trading autonomous bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/workspace/reco-trading
+ExecStart=/usr/bin/env python main.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=300
+StartLimitBurst=30
+
+[Install]
+WantedBy=multi-user.target

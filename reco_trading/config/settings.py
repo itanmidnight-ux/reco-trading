@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     # =========================
     # BINANCE CONFIGURATION
     # =========================
-    binance_api_key: str = Field(default="")
-    binance_api_secret: str = Field(default="")
+    binance_api_key: str = Field(default="", validation_alias=AliasChoices("BINANCE_API_KEY"))
+    binance_api_secret: str = Field(default="", validation_alias=AliasChoices("BINANCE_API_SECRET", "BINANCE_SECRET"))
     binance_testnet: bool = True
     confirm_mainnet: bool = False
     require_api_keys: bool = True
@@ -83,6 +83,22 @@ class Settings(BaseSettings):
     # REDIS
     # =========================
     redis_url: str = "redis://localhost:6379/0"
+
+    # =========================
+    # API / CONTROL PLANE
+    # =========================
+    api_enabled: bool = True
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
+    api_auth_key: str = Field(default="", validation_alias=AliasChoices("API_AUTH_KEY"))
+
+    # =========================
+    # RESILIENCE
+    # =========================
+    heartbeat_interval_seconds: int = 30
+    restart_backoff_initial_seconds: int = 5
+    restart_backoff_max_seconds: int = 300
+    max_consecutive_failures_before_pause: int = 8
 
     @property
     def symbol(self) -> str:

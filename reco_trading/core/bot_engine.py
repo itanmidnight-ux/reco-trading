@@ -7,6 +7,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from reco_trading.core.runtime_control import RuntimeControl
+
 import ccxt
 from rich.live import Live
 
@@ -33,7 +35,7 @@ if TYPE_CHECKING:
 class BotEngine:
     """Orchestrates market analysis, risk controls, trading and monitoring."""
 
-    def __init__(self, settings: Settings, state_manager: "StateManager | None" = None) -> None:
+    def __init__(self, settings: Settings, state_manager: "StateManager | None" = None, runtime_control: RuntimeControl | None = None) -> None:
         self.settings = settings
         self.logger = logging.getLogger(__name__)
         self.state = BotState.INITIALIZING
@@ -54,6 +56,7 @@ class BotEngine:
         self.market_intelligence = MarketIntelligence(settings)
 
         self.state_manager = state_manager
+        self.runtime_control = runtime_control
         self.trades_today = 0
         self.win_count = 0
         self.start_time = time.time()
@@ -75,6 +78,7 @@ class BotEngine:
         self.runtime_investment_mode: str = "Balanced"
         self.manual_pause = False
         self.emergency_stop_active = False
+        self.last_heartbeat_log = 0.0
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -138,6 +142,7 @@ class BotEngine:
                 while True:
                     try:
                         await self._process_control_requests()
+                        self._emit_heartbeat()
                         await self.client.periodic_time_resync(interval_seconds=1800.0)
                         if self.emergency_stop_active:
                             await self._set_state(BotState.PAUSED, "emergency_stop")
@@ -796,26 +801,47 @@ class BotEngine:
         await self._log("INFO", f"reconciled_open_position trade_id={latest.id} quantity={min(latest.quantity, base_balance):.8f}")
 
     async def _process_control_requests(self) -> None:
-        if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):
-            return
-        controls = self.state_manager.pop_control_requests()
+        controls: list[str] = []
+        if self.runtime_control is not None:
+            for command in self.runtime_control.pop_commands():
+                action = str(command.get("action", "")).lower()
+                if action in {"pause", "resume", "force_close", "emergency_stop", "kill_switch"}:
+                    controls.append(action)
+
+        if self.state_manager and hasattr(self.state_manager, "pop_control_requests"):
+            controls.extend(self.state_manager.pop_control_requests())
+
         for control in controls:
             if control == "force_close":
                 await self.force_close_position()
-            elif control == "pause":
-                self.manual_pause = True
-                await self._log("WARNING", "manual_pause_requested")
             elif control in {"start", "resume"}:
                 self.manual_pause = False
                 self.emergency_stop_active = False
+                if self.runtime_control is not None:
+                    self.runtime_control.set_manual_pause(False)
                 await self._log("INFO", f"manual_control_{control}")
+            elif control == "pause":
+                self.manual_pause = True
+                if self.runtime_control is not None:
+                    self.runtime_control.set_manual_pause(True)
+                await self._log("WARNING", "manual_pause_requested")
             elif control == "emergency_stop":
                 self.emergency_stop_active = True
                 self.manual_pause = True
+                if self.runtime_control is not None:
+                    self.runtime_control.set_manual_pause(True)
                 await self._log("ERROR", "emergency_stop_requested")
                 await self.force_close_position()
+            elif control == "kill_switch":
+                self.emergency_stop_active = True
+                self.manual_pause = True
+                if self.runtime_control is not None:
+                    self.runtime_control.activate_kill_switch()
+                    self.runtime_control.set_manual_pause(True)
+                await self._log("CRITICAL", "kill_switch_activated")
+                await self.force_close_position()
 
-        if hasattr(self.state_manager, "pop_runtime_settings"):
+        if self.state_manager and hasattr(self.state_manager, "pop_runtime_settings"):
             runtime_updates = self.state_manager.pop_runtime_settings()
             for update in runtime_updates:
                 self._apply_runtime_settings(update)
@@ -832,6 +858,28 @@ class BotEngine:
             elapsed += chunk
             await self._process_control_requests()
             self._sync_ui_state()
+
+
+    def _emit_heartbeat(self) -> None:
+        now = time.time()
+        interval = max(float(getattr(self.settings, "heartbeat_interval_seconds", 30)), 5.0)
+        if now - self.last_heartbeat_log >= interval:
+            self.logger.info(
+                "heartbeat status=%s open_positions=%s trades_today=%s exchange_failures=%s",
+                self.state.value,
+                len(self.position_manager.positions),
+                self.trades_today,
+                self.exchange_failure_count,
+            )
+            self.last_heartbeat_log = now
+
+        if self.runtime_control is not None:
+            self.runtime_control.heartbeat(
+                bot_status=self.state.value,
+                snapshot=self.snapshot,
+                open_positions=len(self.position_manager.positions),
+                exchange_pause_until=self.exchange_failure_paused_until,
+            )
 
     def _apply_runtime_settings(self, settings_payload: dict[str, Any]) -> None:
         mode = str(settings_payload.get("investment_mode", self.runtime_investment_mode)).strip()

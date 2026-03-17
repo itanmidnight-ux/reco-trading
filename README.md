@@ -176,3 +176,74 @@ The bot is optimized for conservative operation:
 - reduced exposure in high volatility
 - cooldown against overtrading
 - daily risk cutoffs to prevent cascading losses
+
+---
+
+## Resiliencia 24/7 + API de control remoto
+
+### Flujo de resiliencia implementado
+- `reco_trading/main.py` ahora ejecuta el bot dentro de un supervisor global con reinicio automático.
+- Se aplica **exponential backoff** con enfriamiento dinámico (`RESTART_BACKOFF_INITIAL_SECONDS` -> `RESTART_BACKOFF_MAX_SECONDS`).
+- Se registra contador de reinicios y fallos consecutivos.
+- Si se excede `MAX_CONSECUTIVE_FAILURES_BEFORE_PAUSE`, el sistema solicita pausa segura.
+- Se añadió heartbeat periódico del `BotEngine` para evitar fallos silenciosos.
+
+### API FastAPI segura
+- Endpoints:
+  - `GET /health`
+  - `GET /metrics`
+  - `GET /positions`
+  - `POST /close-position`
+  - `POST /pause`
+  - `POST /resume`
+  - `POST /kill-switch`
+- Seguridad por header:
+  - `Authorization: Bearer <API_AUTH_KEY>`
+- Variables requeridas:
+  - `API_AUTH_KEY`
+  - `BINANCE_API_KEY`
+  - `BINANCE_API_SECRET` (o alias `BINANCE_SECRET`)
+
+### systemd service
+Archivo incluido: `bot.service`
+
+Instalación:
+```bash
+sudo cp bot.service /etc/systemd/system/reco-trading.service
+sudo systemctl daemon-reload
+sudo systemctl enable reco-trading.service
+sudo systemctl start reco-trading.service
+sudo systemctl status reco-trading.service
+```
+
+Logs en vivo:
+```bash
+journalctl -u reco-trading.service -f
+```
+
+### App Android (Buildozer)
+Estructura en `app_android/` lista para compilar.
+
+Compilación APK:
+```bash
+cd app_android
+pip install -r requirements.txt
+buildozer -v android debug
+```
+
+APK generado en:
+```text
+app_android/bin/
+```
+
+### Notas de seguridad operativa
+- No almacenar credenciales en código; usar `.env`.
+- Rotar `API_AUTH_KEY` periódicamente.
+- Exponer API solo por red privada/VPN o detrás de reverse proxy TLS.
+- Usar `kill-switch` ante comportamiento anómalo del exchange o latencias extremas.
+
+### Fallos posibles y mitigación
+- **Fallo de exchange (ccxt/BaseError):** circuito de pausa temporal + reintentos automáticos.
+- **Fallo inesperado de runtime:** supervisor reinicia automáticamente con backoff.
+- **Credenciales faltantes:** validación en startup y bloqueo preventivo.
+- **API no autorizada:** middleware rechaza token inválido con `401`.
