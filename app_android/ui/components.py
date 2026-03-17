@@ -19,7 +19,7 @@ class Card(BoxLayout):
         self.value_label.text = value
 
 
-class ActionButton(Button):
+class PrimaryButton(Button):
     def __init__(self, text: str, **kwargs) -> None:
         super().__init__(
             text=text,

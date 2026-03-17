@@ -7,7 +7,7 @@ from kivy.uix.label import Label
 
 from config import REFRESH_INTERVAL_SECONDS
 from services.api_client import APIClient
-from ui.components import ActionButton, Card
+from ui.components import Card, PrimaryButton
 
 
 class Dashboard(BoxLayout):
@@ -21,9 +21,9 @@ class Dashboard(BoxLayout):
         self.pnl = Card("Daily PnL")
         self.positions = Card("Trades Activos")
 
-        self.pause_btn = ActionButton("Pausar Bot")
+        self.pause_btn = PrimaryButton("Pausar Bot")
         self.pause_btn.bind(on_release=lambda *_: self._run_action(self.client.pause))
-        self.resume_btn = ActionButton("Reanudar Bot")
+        self.resume_btn = PrimaryButton("Reanudar Bot")
         self.resume_btn.bind(on_release=lambda *_: self._run_action(self.client.resume))
 
         self.add_widget(self.header)
