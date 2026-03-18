@@ -27,6 +27,9 @@ class LogsTab(QWidget):
         subtitle = QLabel("Realtime event stream and diagnostics")
         subtitle.setObjectName("metricLabel")
         layout.addWidget(subtitle)
+        self.logs_ribbon = QLabel("Log stream idle • waiting for runtime events")
+        self.logs_ribbon.setObjectName("statusRibbon")
+        layout.addWidget(self.logs_ribbon)
 
         self.summary = QLabel("INFO: 0 | WARNING: 0 | ERROR: 0")
         self.summary.setObjectName("smallMetricValue")
@@ -48,6 +51,7 @@ class LogsTab(QWidget):
         self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
         self._rendered_signature = tuple()
         self.summary.setText("INFO: 0 | WARNING: 0 | ERROR: 0")
+        self.logs_ribbon.setText("Log stream cleared • no active diagnostics")
         if self.state_manager:
             self.state_manager.clear_logs()
 
@@ -66,6 +70,9 @@ class LogsTab(QWidget):
         self.summary.setText(
             f"INFO: {self._counts.get('INFO', 0)} | WARNING: {self._counts.get('WARNING', 0)} | ERROR: {self._counts.get('ERROR', 0)}"
         )
+        self.logs_ribbon.setText(
+            f"Latest {level} • {self._counts.get('INFO', 0) + self._counts.get('WARNING', 0) + self._counts.get('ERROR', 0)} events retained"
+        )
 
     def update_state(self, state: dict) -> None:
         logs = state.get("logs", [])
@@ -80,6 +87,7 @@ class LogsTab(QWidget):
             self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
             self._rendered_signature = tuple()
             self.summary.setText("INFO: 0 | WARNING: 0 | ERROR: 0")
+            self.logs_ribbon.setText("Log stream idle • waiting for runtime events")
             return
         self.text.clear()
         self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}

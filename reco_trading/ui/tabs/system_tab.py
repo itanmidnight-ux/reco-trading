@@ -20,6 +20,9 @@ class SystemTab(QWidget):
         subtitle = QLabel("Runtime, connectivity, infra and telemetry diagnostics")
         subtitle.setObjectName("metricLabel")
         root.addWidget(subtitle)
+        self.system_ribbon = QLabel("System telemetry pending • awaiting health snapshot")
+        self.system_ribbon.setObjectName("statusRibbon")
+        root.addWidget(self.system_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -89,6 +92,9 @@ class SystemTab(QWidget):
         else:
             self.health_badge.setText("Health: DEGRADED")
             self.health_badge.setStyleSheet("color:#f0b90b;")
+        self.system_ribbon.setText(
+            f"API {exchange_status} • DB {database_status} • Redis {redis_status} • UI {ui_render_ms} ms"
+        )
 
         self.events.clear()
         self.events.addItems(

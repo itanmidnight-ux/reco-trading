@@ -59,6 +59,12 @@ class TradesTab(QWidget):
         title = QLabel("Trade Blotter")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
+        subtitle = QLabel("Execution history, realized performance and searchable trade detail flow")
+        subtitle.setObjectName("metricLabel")
+        layout.addWidget(subtitle)
+        self.summary_ribbon = QLabel("0 trades • waiting for execution events")
+        self.summary_ribbon.setObjectName("statusRibbon")
+        layout.addWidget(self.summary_ribbon)
 
         summary_grid = QGridLayout()
         self.summary_cards = {
@@ -137,6 +143,11 @@ class TradesTab(QWidget):
         self.summary_cards["closed"].set_value(str(closed))
         self.summary_cards["realized_pnl"].set_value(f"{realized_pnl:.4f}")
         self.summary_cards["win_rate"].set_value(f"{win_rate:.1f}%")
+        ribbon_color = "#16c784" if realized_pnl >= 0 else "#ea3943"
+        self.summary_ribbon.setText(
+            f"Open {open_count} • Closed {closed} • Realized PnL {realized_pnl:.4f} • Win Rate {win_rate:.1f}%"
+        )
+        self.summary_ribbon.setStyleSheet(f"color: {ribbon_color};")
 
     def _open_detail(self, row: int, _column: int) -> None:
         trade_id_item: QTableWidgetItem | None = self.table.item(row, 0)

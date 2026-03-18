@@ -18,6 +18,9 @@ class AnalyticsTab(QWidget):
         subtitle = QLabel("Detailed strategy metrics, quality score and equity behavior")
         subtitle.setObjectName("metricLabel")
         layout.addWidget(subtitle)
+        self.analytics_ribbon = QLabel("Waiting for trade and model performance analytics")
+        self.analytics_ribbon.setObjectName("statusRibbon")
+        layout.addWidget(self.analytics_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -135,6 +138,10 @@ class AnalyticsTab(QWidget):
         score = int(((win_rate * 0.6) + (confidence * 0.4)) * 100)
         self.score_badge.setText(f"Model Quality: {score}%")
         self.score_badge.setStyleSheet(f"color: {'#16c784' if score >= 60 else '#f0b90b'};")
+        self.analytics_ribbon.setText(
+            f"Trades {analytics.get('total_trades', 0)} • Win Rate {win_rate * 100:.2f}% • "
+            f"PF {analytics.get('profit_factor', 0)} • Equity Points {len(points)}"
+        )
 
         self.insights.clear()
         self.insights.addItem(f"Signal: {state.get('signal', '-')}")

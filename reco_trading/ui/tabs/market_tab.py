@@ -18,6 +18,9 @@ class MarketTab(QWidget):
         subtitle = QLabel("Live overview of trend, volatility, liquidity and execution quality")
         subtitle.setObjectName("metricLabel")
         root.addWidget(subtitle)
+        self.market_ribbon = QLabel("Waiting for market pulse and execution telemetry")
+        self.market_ribbon.setObjectName("statusRibbon")
+        root.addWidget(self.market_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -129,4 +132,7 @@ class MarketTab(QWidget):
                 f"Distance to Support: {state.get('distance_to_support', '-')}",
                 f"Distance to Resistance: {state.get('distance_to_resistance', '-')}",
             ]
+        )
+        self.market_ribbon.setText(
+            f"Price {price:.2f} • Spread {spread_ratio:.4f}% • Trend {trend} • Regime {state.get('market_regime', '-')}"
         )

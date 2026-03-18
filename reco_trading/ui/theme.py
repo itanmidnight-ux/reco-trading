@@ -101,11 +101,31 @@ def app_stylesheet() -> str:
             border-radius: 10px;
             gridline-color: {COLORS['border']};
         }}
+        QListWidget {{
+            background: rgba(20, 29, 53, 0.92);
+            border: 1px solid {COLORS['border']};
+            border-radius: 10px;
+            padding: 6px;
+            outline: none;
+        }}
+        QListWidget::item {{
+            padding: 8px 10px;
+            margin: 2px 0;
+            border-radius: 8px;
+            color: {COLORS['text_primary']};
+        }}
+        QListWidget::item:selected {{
+            background: rgba(90, 141, 255, 0.24);
+            border: 1px solid rgba(90, 141, 255, 0.32);
+        }}
         QHeaderView::section {{
             background: {COLORS['panel_alt']};
             color: {COLORS['text_secondary']};
             border: none;
             padding: 7px;
+        }}
+        QTableWidget::item {{
+            padding: 6px;
         }}
         QProgressBar {{
             border: 1px solid {COLORS['border']};
@@ -118,11 +138,30 @@ def app_stylesheet() -> str:
             background-color: {COLORS['info']};
             border-radius: 6px;
         }}
-        QLineEdit, QComboBox, QSpinBox {{
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
             background: #101933;
             border: 1px solid {COLORS['border']};
             border-radius: 8px;
             padding: 7px;
+        }}
+        QComboBox::drop-down {{
+            border: none;
+            width: 24px;
+        }}
+        QCheckBox {{
+            spacing: 8px;
+            color: {COLORS['text_primary']};
+        }}
+        QCheckBox::indicator {{
+            width: 16px;
+            height: 16px;
+            border-radius: 4px;
+            border: 1px solid {COLORS['border']};
+            background: {COLORS['panel']};
+        }}
+        QCheckBox::indicator:checked {{
+            background: {COLORS['accent']};
+            border: 1px solid {COLORS['info']};
         }}
         QPushButton {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -146,6 +185,22 @@ def app_stylesheet() -> str:
         QPushButton:disabled {{
             background: #2a3557;
             color: {COLORS['neutral']};
+        }}
+        QScrollBar:vertical {{
+            background: transparent;
+            width: 12px;
+            margin: 6px 0 6px 0;
+        }}
+        QScrollBar::handle:vertical {{
+            background: rgba(122, 97, 255, 0.35);
+            min-height: 24px;
+            border-radius: 6px;
+        }}
+        QScrollBar::handle:vertical:hover {{
+            background: rgba(90, 141, 255, 0.55);
+        }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+            height: 0px;
         }}
         """
         return style if isinstance(style, str) else ""

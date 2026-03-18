@@ -18,6 +18,9 @@ class RiskTab(QWidget):
         subtitle = QLabel("Exposure, drawdown and protection controls")
         subtitle.setObjectName("metricLabel")
         root.addWidget(subtitle)
+        self.risk_ribbon = QLabel("Risk telemetry idle • waiting for live exposure snapshot")
+        self.risk_ribbon.setObjectName("statusRibbon")
+        root.addWidget(self.risk_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -92,3 +95,6 @@ class RiskTab(QWidget):
         else:
             self.status_badge.setText("Risk posture: CAUTION")
             self.status_badge.setStyleSheet("color:#f0b90b;")
+        self.risk_ribbon.setText(
+            f"Exposure {exposure}% • Drawdown {daily_drawdown * 100:.2f}% • Consecutive losses {metrics.get('consecutive_losses', 0)}"
+        )
