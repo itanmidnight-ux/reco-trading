@@ -57,6 +57,7 @@ class StateManager(QObject):
             "trade_history": [],
             "logs": [],
             "analytics": {},
+            "runtime_settings": {},
         }
 
     def snapshot(self) -> dict[str, Any]:
