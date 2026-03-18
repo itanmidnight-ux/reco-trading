@@ -129,14 +129,14 @@ if [ ${#missing_vars[@]} -gt 0 ]; then
   exit 1
 fi
 
-if ! postgres_host_reachable || ! postgres_application_reachable; then
-  if attempt_postgres_auto_fix && postgres_host_reachable && postgres_application_reachable; then
+if ! postgres_host_reachable; then
+  if attempt_postgres_auto_fix && postgres_host_reachable; then
     echo "PostgreSQL fue reparado automáticamente. Continuando con el arranque..."
   else
     echo "Error: PostgreSQL no está disponible en el host/puerto configurados por POSTGRES_DSN."
     echo "Sugerencia rápida:"
     echo "  1) Ejecuta scripts/postgres/bootstrap_local_postgres.sh o corrige DB_HOST/DB_PORT en config/database.env o POSTGRES_DSN en .env."
-    echo "  2) Verifica conectividad, autenticación y DSN antes de arrancar el bot."
+    echo "  2) Verifica conectividad antes de arrancar el bot."
     echo "     Ejemplo esperado: postgresql+asyncpg://usuario:clave@localhost:5432/reco_trading_prod"
     exit 1
   fi
