@@ -12,6 +12,7 @@ class LogsTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
         self.state_manager = state_manager
+        self._rendered_signature: tuple[tuple[str, str, str], ...] = tuple()
         layout = QVBoxLayout(self)
         head = QHBoxLayout()
         title = QLabel("System Logs")
@@ -26,6 +27,9 @@ class LogsTab(QWidget):
         subtitle = QLabel("Realtime event stream and diagnostics")
         subtitle.setObjectName("metricLabel")
         layout.addWidget(subtitle)
+        self.logs_ribbon = QLabel("Log stream idle • waiting for runtime events")
+        self.logs_ribbon.setObjectName("statusRibbon")
+        layout.addWidget(self.logs_ribbon)
 
         self.summary = QLabel("INFO: 0 | WARNING: 0 | ERROR: 0")
         self.summary.setObjectName("smallMetricValue")
@@ -45,7 +49,9 @@ class LogsTab(QWidget):
     def _clear_logs(self) -> None:
         self.text.clear()
         self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
+        self._rendered_signature = tuple()
         self.summary.setText("INFO: 0 | WARNING: 0 | ERROR: 0")
+        self.logs_ribbon.setText("Log stream cleared • no active diagnostics")
         if self.state_manager:
             self.state_manager.clear_logs()
 
@@ -57,18 +63,34 @@ class LogsTab(QWidget):
         cursor.movePosition(QTextCursor.End)
         self.text.setTextCursor(cursor)
         self._counts[level] = self._counts.get(level, 0) + 1
+        self._rendered_signature = (
+            *self._rendered_signature,
+            (str(entry.get("time", "")), str(level), str(entry.get("message", ""))),
+        )[-300:]
         self.summary.setText(
             f"INFO: {self._counts.get('INFO', 0)} | WARNING: {self._counts.get('WARNING', 0)} | ERROR: {self._counts.get('ERROR', 0)}"
+        )
+        self.logs_ribbon.setText(
+            f"Latest {level} • {self._counts.get('INFO', 0) + self._counts.get('WARNING', 0) + self._counts.get('ERROR', 0)} events retained"
         )
 
     def update_state(self, state: dict) -> None:
         logs = state.get("logs", [])
+        signature = tuple(
+            (str(entry.get("time", "")), str(entry.get("level", "INFO")).upper(), str(entry.get("message", "")))
+            for entry in logs[-300:]
+        )
+        if signature == self._rendered_signature:
+            return
         if not logs:
             self.text.clear()
             self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
+            self._rendered_signature = tuple()
             self.summary.setText("INFO: 0 | WARNING: 0 | ERROR: 0")
+            self.logs_ribbon.setText("Log stream idle • waiting for runtime events")
             return
         self.text.clear()
         self._counts = {"INFO": 0, "WARNING": 0, "ERROR": 0}
+        self._rendered_signature = tuple()
         for entry in logs[-300:]:
             self.add_log(entry)
