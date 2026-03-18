@@ -52,6 +52,10 @@ class Repository:
             await self._migrate_signals_columns(conn)
             await self._migrate_market_data_columns(conn)
 
+    async def verify_connectivity(self) -> None:
+        async with self.engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+
     async def _migrate_signals_columns(self, conn: Any) -> None:
         existing_columns = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns("signals"))
         existing_column_names = {col["name"] for col in existing_columns}

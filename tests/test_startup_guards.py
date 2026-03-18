@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from reco_trading.database.repository import Repository
 from reco_trading.exchange.binance_client import BinanceClient
 from reco_trading.main import _verify_database_connection, run
 
@@ -35,6 +36,33 @@ def test_verify_database_connection_closes_repository(monkeypatch) -> None:
     asyncio.run(_verify_database_connection(_Settings()))
 
     assert calls == ["init", "verify", "close"]
+
+
+def test_repository_verify_connectivity_executes_select() -> None:
+    calls: list[str] = []
+
+    class _Connection:
+        async def __aenter__(self) -> "_Connection":
+            calls.append("enter")
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            calls.append("exit")
+
+        async def execute(self, statement) -> None:
+            calls.append(str(statement))
+
+    class _Engine:
+        def connect(self) -> _Connection:
+            calls.append("connect")
+            return _Connection()
+
+    repository = Repository.__new__(Repository)
+    repository.engine = _Engine()
+
+    asyncio.run(Repository.verify_connectivity(repository))
+
+    assert calls == ["connect", "enter", "SELECT 1", "exit"]
 
 
 def test_run_exits_cleanly_when_database_is_unavailable(monkeypatch) -> None:
