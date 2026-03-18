@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -17,7 +18,6 @@ from PySide6.QtWidgets import (
 from reco_trading.ui.chart_widget import CandlestickChartWidget
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
-
 
 
 class AnimatedButton(QPushButton):
@@ -43,6 +43,7 @@ class AnimatedButton(QPushButton):
         self._hover_anim.setEndValue(target)
         self._hover_anim.start()
 
+
 class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
@@ -58,6 +59,15 @@ class DashboardTab(QWidget):
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
         self.top_bar.setObjectName("metricValue")
         root.addWidget(self.top_bar)
+
+        self.live_badge = QLabel("● Live feed warming up...")
+        self.live_badge.setObjectName("smallMetricValue")
+        root.addWidget(self.live_badge)
+
+        self._pulse = False
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.timeout.connect(self._animate_live_badge)
+        self._pulse_timer.start(650)
 
         controls = self._build_controls()
         root.addWidget(controls)
@@ -194,6 +204,11 @@ class DashboardTab(QWidget):
         label.setObjectName("metricLabel")
         return label
 
+    def _animate_live_badge(self) -> None:
+        self._pulse = not self._pulse
+        color = "#16c784" if self._pulse else "#86efac"
+        self.live_badge.setStyleSheet(f"color: {color};")
+
     def update_state(self, state: dict[str, Any]) -> None:
         pair = state.get("pair", "BTC/USDT")
         price = _fmt_num(state.get("current_price", state.get("price")), 2)
@@ -215,7 +230,8 @@ class DashboardTab(QWidget):
             f"padding:4px 10px; border-radius:10px; background:{signal_color(signal)}; color:#e6e8ee;"
         )
 
-        confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
+        confidence_value = _safe_float(state.get("confidence"), 0.0)
+        confidence = max(0, min(100, int(confidence_value * 100)))
         self.confidence_label.setText(f"Confidence {confidence}%")
         self.confidence_anim.stop()
         self.confidence_anim.setStartValue(self.confidence_bar.value())
@@ -227,18 +243,35 @@ class DashboardTab(QWidget):
         self.account_cards["btc_balance"].set_value(f"{_fmt_num(state.get('btc_balance'), 6)} BTC")
         self.account_cards["btc_value"].set_value(f"{_fmt_num(state.get('btc_value'), 2)} USDT")
         self.account_cards["total_equity"].set_value(f"{_fmt_num(state.get('total_equity'), 2)} USDT")
-        daily_pnl = float(state.get("daily_pnl", 0) or 0)
+        daily_pnl = _safe_float(state.get("daily_pnl"), 0.0)
         self.account_cards["daily_pnl"].set_value(f"{daily_pnl:.2f} USDT")
         self.account_cards["daily_pnl"].value.setStyleSheet(
             f"color: {'#16c784' if daily_pnl >= 0 else '#ea3943'}; font-size:14px; font-weight:600;"
         )
         self.account_cards["trades_today"].set_value(str(state.get("trades_today", "-")))
-        self.account_cards["win_rate"].set_value(f"{float(state.get('win_rate', 0) or 0)*100:.1f}%")
+        win_rate = _safe_float(state.get("win_rate"), 0.0)
+        self.account_cards["win_rate"].set_value(f"{win_rate*100:.1f}%")
 
         logs = state.get("logs", [])[-8:]
         lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-') }" for entry in logs] or ["[--:--] Waiting for events"]
         self.feed.setText("\n".join(lines))
-        self.chart.update_from_snapshot(state)
+
+        now = datetime.now().strftime("%H:%M:%S")
+        self.live_badge.setText(f"● Live feed synchronized · {now}")
+
+        try:
+            self.chart.update_from_snapshot(state)
+        except Exception:
+            pass
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _fmt_num(value: Any, digits: int) -> str:
