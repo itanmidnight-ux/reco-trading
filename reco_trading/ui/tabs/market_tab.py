@@ -102,7 +102,6 @@ class MarketTab(QWidget):
         volume = float(state.get("volume", 0) or 0)
         atr = float(state.get("atr", 0) or 0)
         spread_ratio = (spread / price * 100) if price > 0 else 0.0
-        candles = state.get("candles_5m", [])[-2:]
         signature = (
             round(price, 8),
             round(spread, 8),
@@ -118,16 +117,6 @@ class MarketTab(QWidget):
             round(volume, 8),
             state.get("distance_to_support", "-"),
             state.get("distance_to_resistance", "-"),
-            tuple(
-                (
-                    round(float(c.get("open", 0.0)), 8),
-                    round(float(c.get("high", 0.0)), 8),
-                    round(float(c.get("low", 0.0)), 8),
-                    round(float(c.get("close", 0.0)), 8),
-                    round(float(c.get("volume", 0.0)), 8),
-                )
-                for c in candles
-            ),
         )
         if signature == self._last_signature:
             return
@@ -175,4 +164,3 @@ class MarketTab(QWidget):
         self.market_ribbon.setText(
             f"Price {price:.2f} • Spread {spread_ratio:.4f}% • Trend {trend} • Regime {state.get('market_regime', '-')}"
         )
-        self.chart.update_from_snapshot(state)
