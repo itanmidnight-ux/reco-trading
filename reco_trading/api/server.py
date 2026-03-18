@@ -64,7 +64,7 @@ def _auth_guard(expected_key: str, authorization: str | None = Header(default=No
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
     token = authorization.split(" ", 1)[1].strip()
-    if token != expected_key:
+    if not hmac.compare_digest(token, expected_key):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token")
 
 
@@ -108,6 +108,11 @@ def create_app(runtime_control: RuntimeControl, settings: Settings | None = None
     dashboard_password = os.getenv("WEB_DASHBOARD_PASSWORD", "admin123")
     expected_password_digest = os.getenv("WEB_DASHBOARD_PASSWORD_SHA256", _password_digest(dashboard_password))
     secure_cookie = os.getenv("WEB_SECURE_COOKIE", "").lower() in {"1", "true", "yes"}
+    if settings and settings.runtime_profile == "production":
+        using_default_user = dashboard_username == "fabian"
+        using_default_password = expected_password_digest == _password_digest("admin123")
+        if using_default_user or using_default_password:
+            raise RuntimeError("WEB_DASHBOARD_USER and WEB_DASHBOARD_PASSWORD(_SHA256) must be changed in production")
 
     def require_auth(authorization: str | None = Header(default=None)) -> None:
         _auth_guard(os.getenv("API_AUTH_KEY", ""), authorization)
@@ -272,6 +277,10 @@ def create_app(runtime_control: RuntimeControl, settings: Settings | None = None
         if url and not url.startswith("https://"):
             return {"url": None, "error": "invalid_public_url"}
         return {"url": url or None}
+
+    @app.get("/readyz")
+    async def readyz() -> dict[str, str]:
+        return {"status": "ok"}
 
     @app.post("/runtime-settings", dependencies=[Depends(authorize_control_access)])
     async def apply_runtime_settings(payload: RuntimeSettingsPayload) -> dict[str, Any]:

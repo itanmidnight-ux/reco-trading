@@ -9,6 +9,8 @@ MONITOR_PID=""
 : "${NGROK_MAX_RESTARTS_PER_HOUR:=30}"
 : "${NGROK_REGION:=}"
 : "${NGROK_DOMAIN:=}"
+: "${API_HOST:=127.0.0.1}"
+: "${API_PORT:=8000}"
 
 cleanup() {
   for pid in "${MONITOR_PID}" "${NGROK_PID}" "${BACKEND_PID}"; do
@@ -19,6 +21,35 @@ cleanup() {
 }
 
 trap cleanup EXIT INT TERM
+
+safe_load_env_file() {
+  local env_file="$1"
+  [ -f "${env_file}" ] || return 0
+
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      ''|\#*) continue ;;
+      export\ *) line="${line#export }" ;;
+    esac
+
+    if [[ "${line}" != *=* ]]; then
+      continue
+    fi
+
+    local key="${line%%=*}"
+    local value="${line#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    if [[ ! "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      continue
+    fi
+
+    if [[ "${value}" =~ ^\".*\"$ ]] || [[ "${value}" =~ ^\'.*\'$ ]]; then
+      value="${value:1:${#value}-2}"
+    fi
+    export "${key}=${value}"
+  done < "${env_file}"
+}
 
 upsert_env_var() {
   local env_file="$1"
@@ -86,9 +117,10 @@ PY
 wait_for_api_ready() {
   local max_attempts="$1"
   local attempt=1
+  local health_url="http://${API_HOST}:${API_PORT}/readyz"
 
   while [ "${attempt}" -le "${max_attempts}" ]; do
-    if curl -fsS --max-time 2 "http://127.0.0.1:8000/openapi.json" >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 "${health_url}" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -116,7 +148,7 @@ wait_for_ngrok_url() {
 }
 
 start_ngrok() {
-  local args=(http 8000 --log=stdout)
+  local args=(http "${API_PORT}" --log=stdout)
   if [ -n "${NGROK_REGION}" ]; then
     args+=(--region "${NGROK_REGION}")
   fi
@@ -210,17 +242,11 @@ else
 fi
 
 if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source .env
-  set +a
+  safe_load_env_file .env
 fi
 
 if [ -z "${POSTGRES_DSN:-}" ] && [ -f config/database.env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source config/database.env
-  set +a
+  safe_load_env_file config/database.env
   if [ -n "${DB_USER:-}" ] && [ -n "${DB_PASSWORD:-}" ] && [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ] && [ -n "${DB_NAME:-}" ]; then
     export POSTGRES_DSN="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
     upsert_env_var .env POSTGRES_DSN "${POSTGRES_DSN}"
@@ -289,12 +315,12 @@ python3 main.py > backend.log 2>&1 &
 BACKEND_PID=$!
 
 if ! wait_for_api_ready 60; then
-  echo "Error: la API no respondió en http://127.0.0.1:8000/openapi.json"
+  echo "Error: la API no respondió en http://${API_HOST}:${API_PORT}/readyz"
   echo "Revise backend.log para más detalles."
   exit 1
 fi
-log_info "API disponible en puerto 8000"
-log_info "Dashboard web seguro disponible localmente en login: http://127.0.0.1:8000/"
+log_info "API disponible en ${API_HOST}:${API_PORT}"
+log_info "Dashboard web seguro disponible localmente en login: http://${API_HOST}:${API_PORT}/"
 
 start_ngrok
 
