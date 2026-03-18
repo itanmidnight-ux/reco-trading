@@ -294,6 +294,7 @@ if ! wait_for_api_ready 60; then
   exit 1
 fi
 log_info "API disponible en puerto 8000"
+log_info "Dashboard web seguro disponible localmente en login: http://127.0.0.1:8000/"
 
 start_ngrok
 
@@ -306,6 +307,10 @@ fi
 upsert_env_var .env PUBLIC_API_URL "${PUBLIC_URL}"
 export PUBLIC_API_URL="${PUBLIC_URL}"
 log_info "URL pública detectada: ${PUBLIC_API_URL}"
+log_info "Dashboard web seguro público (login): ${PUBLIC_API_URL}/"
+if [ -z "${NGROK_DOMAIN}" ]; then
+  log_info "Aviso: para mantener un enlace fijo, configure NGROK_DOMAIN con un dominio reservado de ngrok."
+fi
 
 monitor_tunnel_and_backend "${PUBLIC_URL}" &
 MONITOR_PID=$!
