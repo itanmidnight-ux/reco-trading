@@ -9,6 +9,7 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class AnalyticsTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
+        self._last_signature: tuple[object, ...] | None = None
         layout = QVBoxLayout(self)
         title = QLabel("Performance Analytics")
         title.setObjectName("sectionTitle")
@@ -17,6 +18,9 @@ class AnalyticsTab(QWidget):
         subtitle = QLabel("Detailed strategy metrics, quality score and equity behavior")
         subtitle.setObjectName("metricLabel")
         layout.addWidget(subtitle)
+        self.analytics_ribbon = QLabel("Waiting for trade and model performance analytics")
+        self.analytics_ribbon.setObjectName("statusRibbon")
+        layout.addWidget(self.analytics_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -50,7 +54,49 @@ class AnalyticsTab(QWidget):
         panel_layout.addWidget(self.insights)
 
     def update_state(self, state: dict) -> None:
-        analytics = state.get("analytics", {})
+        trade_history = state.get("trade_history", [])
+        closed_pnls = [float(t.get("pnl", 0) or 0) for t in trade_history if t.get("pnl") not in {None, "-"}]
+        wins = [p for p in closed_pnls if p > 0]
+        losses = [p for p in closed_pnls if p < 0]
+        analytics = dict(state.get("analytics", {}) or {})
+        analytics.setdefault("total_trades", len(trade_history))
+        analytics.setdefault("win_rate", (len(wins) / len(closed_pnls)) if closed_pnls else 0.0)
+        analytics.setdefault("profit_factor", (sum(wins) / abs(sum(losses))) if losses else (float("inf") if wins else 0.0))
+        analytics.setdefault("average_win", (sum(wins) / len(wins)) if wins else 0.0)
+        analytics.setdefault("average_loss", (sum(losses) / len(losses)) if losses else 0.0)
+        analytics.setdefault("largest_win", max(wins) if wins else 0.0)
+        analytics.setdefault("largest_loss", min(losses) if losses else 0.0)
+        points = [float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float))]
+        if not points:
+            current_equity = float(state.get("equity", 0) or 0)
+            running = current_equity - sum(closed_pnls)
+            points = [running]
+            for pnl in reversed(closed_pnls):
+                running += pnl
+                points.append(running)
+        signature = (
+            tuple(sorted((k, str(analytics.get(k, "-"))) for k in self.cards)),
+            tuple(round(v, 8) for v in points[-240:]),
+            tuple(
+                (
+                    str(trade.get("trade_id", "")),
+                    str(trade.get("status", "")),
+                    str(trade.get("pnl", "")),
+                    str(trade.get("entry_slippage_ratio", "")),
+                    str(trade.get("exit_slippage_ratio", "")),
+                )
+                for trade in trade_history[-50:]
+            ),
+            str(state.get("signal", "-")),
+            str(state.get("open_position", "-")),
+            str(state.get("trades_today", 0)),
+            str(state.get("session_pnl", 0)),
+            str(state.get("confidence", 0)),
+        )
+        if signature == self._last_signature:
+            return
+        self._last_signature = signature
+
         for key, card in self.cards.items():
             val = analytics.get(key, "-")
             if key == "win_rate":
@@ -58,10 +104,11 @@ class AnalyticsTab(QWidget):
                     card.set_value(f"{float(val) * 100:.2f}%")
                 except (TypeError, ValueError):
                     card.set_value("-")
+            elif key == "profit_factor" and val == float("inf"):
+                card.set_value("∞")
             else:
                 card.set_value(str(val))
 
-        points = [float(v) for v in analytics.get("equity_curve", []) if isinstance(v, (int, float))]
         self.equity_curve.plot(points)
 
         metric_rows = [
@@ -71,7 +118,6 @@ class AnalyticsTab(QWidget):
             ("Expectancy", analytics.get("expectancy", "-")),
             ("Avg Duration", analytics.get("avg_trade_duration", "-")),
         ]
-        trade_history = state.get("trade_history", [])
         slippage_values: list[float] = []
         for trade in trade_history:
             for key in ("entry_slippage_ratio", "exit_slippage_ratio"):
@@ -92,6 +138,10 @@ class AnalyticsTab(QWidget):
         score = int(((win_rate * 0.6) + (confidence * 0.4)) * 100)
         self.score_badge.setText(f"Model Quality: {score}%")
         self.score_badge.setStyleSheet(f"color: {'#16c784' if score >= 60 else '#f0b90b'};")
+        self.analytics_ribbon.setText(
+            f"Trades {analytics.get('total_trades', 0)} • Win Rate {win_rate * 100:.2f}% • "
+            f"PF {analytics.get('profit_factor', 0)} • Equity Points {len(points)}"
+        )
 
         self.insights.clear()
         self.insights.addItem(f"Signal: {state.get('signal', '-')}")

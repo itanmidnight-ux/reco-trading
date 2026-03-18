@@ -9,6 +9,7 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class MarketTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
+        self._last_signature: tuple[object, ...] | None = None
         root = QVBoxLayout(self)
         self.header = QLabel("Market Pulse")
         self.header.setObjectName("sectionTitle")
@@ -17,6 +18,9 @@ class MarketTab(QWidget):
         subtitle = QLabel("Live overview of trend, volatility, liquidity and execution quality")
         subtitle.setObjectName("metricLabel")
         root.addWidget(subtitle)
+        self.market_ribbon = QLabel("Waiting for market pulse and execution telemetry")
+        self.market_ribbon.setObjectName("statusRibbon")
+        root.addWidget(self.market_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -70,6 +74,25 @@ class MarketTab(QWidget):
         volume = float(state.get("volume", 0) or 0)
         atr = float(state.get("atr", 0) or 0)
         spread_ratio = (spread / price * 100) if price > 0 else 0.0
+        signature = (
+            round(price, 8),
+            round(spread, 8),
+            round(spread_ratio, 8),
+            str(state.get("volatility_regime", "-")),
+            str(state.get("order_flow", "-")),
+            trend,
+            round(adx, 8),
+            str(state.get("market_regime", "-")),
+            round(atr, 8),
+            round(bid, 8),
+            round(ask, 8),
+            round(volume, 8),
+            state.get("distance_to_support", "-"),
+            state.get("distance_to_resistance", "-"),
+        )
+        if signature == self._last_signature:
+            return
+        self._last_signature = signature
 
         self.cards["price"].set_value(f"{price:.2f}")
         self.cards["spread"].set_value(f"{spread:.6f}")
@@ -109,4 +132,7 @@ class MarketTab(QWidget):
                 f"Distance to Support: {state.get('distance_to_support', '-')}",
                 f"Distance to Resistance: {state.get('distance_to_resistance', '-')}",
             ]
+        )
+        self.market_ribbon.setText(
+            f"Price {price:.2f} • Spread {spread_ratio:.4f}% • Trend {trend} • Regime {state.get('market_regime', '-')}"
         )

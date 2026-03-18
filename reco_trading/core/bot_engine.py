@@ -75,6 +75,7 @@ class BotEngine:
         self.runtime_investment_mode: str = "Balanced"
         self.manual_pause = False
         self.emergency_stop_active = False
+        self.equity_curve_history: list[float] = []
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -120,12 +121,15 @@ class BotEngine:
             "investment_mode": self.runtime_investment_mode,
             "capital_limit_usdt": self.runtime_capital_limit_usdt,
             "runtime_settings": {},
+            "database_status": "CONNECTING",
+            "exchange_status": "CONNECTING",
         }
 
     async def run(self) -> None:
         try:
             await self._set_state(BotState.INITIALIZING, "initialize_settings")
             await self.repository.setup()
+            self.snapshot["database_status"] = "CONNECTED"
             runtime_bundle = await self.repository.get_runtime_settings()
             runtime_settings = runtime_bundle.get("ui_runtime_settings", {}) if isinstance(runtime_bundle, dict) else {}
             if isinstance(runtime_settings, dict) and runtime_settings:
@@ -135,6 +139,7 @@ class BotEngine:
             await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
             await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
             await self.order_manager.sync_rules()
+            self.snapshot["exchange_status"] = "CONNECTED"
             await self._reconcile_open_positions()
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -171,6 +176,7 @@ class BotEngine:
                         self._roll_day()
                         await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
                         market_data = await self.fetch_market_data()
+                        await self._refresh_account_snapshot(current_price=market_data.get("price"))
                         if not self._is_market_data_fresh(market_data):
                             await self._set_state(BotState.WAITING_MARKET_DATA, "stale_market_data")
                             self.snapshot["cooldown"] = "STALE_MARKET_DATA"
@@ -200,6 +206,7 @@ class BotEngine:
                         break
                     except ccxt.BaseError as exc:
                         await self._set_state(BotState.ERROR, "exchange_error")
+                        self.snapshot["exchange_status"] = "ERROR"
                         self._register_exchange_failure()
                         await self._log("ERROR", f"exchange_error={exc}")
                         await self.repository.record_error(self.state.value, "exchange", str(exc))
@@ -312,20 +319,10 @@ class BotEngine:
             self.snapshot["cooldown"] = "SPOT_SHORT_BLOCKED"
             return False
 
-        usdt_balance, btc_balance = await self._fetch_balances()
+        usdt_balance = _as_float(self.snapshot.get("balance"), 0.0)
+        total_equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), usdt_balance))
         current_price = _as_float(self.snapshot.get("price"), 0.0)
-        btc_value = float(btc_balance * current_price)
-        total_equity = float(usdt_balance + btc_value)
-        session_pnl = float(await self.repository.get_session_pnl() or 0.0)
-
-        self.snapshot["balance"] = float(usdt_balance)
-        self.snapshot["btc_balance"] = float(btc_balance)
-        self.snapshot["btc_value"] = btc_value
-        self.snapshot["total_equity"] = total_equity
-        self.snapshot["equity"] = total_equity
-        self.snapshot["daily_pnl"] = session_pnl
-        self.snapshot["session_pnl"] = session_pnl
-        self.snapshot["trades_today"] = self.trades_today
+        session_pnl = _as_float(self.snapshot.get("session_pnl"), 0.0)
 
         self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
         if self.starting_equity is None:
@@ -768,6 +765,35 @@ class BotEngine:
         base_balance = _as_float((base or {}).get("free"), 0.0)
         return quote_balance, base_balance
 
+    async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
+        usdt_balance, btc_balance = await self._fetch_balances()
+        reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
+        btc_value = float(btc_balance * reference_price)
+        total_equity = float(usdt_balance + btc_value)
+        session_pnl = float(await self.repository.get_session_pnl() or 0.0)
+
+        self.snapshot["balance"] = float(usdt_balance)
+        self.snapshot["btc_balance"] = float(btc_balance)
+        self.snapshot["btc_value"] = btc_value
+        self.snapshot["total_equity"] = total_equity
+        self.snapshot["equity"] = total_equity
+        self.snapshot["daily_pnl"] = session_pnl
+        self.snapshot["session_pnl"] = session_pnl
+        self.snapshot["trades_today"] = self.trades_today
+        self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else 0.0
+
+        if self.starting_equity is None:
+            self.starting_equity = max(total_equity, 1.0)
+        self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
+        self._append_equity_point(total_equity)
+
+    def _append_equity_point(self, equity: float) -> None:
+        normalized = round(float(max(equity, 0.0)), 8)
+        if self.equity_curve_history and abs(self.equity_curve_history[-1] - normalized) < 1e-8:
+            return
+        self.equity_curve_history.append(normalized)
+        self.equity_curve_history = self.equity_curve_history[-240:]
+
     async def _reconcile_open_positions(self) -> None:
         open_trades = await self.repository.get_open_trades(self.symbol)
         if not open_trades:
@@ -971,7 +997,7 @@ class BotEngine:
                     "average_loss": 0.0,
                     "largest_win": 0.0,
                     "largest_loss": 0.0,
-                    "equity_curve": [self.snapshot.get("equity") or 0.0],
+                    "equity_curve": list(self.equity_curve_history) or [self.snapshot.get("equity") or 0.0],
                 },
                 runtime_settings=self.snapshot.get("runtime_settings", {}),
             )
