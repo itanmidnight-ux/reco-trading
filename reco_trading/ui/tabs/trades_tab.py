@@ -54,6 +54,7 @@ class TradesTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.trade_store: list[dict] = []
+        self._history_signature: tuple[tuple[str, str, str, str], ...] = tuple()
         layout = QVBoxLayout(self)
         title = QLabel("Trade Blotter")
         title.setObjectName("sectionTitle")
@@ -88,12 +89,20 @@ class TradesTab(QWidget):
 
     def add_trade(self, trade: dict) -> None:
         self.trade_store.append(trade)
+        self._history_signature = self._signature_for(self.trade_store)
         self._reload_table()
 
     def update_state(self, state: dict) -> None:
         history = state.get("trade_history", [])
-        if len(history) < len(self.trade_store):
+        signature = self._signature_for(history)
+        if signature == self._history_signature:
             return
+        if len(history) < len(self.trade_store):
+            self._history_signature = signature
+            self.trade_store = list(history)
+            self._reload_table()
+            return
+        self._history_signature = signature
         self.trade_store = list(history)
         self._reload_table()
 
@@ -136,3 +145,14 @@ class TradesTab(QWidget):
         trade = next((t for t in self.trade_store if str(t.get("trade_id")) == trade_id_item.text()), None)
         if trade:
             TradeDetailsDialog(trade, self).exec()
+
+    def _signature_for(self, trades: list[dict]) -> tuple[tuple[str, str, str, str], ...]:
+        return tuple(
+            (
+                str(trade.get("trade_id", "")),
+                str(trade.get("status", "")),
+                str(trade.get("pnl", "")),
+                str(trade.get("exit_time", "")),
+            )
+            for trade in trades
+        )

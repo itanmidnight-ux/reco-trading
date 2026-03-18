@@ -11,6 +11,7 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class SystemTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
+        self._last_signature: tuple[object, ...] | None = None
         root = QVBoxLayout(self)
         title = QLabel("System Health")
         title.setObjectName("sectionTitle")
@@ -32,6 +33,7 @@ class SystemTab(QWidget):
             "api": StatCard("API Connectivity", compact=True),
             "database": StatCard("Database Status", compact=True),
             "latency": StatCard("Latency", compact=True),
+            "ui_render": StatCard("UI Render", compact=True),
             "memory": StatCard("Memory Usage", compact=True),
             "redis": StatCard("Redis", compact=True),
         }
@@ -53,15 +55,35 @@ class SystemTab(QWidget):
         exchange_status = str(system.get("exchange_status", "UNKNOWN"))
         database_status = str(system.get("database_status", "UNKNOWN"))
         redis_status = str(system.get("redis_status", "UNKNOWN"))
+        ui_render_ms = system.get("ui_render_ms", "-")
+        ui_staleness_ms = system.get("ui_staleness_ms", "-")
+        ui_lag_detected = bool(system.get("ui_lag_detected", False))
+        signature = (
+            state.get("bot_version") or "reco-trading",
+            exchange_status,
+            database_status,
+            redis_status,
+            system.get("api_latency_ms", "-"),
+            system.get("memory_usage_mb", "-"),
+            ui_render_ms,
+            ui_staleness_ms,
+            ui_lag_detected,
+            system.get("uptime_seconds", 0),
+            system.get("last_server_sync", "-"),
+        )
+        if signature == self._last_signature:
+            return
+        self._last_signature = signature
 
         self.cards["version"].set_value(str(state.get("bot_version") or "reco-trading"))
         self.cards["api"].set_value(exchange_status)
         self.cards["database"].set_value(database_status)
         self.cards["latency"].set_value(f"{system.get('api_latency_ms', '-') } ms")
+        self.cards["ui_render"].set_value(f"{ui_render_ms} ms")
         self.cards["memory"].set_value(f"{system.get('memory_usage_mb', '-') } MB")
         self.cards["redis"].set_value(redis_status)
 
-        if all(value in {"OK", "CONNECTED", "ONLINE", "UNKNOWN"} for value in (exchange_status, database_status, redis_status)):
+        if all(value in {"OK", "CONNECTED", "ONLINE", "UNKNOWN"} for value in (exchange_status, database_status, redis_status)) and not ui_lag_detected:
             self.health_badge.setText("Health: STABLE")
             self.health_badge.setStyleSheet("color:#16c784;")
         else:
@@ -77,5 +99,8 @@ class SystemTab(QWidget):
                 f"Database: {database_status}",
                 f"Redis: {redis_status}",
                 f"Latency: {system.get('api_latency_ms', '-') } ms",
+                f"UI render: {ui_render_ms} ms",
+                f"UI stale: {ui_staleness_ms} ms",
+                f"UI lag detected: {'YES' if ui_lag_detected else 'NO'}",
             ]
         )

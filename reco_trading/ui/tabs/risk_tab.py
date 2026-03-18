@@ -9,6 +9,7 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class RiskTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
+        self._last_signature: tuple[object, ...] | None = None
         root = QVBoxLayout(self)
         title = QLabel("Risk Center")
         title.setObjectName("sectionTitle")
@@ -55,6 +56,17 @@ class RiskTab(QWidget):
 
     def update_state(self, state: dict) -> None:
         metrics = state.get("risk_metrics", {})
+        signature = (
+            metrics.get("risk_per_trade", "-"),
+            metrics.get("max_concurrent_trades", "-"),
+            metrics.get("daily_drawdown", "-"),
+            metrics.get("current_exposure", "-"),
+            metrics.get("consecutive_losses", "-"),
+        )
+        if signature == self._last_signature:
+            return
+        self._last_signature = signature
+
         for key, card in self.cards.items():
             card.set_value(str(metrics.get(key, "-")))
         try:
