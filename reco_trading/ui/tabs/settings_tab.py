@@ -35,6 +35,9 @@ class SettingsTab(QWidget):
         description = QLabel("Customize visual behavior, refresh cadence and session-safe controls")
         description.setObjectName("metricLabel")
         layout.addWidget(description)
+        self.settings_ribbon = QLabel("Balanced profile • 1000 ms refresh • chart visible")
+        self.settings_ribbon.setObjectName("statusRibbon")
+        layout.addWidget(self.settings_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -235,6 +238,10 @@ class SettingsTab(QWidget):
         effective_capital = budget_value if budget_value > 0 else capital_limit
         estimated_order = effective_capital * (self.max_allocation.value() / 100.0)
         self.simulation_hint.setText(f"Estimated max order: {estimated_order:.2f} USDT")
+        self.settings_ribbon.setText(
+            f"{self.investment_mode.currentText()} profile • Refresh {self.refresh_rate.value()} ms • "
+            f"Pair {self.default_pair.currentText()} • Chart {'ON' if self.chart_visible.isChecked() else 'OFF'}"
+        )
 
         self.settings_changed.emit(
             {

@@ -4,6 +4,7 @@ from typing import Any
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation
 from PySide6.QtWidgets import (
+    QListWidget,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -14,7 +15,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from reco_trading.ui.chart_widget import CandlestickChartWidget
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
@@ -139,9 +139,19 @@ class DashboardTab(QWidget):
         self.chart_panel = self._panel()
         chart_layout = QVBoxLayout(self.chart_panel)
         chart_layout.setContentsMargins(10, 10, 10, 10)
-        chart_layout.addWidget(self._title("Realtime Chart"))
-        self.chart = CandlestickChartWidget()
-        chart_layout.addWidget(self.chart)
+        chart_layout.addWidget(self._title("Executive Monitor"))
+        self.executive_summary = QLabel("Waiting for executive runtime context")
+        self.executive_summary.setObjectName("smallMetricValue")
+        self.executive_summary.setWordWrap(True)
+        chart_layout.addWidget(self.executive_summary)
+        self.executive_points = QListWidget()
+        self.executive_points.addItems(
+            [
+                "Live market chart moved to Market tab.",
+                "This panel now tracks the most relevant execution context.",
+            ]
+        )
+        chart_layout.addWidget(self.executive_points)
 
         body.addWidget(self.market_panel, 0, 0)
         body.addWidget(self.account_panel, 0, 1)
@@ -289,12 +299,32 @@ class DashboardTab(QWidget):
         logs = state.get("logs", [])[-8:]
         feed_lines = [_format_feed_entry(entry) for entry in logs] or ["<span style='color:#9fb2d9;'>[--:--] Waiting for events</span>"]
         self.feed.setText("<br>".join(feed_lines))
+        system = state.get("system", {}) or {}
+        lag_text = "LAG" if system.get("ui_lag_detected") else "UI OK"
         self.feed_meta.setText(
-            f"Latency {_fmt_num(state.get('system', {}).get('api_latency_ms'), 0)} ms • "
+            f"Latency {_fmt_num(system.get('api_latency_ms'), 0)} ms • "
+            f"UI {_fmt_num(system.get('ui_render_ms'), 0)} ms • "
+            f"Stale {_fmt_num(system.get('ui_staleness_ms'), 0)} ms • "
+            f"{lag_text} • "
             f"Mode {state.get('runtime_settings', {}).get('investment_mode', 'Balanced')} • "
             f"Cap {_fmt_num(state.get('runtime_settings', {}).get('capital_limit_usdt'), 2)} USDT"
         )
-        self.chart.update_from_snapshot(state)
+        self.executive_summary.setText(
+            f"{pair} is now monitored in detail from the Market tab. "
+            f"Here you keep the operator summary: signal {signal}, cooldown {state.get('cooldown', 'READY')}, "
+            f"exposure {exposure * 100:.1f}% and equity {_fmt_num(state.get('equity'), 2)} USDT."
+        )
+        self.executive_points.clear()
+        self.executive_points.addItems(
+            [
+                f"Last trade: {state.get('last_trade', '-')}",
+                f"Market regime: {state.get('market_regime', '-')}",
+                f"Support distance: {state.get('distance_to_support', '-')}",
+                f"Resistance distance: {state.get('distance_to_resistance', '-')}",
+                f"System status: {status.replace('_', ' ').title()}",
+                f"Open position: {'YES' if state.get('has_open_position', False) else 'NO'}",
+            ]
+        )
 
 
 def _fmt_num(value: Any, digits: int) -> str:
