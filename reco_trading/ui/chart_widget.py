@@ -18,6 +18,8 @@ ACCENT_COLOR = "#5a8dff"
 EMA_FAST_COLOR = "#4da3ff"
 EMA_MID_COLOR = "#f0b90b"
 EMA_SLOW_COLOR = "#c678dd"
+VOLUME_BULL = "#1fbf8f"
+VOLUME_BEAR = "#b8425d"
 
 
 @dataclass
@@ -74,6 +76,44 @@ class CandlestickItem(pg.GraphicsObject):
         return QRectF(self._picture.boundingRect())
 
 
+class VolumeBarItem(pg.GraphicsObject):
+    def __init__(self, bar_width: float = 0.72) -> None:
+        super().__init__()
+        self._bar_width = bar_width
+        self._picture = QPicture()
+        self._candles: list[Candle] = []
+
+    def set_candles(self, candles: list[Candle]) -> None:
+        self._candles = candles
+        self._rebuild_picture()
+        self.update()
+
+    def _rebuild_picture(self) -> None:
+        picture = QPicture()
+        painter = QPainter(picture)
+        bull_brush = QBrush(pg.mkColor(VOLUME_BULL))
+        bear_brush = QBrush(pg.mkColor(VOLUME_BEAR))
+        bull_pen = QPen(pg.mkColor(VOLUME_BULL))
+        bear_pen = QPen(pg.mkColor(VOLUME_BEAR))
+
+        for idx, candle in enumerate(self._candles):
+            is_bull = candle.close >= candle.open
+            painter.setPen(bull_pen if is_bull else bear_pen)
+            painter.setBrush(bull_brush if is_bull else bear_brush)
+            rect = QRectF(idx - self._bar_width / 2, 0.0, self._bar_width, max(candle.volume, 1e-8))
+            painter.drawRect(rect)
+
+        painter.end()
+        self.prepareGeometryChange()
+        self._picture = picture
+
+    def paint(self, painter: QPainter, *args: Any) -> None:  # type: ignore[override]
+        painter.drawPicture(0, 0, self._picture)
+
+    def boundingRect(self) -> QRectF:  # type: ignore[override]
+        return QRectF(self._picture.boundingRect())
+
+
 class CandlestickChartWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -107,7 +147,6 @@ class CandlestickChartWidget(QWidget):
         self._price_plot.getViewBox().setMouseEnabled(x=False, y=False)
         self._price_plot.hideButtons()
         self._price_plot.setMenuEnabled(False)
-        self._price_plot.getAxis("bottom").setStyle(showValues=False)
 
         self._candles_item = CandlestickItem()
         self._price_plot.addItem(self._candles_item)
@@ -120,18 +159,23 @@ class CandlestickChartWidget(QWidget):
         self._price_marker = pg.TextItem(anchor=(0, 0.5))
         self._price_plot.addItem(self._price_marker)
         self._legend = self._price_plot.addLegend(offset=(12, 10))
-        self._watermark = pg.TextItem(
-            html=(
-                "<div style='color: rgba(159,178,217,0.16);"
-                " font-size: 28px; font-weight: 800; letter-spacing: 1px;'>RECO • LIVE</div>"
-            ),
-            anchor=(0.5, 0.5),
-        )
-        self._price_plot.addItem(self._watermark)
 
-        self._footer = QLabel("OHLC • EMA 9/21/50 • live price tracking")
-        self._footer.setObjectName("smallMetricValue")
-        layout.addWidget(self._footer)
+        self._graphics.nextRow()
+        self._volume_plot = self._graphics.addPlot(row=1, col=0)
+        self._volume_plot.showGrid(x=True, y=True, alpha=0.18)
+        self._volume_plot.setMaximumHeight(120)
+        self._volume_plot.setLabel("left", "Vol")
+        self._volume_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._volume_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._volume_plot.getAxis("left").setPen(pg.mkColor(GRID_COLOR))
+        self._volume_plot.getAxis("bottom").setPen(pg.mkColor(GRID_COLOR))
+        self._volume_plot.getViewBox().setBackgroundColor(BG_COLOR)
+        self._volume_plot.getViewBox().setMouseEnabled(x=False, y=False)
+        self._volume_plot.hideButtons()
+        self._volume_plot.setMenuEnabled(False)
+        self._volume_plot.setXLink(self._price_plot)
+        self._volume_item = VolumeBarItem()
+        self._volume_plot.addItem(self._volume_item)
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
@@ -157,16 +201,11 @@ class CandlestickChartWidget(QWidget):
         self._last_signature = signature
         self._last_market_price = market_price
         last_close = market_price
-        latest = normalized[-1]
-        last_open = latest.open
+        last_open = normalized[-1].open
         direction = "Bullish" if last_close >= last_open else "Bearish"
         self._status.setText(
-            f"Spot market • {direction} • last {last_close:,.2f} • "
-            f"high {latest.high:,.2f} • low {latest.low:,.2f}"
-        )
-        self._footer.setText(
-            f"Open {latest.open:,.2f} • Close {latest.close:,.2f} • "
-            f"Volume {_fmt_compact(latest.volume)} • Candle range {(latest.high - latest.low):,.2f}"
+            f"Professional stream • last {last_close:,.2f} • {direction} • "
+            f"vol {_fmt_compact(normalized[-1].volume)}"
         )
         self._update_plot_items()
 
@@ -178,7 +217,9 @@ class CandlestickChartWidget(QWidget):
         closes = np.array([c.close for c in self._candles], dtype=float)
         highs = np.array([c.high for c in self._candles], dtype=float)
         lows = np.array([c.low for c in self._candles], dtype=float)
+        volumes = np.array([c.volume for c in self._candles], dtype=float)
         self._candles_item.set_candles(self._candles)
+        self._volume_item.set_candles(self._candles)
 
         ema9 = _ema(closes, 9)
         ema21 = _ema(closes, 21)
@@ -190,27 +231,30 @@ class CandlestickChartWidget(QWidget):
         self._last_price_line.setPos(current_price)
         self._price_marker.setHtml(
             (
-                "<div style='background-color: rgba(90,141,255,0.18);"
-                " border: 1px solid rgba(90,141,255,0.55); border-radius: 8px;"
+                "<div style='background-color: rgba(90,141,255,0.22);"
+                " border: 1px solid rgba(90,141,255,0.65); border-radius: 8px;"
                 " padding: 4px 8px; color: #edf2ff; font-size: 11px; font-weight: 700;'>"
                 f"{current_price:,.2f}</div>"
             )
         )
         self._price_marker.setPos(len(self._candles) + 1.2, current_price)
-        self._watermark.setPos(len(self._candles) / 2, float((np.max(highs) + np.min(lows)) / 2))
 
-        visible = min(len(self._candles), 70)
+        visible = min(len(self._candles), 90)
         left = max(0, len(self._candles) - visible)
-        right = len(self._candles) + 3
-        self._price_plot.setXRange(left - 0.4, right, padding=0)
+        right = len(self._candles) + 4
+        self._price_plot.setXRange(left - 0.5, right, padding=0)
+        self._volume_plot.setXRange(left - 0.5, right, padding=0)
 
         visible_high = highs[left:] if left < len(highs) else highs
         visible_low = lows[left:] if left < len(lows) else lows
         if visible_high.size and visible_low.size:
             ymin = float(np.min(visible_low))
             ymax = float(np.max(visible_high))
-            pad = max((ymax - ymin) * 0.10, ymax * 0.003, 1e-6)
+            pad = max((ymax - ymin) * 0.08, ymax * 0.0025, 1e-6)
             self._price_plot.setYRange(ymin - pad, ymax + pad, padding=0)
+
+        max_volume = float(np.max(volumes[left:])) if volumes[left:].size else 1.0
+        self._volume_plot.setYRange(0, max(max_volume * 1.25, 1.0), padding=0)
 
 
 def _ema(values: np.ndarray, period: int) -> np.ndarray:

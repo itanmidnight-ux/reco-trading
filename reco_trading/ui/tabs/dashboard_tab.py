@@ -4,6 +4,7 @@ from typing import Any
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation
 from PySide6.QtWidgets import (
+    QListWidget,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -149,21 +150,14 @@ class DashboardTab(QWidget):
         self.executive_summary.setObjectName("smallMetricValue")
         self.executive_summary.setWordWrap(True)
         chart_layout.addWidget(self.executive_summary)
-        executive_grid = QGridLayout()
-        executive_grid.setSpacing(8)
-        self.executive_cards = {
-            "last_trade": StatCard("Last Trade", compact=True),
-            "market_regime": StatCard("Market Regime", compact=True),
-            "support_gap": StatCard("Support Gap", compact=True),
-            "resistance_gap": StatCard("Resistance Gap", compact=True),
-        }
-        for i, card in enumerate(self.executive_cards.values()):
-            executive_grid.addWidget(card, i // 2, i % 2)
-        chart_layout.addLayout(executive_grid)
-        self.executive_hint = QLabel("Chart moved to Market tab for a cleaner operator workflow.")
-        self.executive_hint.setObjectName("metricLabel")
-        self.executive_hint.setWordWrap(True)
-        chart_layout.addWidget(self.executive_hint)
+        self.executive_points = QListWidget()
+        self.executive_points.addItems(
+            [
+                "Live market chart moved to Market tab.",
+                "This panel now tracks the most relevant execution context.",
+            ]
+        )
+        chart_layout.addWidget(self.executive_points)
 
         body.addWidget(self.market_panel, 0, 0)
         body.addWidget(self.account_panel, 0, 1)
@@ -322,17 +316,20 @@ class DashboardTab(QWidget):
             f"Cap {_fmt_num(state.get('runtime_settings', {}).get('capital_limit_usdt'), 2)} USDT"
         )
         self.executive_summary.setText(
-            f"{pair} operator brief • signal {signal} • cooldown {state.get('cooldown', 'READY')} • "
-            f"exposure {exposure * 100:.1f}% • equity {_fmt_num(state.get('equity'), 2)} USDT."
+            f"{pair} is now monitored in detail from the Market tab. "
+            f"Here you keep the operator summary: signal {signal}, cooldown {state.get('cooldown', 'READY')}, "
+            f"exposure {exposure * 100:.1f}% and equity {_fmt_num(state.get('equity'), 2)} USDT."
         )
-        self.executive_cards["last_trade"].set_value(str(state.get("last_trade", "-")))
-        self.executive_cards["market_regime"].set_value(str(state.get("market_regime", "-")))
-        self.executive_cards["support_gap"].set_value(str(state.get("distance_to_support", "-")))
-        self.executive_cards["resistance_gap"].set_value(str(state.get("distance_to_resistance", "-")))
-        self.executive_hint.setText(
-            f"System {status.replace('_', ' ').title()} • Open position "
-            f"{'YES' if state.get('has_open_position', False) else 'NO'} • "
-            f"Detailed live chart available in Market tab."
+        self.executive_points.clear()
+        self.executive_points.addItems(
+            [
+                f"Last trade: {state.get('last_trade', '-')}",
+                f"Market regime: {state.get('market_regime', '-')}",
+                f"Support distance: {state.get('distance_to_support', '-')}",
+                f"Resistance distance: {state.get('distance_to_resistance', '-')}",
+                f"System status: {status.replace('_', ' ').title()}",
+                f"Open position: {'YES' if state.get('has_open_position', False) else 'NO'}",
+            ]
         )
 
 
