@@ -289,8 +289,13 @@ class DashboardTab(QWidget):
         logs = state.get("logs", [])[-8:]
         feed_lines = [_format_feed_entry(entry) for entry in logs] or ["<span style='color:#9fb2d9;'>[--:--] Waiting for events</span>"]
         self.feed.setText("<br>".join(feed_lines))
+        system = state.get("system", {}) or {}
+        lag_text = "LAG" if system.get("ui_lag_detected") else "UI OK"
         self.feed_meta.setText(
-            f"Latency {_fmt_num(state.get('system', {}).get('api_latency_ms'), 0)} ms • "
+            f"Latency {_fmt_num(system.get('api_latency_ms'), 0)} ms • "
+            f"UI {_fmt_num(system.get('ui_render_ms'), 0)} ms • "
+            f"Stale {_fmt_num(system.get('ui_staleness_ms'), 0)} ms • "
+            f"{lag_text} • "
             f"Mode {state.get('runtime_settings', {}).get('investment_mode', 'Balanced')} • "
             f"Cap {_fmt_num(state.get('runtime_settings', {}).get('capital_limit_usdt'), 2)} USDT"
         )

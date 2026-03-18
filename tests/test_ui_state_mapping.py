@@ -64,6 +64,9 @@ def test_tabs_accept_full_snapshot_without_errors() -> None:
             "database_status": "CONNECTED",
             "bot_mode": "TESTNET",
             "api_latency_ms": 23,
+            "ui_render_ms": 18,
+            "ui_staleness_ms": 40,
+            "ui_lag_detected": False,
             "memory_usage_mb": 120,
             "redis_status": "UNKNOWN",
             "uptime_seconds": 100,
@@ -111,12 +114,33 @@ def test_dashboard_highlight_cards_and_feed_render_rich_snapshot() -> None:
             "cooldown": "READY",
             "status": "waiting_market_data",
             "risk_metrics": {"current_exposure": 0.35},
-            "system": {"api_latency_ms": 28},
+            "system": {"api_latency_ms": 28, "ui_render_ms": 14, "ui_staleness_ms": 32, "ui_lag_detected": False},
             "runtime_settings": {"investment_mode": "Balanced", "capital_limit_usdt": 300.0},
             "logs": [{"time": "12:00:00", "level": "INFO", "message": "signal generated"}],
         }
     )
 
     assert "BUY • 87%" in tab.hero_cards["signal"].value.text()
+    assert "UI 14" in tab.feed_meta.text()
     assert "Balanced" in tab.feed_meta.text()
     assert "signal generated" in tab.feed.text()
+
+
+def test_analytics_tab_derives_kpis_from_trade_history_when_payload_is_partial() -> None:
+    _app()
+    tab = AnalyticsTab()
+    tab.update_state(
+        {
+            "equity": 1200.0,
+            "confidence": 0.8,
+            "trade_history": [
+                {"trade_id": 1, "status": "TAKE_PROFIT_HIT", "pnl": 25.0, "entry_slippage_ratio": 0.001},
+                {"trade_id": 2, "status": "STOP_LOSS_HIT", "pnl": -10.0, "exit_slippage_ratio": 0.002},
+            ],
+            "analytics": {"equity_curve": [1000.0, 1025.0, 1015.0]},
+        }
+    )
+
+    assert tab.cards["total_trades"].value.text() == "2"
+    assert tab.cards["win_rate"].value.text() == "50.00%"
+    assert tab.cards["profit_factor"].value.text() == "2.5"
