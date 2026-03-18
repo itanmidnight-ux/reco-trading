@@ -80,7 +80,9 @@ class BinanceClient:
         return await self.safe_exchange_call(self.exchange.create_order, symbol, "market", side, amount, None, params, operation="create_market_order")
 
     async def close(self) -> None:
-        await asyncio.to_thread(self.exchange.close)
+        close_fn = getattr(self.exchange, "close", None)
+        if callable(close_fn):
+            await asyncio.to_thread(close_fn)
 
     async def safe_exchange_call(
         self,
