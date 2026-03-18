@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-upsert_env_var() {
-  local env_file="$1"
-  local key="$2"
-  local value="$3"
-
-  if [ ! -f "${env_file}" ]; then
-    touch "${env_file}"
-  fi
-
-  if grep -qE "^${key}=" "${env_file}"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "${env_file}"
-  else
-    printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
-  fi
-}
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/lib/runtime_env.sh"
 
 sync_mode_to_env() {
   local mode_option="$1"
@@ -38,50 +25,8 @@ sync_mode_to_env() {
   fi
 }
 
-load_database_config() {
-  if [ -f config/database.env ]; then
-    set -a
-    # shellcheck disable=SC1091
-    source config/database.env
-    set +a
-  fi
-}
-
-build_postgres_dsn_from_config() {
-  if [ -n "${DB_USER:-}" ] && [ -n "${DB_PASSWORD:-}" ] && [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ] && [ -n "${DB_NAME:-}" ]; then
-    export POSTGRES_DSN="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-    upsert_env_var .env POSTGRES_DSN "${POSTGRES_DSN}"
-    return 0
-  fi
-  return 1
-}
-
-postgres_host_reachable() {
-  python - <<'PY'
-from __future__ import annotations
-
-import os
-import socket
-from urllib.parse import urlparse
-
-dsn = os.environ.get("POSTGRES_DSN", "")
-parsed = urlparse(dsn)
-host = parsed.hostname
-port = parsed.port or 5432
-
-if not host:
-    raise SystemExit(2)
-
-try:
-    with socket.create_connection((host, port), timeout=3):
-        raise SystemExit(0)
-except OSError:
-    raise SystemExit(1)
-PY
-}
-
 attempt_postgres_auto_fix() {
-  local helper="scripts/ensure_postgres.sh"
+  local helper="scripts/postgres/bootstrap_local_postgres.sh"
   case "${DB_HOST:-localhost}" in
     localhost|127.0.0.1|::1) ;;
     *)
@@ -102,13 +47,7 @@ attempt_postgres_auto_fix() {
     return 1
   fi
 
-  if [ -f .env ]; then
-    set -a
-    # shellcheck disable=SC1091
-    source .env
-    set +a
-  fi
-  load_database_config
+  load_runtime_env
   if [ -z "${POSTGRES_DSN:-}" ]; then
     build_postgres_dsn_from_config || true
   fi
@@ -121,14 +60,7 @@ else
   echo "Aviso: .venv/bin/activate no existe. Usando Python del sistema."
 fi
 
-if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source .env
-  set +a
-fi
-
-load_database_config
+load_runtime_env
 
 if [ -z "${POSTGRES_DSN:-}" ]; then
   build_postgres_dsn_from_config || true
@@ -197,35 +129,17 @@ if [ ${#missing_vars[@]} -gt 0 ]; then
   exit 1
 fi
 
-if ! python - <<'PY'
-from __future__ import annotations
-
-import os
-import socket
-import sys
-from urllib.parse import urlparse
-
-dsn = os.environ.get("POSTGRES_DSN", "")
-parsed = urlparse(dsn)
-host = parsed.hostname
-port = parsed.port or 5432
-
-if not host:
-    raise SystemExit(2)
-
-try:
-    with socket.create_connection((host, port), timeout=3):
-        raise SystemExit(0)
-except OSError:
-    raise SystemExit(1)
-PY
-then
-  echo "Error: PostgreSQL no está disponible en el host/puerto configurados por POSTGRES_DSN."
-  echo "Sugerencia rápida:"
-  echo "  1) Inicia PostgreSQL o corrige DB_HOST/DB_PORT en config/database.env o POSTGRES_DSN en .env."
-  echo "  2) Verifica conectividad antes de arrancar el bot."
-  echo "     Ejemplo esperado: postgresql+asyncpg://usuario:clave@localhost:5432/reco_trading_prod"
-  exit 1
+if ! postgres_host_reachable; then
+  if attempt_postgres_auto_fix && postgres_host_reachable; then
+    echo "PostgreSQL fue reparado automáticamente. Continuando con el arranque..."
+  else
+    echo "Error: PostgreSQL no está disponible en el host/puerto configurados por POSTGRES_DSN."
+    echo "Sugerencia rápida:"
+    echo "  1) Ejecuta scripts/postgres/bootstrap_local_postgres.sh o corrige DB_HOST/DB_PORT en config/database.env o POSTGRES_DSN en .env."
+    echo "  2) Verifica conectividad antes de arrancar el bot."
+    echo "     Ejemplo esperado: postgresql+asyncpg://usuario:clave@localhost:5432/reco_trading_prod"
+    exit 1
+  fi
 fi
 
 python main.py
