@@ -31,6 +31,24 @@ def test_hold_signal_when_confidence_below_threshold() -> None:
     assert side == "HOLD"
 
 
+def test_hold_signal_when_directional_votes_are_tied() -> None:
+    bundle = SignalBundle(
+        trend="BUY",
+        momentum="NEUTRAL",
+        volume="BUY",
+        volatility="NEUTRAL",
+        structure="SELL",
+        order_flow="SELL",
+        regime="NORMAL_VOLATILITY",
+        regime_trade_allowed=True,
+        size_multiplier=1.0,
+        atr_ratio=0.01,
+    )
+    side, confidence, _ = ConfidenceModel().evaluate(bundle, trade_threshold=0.0)
+    assert confidence > 0.0
+    assert side == "HOLD"
+
+
 def test_risk_position_sizing_uses_stop_distance() -> None:
     sizing = RiskManager(0.03, 10).position_size_for_risk(equity=1000, risk_fraction=0.01, price=100, atr=2)
     assert round(sizing.risk_amount, 6) == 10.0

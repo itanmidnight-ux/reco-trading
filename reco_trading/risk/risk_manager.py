@@ -26,14 +26,16 @@ class RiskManager:
     def validate(
         self,
         balance: float,
+        account_equity: float | None,
         daily_pnl: float,
         trades_today: int,
         confidence: float,
         confidence_threshold: float,
     ) -> RiskDecision:
+        reference_equity = max(float(account_equity if account_equity is not None else balance), float(balance), 0.0)
         if trades_today >= self.max_trades_per_day:
             return RiskDecision(False, "MAX_TRADES_PER_DAY")
-        if daily_pnl <= -(balance * self.max_daily_loss_fraction):
+        if daily_pnl <= -(reference_equity * self.max_daily_loss_fraction):
             return RiskDecision(False, "RISK_PAUSE")
         if confidence < confidence_threshold:
             return RiskDecision(False, "LOW_CONFIDENCE")

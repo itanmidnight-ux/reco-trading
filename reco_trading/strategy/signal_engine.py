@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 from reco_trading.strategy.order_flow import OrderFlowAnalyzer, OrderFlowDecision
-from reco_trading.strategy.regime_filter import RegimeDecision, RegimeFilter
+from reco_trading.strategy.regime_filter import RegimeDecision, RegimeFilter, VolatilityRegime
 
 SignalValue = str
 
@@ -37,13 +37,29 @@ class SignalEngine:
         self.order_flow_analyzer = OrderFlowAnalyzer()
 
     def generate(self, df5m: pd.DataFrame, df15m: pd.DataFrame) -> SignalBundle:
+        if len(df5m) < 2 or len(df15m) < 1:
+            return self._neutral_bundle()
+
         row = df5m.iloc[-1]
         prev = df5m.iloc[-2]
         confirm = df15m.iloc[-1]
 
-        trend = "BUY" if row["ema20"] > row["ema50"] and confirm["ema20"] > confirm["ema50"] else "SELL"
+        if row["ema20"] > row["ema50"] and confirm["ema20"] > confirm["ema50"]:
+            trend = "BUY"
+        elif row["ema20"] < row["ema50"] and confirm["ema20"] < confirm["ema50"]:
+            trend = "SELL"
+        else:
+            trend = "NEUTRAL"
         momentum = "BUY" if row["rsi"] > 55 else "SELL" if row["rsi"] < 45 else "NEUTRAL"
-        volume = "BUY" if row["volume"] > row["vol_ma20"] * 1.1 else "NEUTRAL"
+        if row["vol_ma20"] > 0 and row["volume"] > row["vol_ma20"] * 1.1:
+            if row["close"] > row["open"]:
+                volume = "BUY"
+            elif row["close"] < row["open"]:
+                volume = "SELL"
+            else:
+                volume = "NEUTRAL"
+        else:
+            volume = "NEUTRAL"
         higher_high = row["high"] > prev["high"] and row["low"] > prev["low"]
         lower_low = row["high"] < prev["high"] and row["low"] < prev["low"]
         structure = "BUY" if higher_high else "SELL" if lower_low else "NEUTRAL"
@@ -51,7 +67,7 @@ class SignalEngine:
         regime_decision: RegimeDecision = self.regime_filter.evaluate(df5m)
         order_flow_decision: OrderFlowDecision = self.order_flow_analyzer.evaluate(df5m)
 
-        volatility = "BUY" if regime_decision.allow_trade else "NEUTRAL"
+        volatility = "NEUTRAL"
 
         return SignalBundle(
             trend=trend,
@@ -64,6 +80,21 @@ class SignalEngine:
             regime_trade_allowed=regime_decision.allow_trade,
             size_multiplier=regime_decision.size_multiplier,
             atr_ratio=regime_decision.atr_ratio,
+        )
+
+    @staticmethod
+    def _neutral_bundle() -> SignalBundle:
+        return SignalBundle(
+            trend="NEUTRAL",
+            momentum="NEUTRAL",
+            volume="NEUTRAL",
+            volatility="NEUTRAL",
+            structure="NEUTRAL",
+            order_flow="NEUTRAL",
+            regime=VolatilityRegime.LOW_VOLATILITY.value,
+            regime_trade_allowed=False,
+            size_multiplier=0.0,
+            atr_ratio=0.0,
         )
 
     def is_sideways(self, df: pd.DataFrame) -> bool:

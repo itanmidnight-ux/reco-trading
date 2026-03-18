@@ -28,11 +28,14 @@ class RegimeFilter:
         self.high_threshold = high_threshold
 
     def evaluate(self, frame: pd.DataFrame) -> RegimeDecision:
+        if frame.empty:
+            return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, 0.0, False, 0.0)
+
         row = frame.iloc[-1]
         atr_ratio = float(row["atr"] / row["close"])
 
         if atr_ratio < self.low_threshold:
-            return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, atr_ratio, True, 0.55)
+            return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, atr_ratio, False, 0.0)
         if atr_ratio > self.high_threshold:
             return RegimeDecision(VolatilityRegime.HIGH_VOLATILITY, atr_ratio, True, 0.7)
         return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, atr_ratio, True, 1.0)

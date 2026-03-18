@@ -8,18 +8,16 @@ class ConfidenceModel:
 
     def evaluate(self, bundle: SignalBundle, trade_threshold: float = 0.0) -> tuple[str, float, str]:
         weighted_votes = {
-            "trend": 0.25,
-            "momentum": 0.15,
+            "trend": 0.30,
+            "momentum": 0.20,
             "volume": 0.10,
-            "volatility": 0.15,
             "structure": 0.15,
-            "order_flow": 0.20,
+            "order_flow": 0.25,
         }
         signal_map = {
             "trend": bundle.trend,
             "momentum": bundle.momentum,
             "volume": bundle.volume,
-            "volatility": bundle.volatility,
             "structure": bundle.structure,
             "order_flow": bundle.order_flow,
         }
@@ -27,12 +25,15 @@ class ConfidenceModel:
         buy_score = sum(weight for name, weight in weighted_votes.items() if signal_map[name] == "BUY")
         sell_score = sum(weight for name, weight in weighted_votes.items() if signal_map[name] == "SELL")
 
-        if buy_score >= sell_score:
+        if buy_score > sell_score:
             side = "BUY"
             confidence = buy_score
-        else:
+        elif sell_score > buy_score:
             side = "SELL"
             confidence = sell_score
+        else:
+            side = "HOLD"
+            confidence = max(buy_score, sell_score)
 
         if confidence < max(trade_threshold, 0.0):
             side = "HOLD"

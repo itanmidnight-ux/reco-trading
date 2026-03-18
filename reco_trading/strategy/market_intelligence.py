@@ -143,9 +143,12 @@ class LiquidityZoneDetector:
                 zone_type=zone_type,
             )
 
+        confidence = min(max(float(signal_confidence), 0.0), 1.0)
+        confidence_factor = max(confidence, 0.5)
+
         base_threshold = max(float(self.proximity_threshold), 1e-4)
-        medium_threshold = base_threshold * 2.5
-        extended_threshold = base_threshold * 4.5
+        medium_threshold = base_threshold * (1.75 + confidence_factor)
+        extended_threshold = base_threshold * (3.5 + confidence_factor)
 
         if target_distance <= base_threshold:
             return LiquidityFilterAssessment(
@@ -259,15 +262,13 @@ class MarketRangePositionFilter:
         resistance_distance = max((highest_high - price) / max(price, 1e-9), 0.0)
         proximity_floor = max(0.0035, 0.20 * (range_band / max(price, 1e-9)))
 
-        is_trending = market_regime == MarketRegime.TRENDING or adx >= 25
         if side == "BUY":
             if resistance_distance <= (proximity_floor * 0.5):
                 return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
             if resistance_distance <= proximity_floor:
                 return RangeFilterAssessment(allow_trade=True, range_multiplier=0.4, position_in_range=position_in_range)
             if support_distance <= proximity_floor:
-                support_boost = 1.2 if not is_trending else 1.1
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=min(support_boost, 1.0), position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
             return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
 
         if side == "SELL":
@@ -276,8 +277,7 @@ class MarketRangePositionFilter:
             if support_distance <= proximity_floor:
                 return RangeFilterAssessment(allow_trade=True, range_multiplier=0.4, position_in_range=position_in_range)
             if resistance_distance <= proximity_floor:
-                resistance_boost = 1.2 if not is_trending else 1.1
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=min(resistance_boost, 1.0), position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
             return RangeFilterAssessment(allow_trade=True, range_multiplier=1.0, position_in_range=position_in_range)
 
         return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
@@ -392,6 +392,8 @@ class MarketIntelligence:
                 result["approved"] = False
                 result["reason"] = "MARKET_RANGE_FILTER"
 
-        result["size_multiplier"] = max(float(result["size_multiplier"]), 0.35)
-        result["size_multiplier"] = max(min(float(result["size_multiplier"]), 1.0), 0.1)
+        if result["approved"]:
+            result["size_multiplier"] = max(min(float(result["size_multiplier"]), 1.0), 0.1)
+        else:
+            result["size_multiplier"] = 0.0
         return result

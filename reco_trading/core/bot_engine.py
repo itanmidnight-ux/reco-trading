@@ -189,7 +189,9 @@ class BotEngine:
                         self._update_snapshot(market_data, analysis)
 
                         if await self.validate_trade_conditions(analysis):
-                            intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
+                            intelligence_payload = dict(market_data)
+                            intelligence_payload["signal_confidence"] = analysis.get("confidence", 0.0)
+                            intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), intelligence_payload)
                             self._apply_market_intelligence_snapshot(intelligence)
                             if intelligence.get("approved"):
                                 await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
@@ -231,6 +233,9 @@ class BotEngine:
             self.market_stream.fetch_frame(self.settings.confirmation_timeframe),
         )
 
+        if raw_frame5.empty or raw_frame15.empty:
+            return self._empty_market_data()
+
         latest_primary_ts = _timestamp_to_datetime(raw_frame5.iloc[-1].get("timestamp") if not raw_frame5.empty else None)
         latest_confirmation_ts = _timestamp_to_datetime(raw_frame15.iloc[-1].get("timestamp") if not raw_frame15.empty else None)
 
@@ -255,6 +260,9 @@ class BotEngine:
             frame15 = apply_indicators(raw_frame15)
             self._cached_frame15 = frame15
             self._last_confirmation_indicator_ts = latest_confirmation_ts
+
+        if frame5.empty or frame15.empty or len(frame5) < 2:
+            return self._empty_market_data()
 
         candle = frame5.iloc[-1]
         candles_5m = self._frame_to_candles(frame5)
@@ -299,8 +307,12 @@ class BotEngine:
         }
 
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
+        if market_data.get("frame5") is None or market_data.get("frame15") is None:
+            bundle = self.signal_engine._neutral_bundle()
+            return {"bundle": bundle, "side": "HOLD", "confidence": 0.0, "grade": "WEAK"}
+
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
-        side, confidence, grade = self.confidence_model.evaluate(bundle)
+        side, confidence, grade = self.confidence_model.evaluate(bundle, self.settings.confidence_threshold)
         await self._set_state(BotState.SIGNAL_GENERATED)
         await self._persist_signal(bundle, side, confidence)
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
@@ -350,6 +362,7 @@ class BotEngine:
 
         risk = self.risk_manager.validate(
             balance=usdt_balance,
+            account_equity=total_equity,
             daily_pnl=session_pnl,
             trades_today=self.trades_today,
             confidence=confidence,
@@ -381,6 +394,23 @@ class BotEngine:
 
         self.snapshot["cooldown"] = "READY"
         return True
+
+    @staticmethod
+    def _empty_market_data() -> dict[str, Any]:
+        return {
+            "frame5": None,
+            "frame15": None,
+            "candles_5m": [],
+            "candle": None,
+            "price": 0.0,
+            "bid": 0.0,
+            "ask": 0.0,
+            "spread": 0.0,
+            "volume": 0.0,
+            "atr": 0.0,
+            "adx": 0.0,
+            "change_24h": 0.0,
+        }
 
     async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any], intelligence_size_multiplier: float = 1.0) -> None:
         bundle: SignalBundle = analysis["bundle"]

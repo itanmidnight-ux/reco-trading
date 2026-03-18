@@ -66,7 +66,8 @@ def test_market_intelligence_applies_soft_multiplier_floor() -> None:
     df = _frame(atr=0.1, adx=10.0, vol=100, flat=True)
     mi = MarketIntelligence(_Settings())
     result = mi.evaluate("BUY", {"frame5": df, "price": float(df["close"].iloc[-1])})
-    assert result["size_multiplier"] >= 0.35
+    assert result["approved"] is False
+    assert result["size_multiplier"] == 0.0
 
 
 def test_market_intelligence_uses_configurable_liquidity_threshold() -> None:
@@ -91,3 +92,18 @@ def test_market_intelligence_uses_configurable_liquidity_threshold() -> None:
     loose_result = loose.evaluate("BUY", {"frame5": df, "price": price, "signal_confidence": 0.8})
 
     assert loose_result["size_multiplier"] >= tight_result["size_multiplier"]
+
+
+def test_market_intelligence_respects_confidence_when_liquidity_is_not_ideal() -> None:
+    class Tuned(_Settings):
+        market_range_filter_enabled = True
+        liquidity_proximity_threshold = 0.0015
+
+    df = _frame(close=100.0)
+    price = float(df["close"].iloc[-1])
+    mi = MarketIntelligence(Tuned())
+
+    low_conf = mi.evaluate("BUY", {"frame5": df, "price": price, "signal_confidence": 0.55})
+    high_conf = mi.evaluate("BUY", {"frame5": df, "price": price, "signal_confidence": 0.95})
+
+    assert high_conf["size_multiplier"] >= low_conf["size_multiplier"]
