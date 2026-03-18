@@ -3,105 +3,88 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Reco Trading · Portal Institucional Seguro</title>
+  <title>Reco Trading · Dashboard</title>
   <link rel="stylesheet" href="/dashboard/static/dashboard.css" />
 </head>
 <body>
-  <div class="hero-aura"></div>
-  <div class="grid-overlay"></div>
+  <div class="bg-gradient"></div>
 
-  <main class="portal-shell">
-    <section id="login-card" class="login-card glass">
-      <div class="login-brand">
-        <p class="kicker">Acceso oficial</p>
-        <h1>Reco Trading Institutional Portal</h1>
-        <p class="subtitle">Centro de control seguro, en tiempo real, con protección avanzada y monitoreo de operaciones.</p>
-      </div>
-
-      <div class="login-decor">
-        <div class="orb orb-a"></div>
-        <div class="orb orb-b"></div>
-        <div class="orb orb-c"></div>
+  <main class="shell">
+    <section id="login-card" class="card login-card">
+      <div>
+        <p class="eyebrow">Acceso seguro</p>
+        <h1>Reco Trading Control Center</h1>
+        <p class="muted">Monitorea métricas de capital, equity, riesgo, señales y estado del bot en tiempo real.</p>
       </div>
 
       <form id="login-form" class="login-form">
-        <label>Usuario administrador
+        <label>Usuario
           <input id="username" autocomplete="username" required />
         </label>
         <label>Contraseña
           <input id="password" type="password" autocomplete="current-password" required />
         </label>
-        <button type="submit" class="btn-primary">Entrar al portal</button>
+        <button type="submit" class="btn btn-primary">Iniciar sesión</button>
       </form>
       <p id="login-error" class="feedback error"></p>
     </section>
 
-    <section id="dashboard" class="hidden">
-      <header class="topbar glass">
+    <section id="dashboard" class="hidden dashboard-layout">
+      <header class="topbar card">
         <div>
-          <p class="kicker">Panel institucional</p>
-          <h1>Reco Trading Command Center</h1>
+          <p class="eyebrow">Dashboard del programa</p>
+          <h1>Reco Trading</h1>
+          <p class="muted">Estado operativo y financiero del bot.</p>
         </div>
         <div class="topbar-actions">
-          <span id="session-user" class="pill"></span>
-          <span id="connection-status" class="pill">Conectando...</span>
-          <button id="logout-btn" class="btn-secondary">Cerrar sesión</button>
+          <span id="session-user" class="badge"></span>
+          <span id="connection-status" class="badge badge-neutral">Conectando...</span>
+          <button id="logout-btn" class="btn btn-secondary">Cerrar sesión</button>
         </div>
       </header>
 
-      <nav class="tabs glass" id="tabs-nav">
-        <button data-tab="dashboard" class="active">Dashboard</button>
-        <button data-tab="market">Market</button>
-        <button data-tab="analytics">Analytics</button>
-        <button data-tab="trades">Trades</button>
-        <button data-tab="risk">Risk</button>
-        <button data-tab="settings">Settings</button>
+      <section class="kpi-grid" id="summary-cards"></section>
+
+      <section class="overview-grid">
+        <article class="card panel">
+          <h2>Salud del sistema</h2>
+          <dl id="health-grid" class="metrics-grid"></dl>
+        </article>
+        <article class="card panel">
+          <h2>Mercado y señal</h2>
+          <dl id="market-grid" class="metrics-grid"></dl>
+        </article>
+        <article class="card panel">
+          <h2>Posición actual</h2>
+          <dl id="position-grid" class="metrics-grid"></dl>
+        </article>
+      </section>
+
+      <nav class="tabs card" id="tabs-nav">
+        <button data-tab="analytics" class="active">Analytics</button>
+        <button data-tab="risk">Riesgo</button>
+        <button data-tab="runtime">Runtime</button>
+        <button data-tab="system">Sistema</button>
         <button data-tab="logs">Logs</button>
-        <button data-tab="system">System</button>
       </nav>
 
-      <section id="tab-dashboard" class="tab-panel active">
-        <div class="cards-grid" id="summary-cards"></div>
-        <article class="glass panel">
-          <h2>Resumen operativo en texto plano</h2>
-          <ul id="summary-text" class="text-list"></ul>
-        </article>
-      </section>
-
-      <section id="tab-market" class="tab-panel">
-        <article class="glass panel">
-          <h2>Estado de mercado</h2>
-          <ul id="market-text" class="text-list"></ul>
-        </article>
-      </section>
-
-      <section id="tab-analytics" class="tab-panel">
-        <article class="glass panel">
-          <h2>Analítica de rendimiento</h2>
-          <ul id="analytics-text" class="text-list"></ul>
-        </article>
-      </section>
-
-      <section id="tab-trades" class="tab-panel">
-        <article class="glass panel">
-          <h2>Operaciones y ejecución</h2>
-          <ul id="trades-text" class="text-list"></ul>
-          <div class="controls-row">
-            <button data-action="close" class="btn-secondary">Cerrar posición activa</button>
-          </div>
+      <section id="tab-analytics" class="tab-panel active">
+        <article class="card panel">
+          <h2>Detalle financiero</h2>
+          <dl id="analytics-grid" class="metrics-grid"></dl>
         </article>
       </section>
 
       <section id="tab-risk" class="tab-panel">
-        <article class="glass panel">
+        <article class="card panel">
           <h2>Controles de riesgo</h2>
-          <ul id="risk-text" class="text-list"></ul>
+          <dl id="risk-grid" class="metrics-grid"></dl>
         </article>
       </section>
 
-      <section id="tab-settings" class="tab-panel">
-        <article class="glass panel">
-          <h2>Configuración en vivo</h2>
+      <section id="tab-runtime" class="tab-panel">
+        <article class="card panel">
+          <h2>Ajustes en vivo</h2>
           <form id="runtime-form" class="runtime-form">
             <label>Modo de inversión
               <select id="investment_mode">
@@ -119,29 +102,30 @@
             <label>Límite capital USDT
               <input id="capital_limit_usdt" type="number" min="0" step="1" value="0" />
             </label>
-            <button class="btn-primary" type="submit">Aplicar configuración</button>
+            <button class="btn btn-primary" type="submit">Aplicar configuración</button>
           </form>
-          <ul id="settings-text" class="text-list"></ul>
-        </article>
-      </section>
-
-      <section id="tab-logs" class="tab-panel">
-        <article class="glass panel">
-          <h2>Registro de eventos del portal</h2>
-          <ul id="logs-text" class="text-list"></ul>
+          <p class="muted">Estos valores se aplican al runtime sin reiniciar el bot.</p>
         </article>
       </section>
 
       <section id="tab-system" class="tab-panel">
-        <article class="glass panel">
-          <h2>Control del sistema</h2>
-          <ul id="system-text" class="text-list"></ul>
+        <article class="card panel">
+          <h2>Control del bot</h2>
           <div class="controls-row">
-            <button data-action="start" class="btn-primary">Start</button>
-            <button data-action="pause" class="btn-secondary">Pause</button>
-            <button data-action="resume" class="btn-secondary">Resume</button>
-            <button data-action="kill" class="btn-danger">Kill Switch</button>
+            <button data-action="start" class="btn btn-primary">Start</button>
+            <button data-action="pause" class="btn btn-secondary">Pause</button>
+            <button data-action="resume" class="btn btn-secondary">Resume</button>
+            <button data-action="close" class="btn btn-secondary">Cerrar posición</button>
+            <button data-action="kill" class="btn btn-danger">Kill Switch</button>
           </div>
+          <dl id="system-grid" class="metrics-grid"></dl>
+        </article>
+      </section>
+
+      <section id="tab-logs" class="tab-panel">
+        <article class="card panel">
+          <h2>Eventos recientes</h2>
+          <ul id="logs-text" class="log-list"></ul>
         </article>
       </section>
 

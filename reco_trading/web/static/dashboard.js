@@ -6,24 +6,45 @@ const sessionUser = document.getElementById('session-user');
 const actionFeedback = document.getElementById('action-feedback');
 const connectionStatus = document.getElementById('connection-status');
 const logsText = document.getElementById('logs-text');
+
 let csrfToken = '';
 let refreshTimer = null;
-
 const logs = [];
 
 const pushLog = (message) => {
   const stamp = new Date().toLocaleTimeString('es-ES');
   logs.unshift(`${stamp} · ${message}`);
-  logs.splice(8);
+  logs.splice(0, 30);
   logsText.innerHTML = logs.map((line) => `<li>${line}</li>`).join('');
 };
 
-const safeNumber = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
-const fmt = (value) => (value === null || value === undefined ? 'N/D' : String(value));
-const bin = (value) => {
-  const numeric = safeNumber(value);
-  if (numeric === null) return 'N/A';
-  return Math.trunc(numeric).toString(2);
+const toNumber = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+const firstNumber = (...values) => values.map(toNumber).find((value) => value !== null) ?? null;
+const fmtText = (value) => (value === null || value === undefined || value === '' ? 'N/D' : String(value));
+const fmtNumber = (value, decimals = 2) => {
+  const numeric = toNumber(value);
+  if (numeric === null) return 'N/D';
+  return new Intl.NumberFormat('es-ES', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(numeric);
+};
+const fmtCurrency = (value) => {
+  const numeric = toNumber(value);
+  if (numeric === null) return 'N/D';
+  return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(numeric);
+};
+const fmtPercent = (value) => {
+  const numeric = toNumber(value);
+  if (numeric === null) return 'N/D';
+  const normalized = numeric > 1 ? numeric / 100 : numeric;
+  return new Intl.NumberFormat('es-ES', { style: 'percent', maximumFractionDigits: 2 }).format(normalized);
+};
+const fmtDuration = (seconds) => {
+  const numeric = toNumber(seconds);
+  if (numeric === null) return 'N/D';
+  const total = Math.max(Math.floor(numeric), 0);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return `${h}h ${m}m ${s}s`;
 };
 
 async function api(path, options = {}) {
@@ -44,104 +65,135 @@ function setActiveTab(tabName) {
   });
 }
 
-function renderList(elementId, lines) {
-  document.getElementById(elementId).innerHTML = lines.map((line) => `<li>${line}</li>`).join('');
+function renderGrid(elementId, pairs) {
+  document.getElementById(elementId).innerHTML = pairs
+    .map(({ label, value }) => `<div class="metric-item"><dt>${label}</dt><dd>${value}</dd></div>`)
+    .join('');
 }
 
-function renderCards(data) {
-  const metrics = data.metrics || {};
-  const health = data.health || {};
-  const positions = data.positions || {};
-
+function renderCards(model) {
   const cards = [
-    { title: 'Estado bot', value: fmt(health.bot_status), meta: 'Texto plano' },
-    { title: 'Balance', value: fmt(metrics.balance), meta: `Binario: ${bin(metrics.balance)}` },
-    { title: 'Equity', value: fmt(metrics.equity), meta: `Binario: ${bin(metrics.equity)}` },
-    { title: 'PNL diario', value: fmt(metrics.daily_pnl), meta: `Binario: ${bin(metrics.daily_pnl)}` },
-    { title: 'Win rate', value: fmt(metrics.win_rate), meta: `Binario: ${bin(metrics.win_rate)}` },
-    { title: 'Símbolo activo', value: fmt(positions.symbol || 'Sin posición'), meta: 'Texto plano' },
+    { title: 'Capital USDT', value: fmtCurrency(model.balance), tone: 'neutral' },
+    { title: 'Equity', value: fmtCurrency(model.equity), tone: 'neutral' },
+    { title: 'PnL Diario', value: fmtCurrency(model.dailyPnl), tone: model.dailyPnl >= 0 ? 'good' : 'danger' },
+    { title: 'PnL Sesión', value: fmtCurrency(model.sessionPnl), tone: model.sessionPnl >= 0 ? 'good' : 'danger' },
+    { title: 'Win Rate', value: fmtPercent(model.winRate), tone: 'neutral' },
+    { title: 'Estado Bot', value: fmtText(model.botStatus), tone: model.botStatus === 'ERROR' ? 'danger' : 'good' },
   ];
 
   document.getElementById('summary-cards').innerHTML = cards
     .map((card) => `
-      <article class="glass stat-card">
-        <div class="stat-title">${card.title}</div>
-        <div class="stat-value">${card.value}</div>
-        <div class="stat-meta">${card.meta}</div>
+      <article class="card stat-card tone-${card.tone}">
+        <p class="stat-title">${card.title}</p>
+        <p class="stat-value">${card.value}</p>
       </article>
     `)
     .join('');
 }
 
-function renderData(data) {
-  const health = data.health || {};
+function normalizeData(data) {
+  const snapshot = data.snapshot || data.runtime?.snapshot || {};
   const metrics = data.metrics || {};
-  const positions = data.positions || {};
+  const health = data.health || {};
   const runtime = data.runtime || {};
   const settings = data.settings || {};
+  const positions = data.positions || {};
 
-  renderCards(data);
+  return {
+    snapshot,
+    settings,
+    positions,
+    health,
+    runtime,
+    botStatus: fmtText(health.bot_status || runtime.bot_status || metrics.status),
+    balance: firstNumber(metrics.balance, snapshot.balance),
+    equity: firstNumber(metrics.equity, metrics.total_equity, snapshot.equity, snapshot.total_equity),
+    dailyPnl: firstNumber(metrics.daily_pnl, snapshot.daily_pnl),
+    sessionPnl: firstNumber(metrics.session_pnl, snapshot.session_pnl),
+    winRate: firstNumber(metrics.win_rate, snapshot.win_rate),
+    tradesToday: firstNumber(metrics.trades_today, snapshot.trades_today),
+    price: firstNumber(metrics.price, snapshot.price),
+    bid: firstNumber(metrics.bid, snapshot.bid),
+    ask: firstNumber(metrics.ask, snapshot.ask),
+    spread: firstNumber(metrics.spread, snapshot.spread),
+    confidence: firstNumber(metrics.confidence, snapshot.confidence),
+    signal: snapshot.signal || metrics.signal,
+  };
+}
 
-  renderList('summary-text', [
-    `Estado general del bot: ${fmt(health.bot_status)}.`,
-    `Tiempo activo del proceso: ${fmt(health.uptime_seconds)} segundos (${bin(health.uptime_seconds)} en binario).`,
-    `Posiciones abiertas detectadas: ${fmt(health.open_positions)} (${bin(health.open_positions)} en binario).`,
-    `Latencia de heartbeat: ${fmt(health.heartbeat_age_seconds)} segundos.`,
+function renderData(data) {
+  const model = normalizeData(data);
+  renderCards(model);
+
+  renderGrid('health-grid', [
+    { label: 'Estado runtime', value: model.botStatus },
+    { label: 'Uptime', value: fmtDuration(model.health.uptime_seconds) },
+    { label: 'Heartbeat age', value: `${fmtNumber(model.health.heartbeat_age_seconds, 1)} s` },
+    { label: 'Reinicios', value: fmtNumber(model.health.restart_count ?? 0, 0) },
+    { label: 'Posiciones abiertas', value: fmtNumber(model.health.open_positions ?? 0, 0) },
   ]);
 
-  renderList('market-text', [
-    `Símbolo principal monitoreado: ${fmt(settings.symbol)}.`,
-    `Marco temporal operativo: ${fmt(settings.timeframe)}.`,
-    `Estado de snapshot del mercado: ${fmt(metrics.status)}.`,
-    `Perfil de ejecución: ${fmt(settings.runtime_profile)} en entorno ${fmt(settings.environment)}.`,
+  renderGrid('market-grid', [
+    { label: 'Símbolo', value: fmtText(model.positions.symbol || model.snapshot.pair || model.settings.symbol) },
+    { label: 'Precio', value: fmtCurrency(model.price) },
+    { label: 'Bid / Ask', value: `${fmtCurrency(model.bid)} / ${fmtCurrency(model.ask)}` },
+    { label: 'Spread', value: fmtNumber(model.spread, 6) },
+    { label: 'Señal', value: fmtText(model.signal) },
+    { label: 'Confianza', value: fmtPercent(model.confidence) },
   ]);
 
-  renderList('analytics-text', [
-    `Balance actual: ${fmt(metrics.balance)} (binario: ${bin(metrics.balance)}).`,
-    `Capital de equity: ${fmt(metrics.equity)} (binario: ${bin(metrics.equity)}).`,
-    `PNL diario acumulado: ${fmt(metrics.daily_pnl)} (binario: ${bin(metrics.daily_pnl)}).`,
-    `Tasa de aciertos: ${fmt(metrics.win_rate)} (binario entero: ${bin(metrics.win_rate)}).`,
+  renderGrid('position-grid', [
+    { label: 'Hay posición', value: model.positions.has_open_position ? 'Sí' : 'No' },
+    { label: 'Detalle posición', value: fmtText(model.positions.open_position || model.snapshot.open_position || 'Sin posición activa') },
+    { label: 'Último trade', value: fmtText(model.snapshot.last_trade || '-') },
+    { label: 'Cooldown', value: fmtText(model.snapshot.cooldown || 'READY') },
   ]);
 
-  renderList('trades-text', [
-    `¿Existe posición abierta?: ${positions.has_open_position ? 'Sí, existe una posición en mercado.' : 'No hay posición abierta actualmente.'}`,
-    `Par asociado a la posición: ${fmt(positions.symbol || 'Sin símbolo activo')}.`,
-    `Detalle de posición: ${fmt(positions.open_position || 'No disponible en snapshot')}.`,
+  renderGrid('analytics-grid', [
+    { label: 'Capital USDT', value: fmtCurrency(model.balance) },
+    { label: 'Equity total', value: fmtCurrency(model.equity) },
+    { label: 'PnL diario', value: fmtCurrency(model.dailyPnl) },
+    { label: 'PnL sesión', value: fmtCurrency(model.sessionPnl) },
+    { label: 'Win rate', value: fmtPercent(model.winRate) },
+    { label: 'Trades hoy', value: fmtNumber(model.tradesToday ?? 0, 0) },
+    { label: 'BTC balance', value: fmtNumber(model.snapshot.btc_balance, 8) },
+    { label: 'Valor BTC', value: fmtCurrency(model.snapshot.btc_value) },
   ]);
 
-  renderList('risk-text', [
-    `Riesgo por operación: ${fmt(settings.risk_per_trade_fraction)} (binario: ${bin(settings.risk_per_trade_fraction)}).`,
-    `Máximo balance por operación: ${fmt(settings.max_trade_balance_fraction)} (binario: ${bin(settings.max_trade_balance_fraction)}).`,
-    `Límite de pérdida diaria: ${fmt(settings.daily_loss_limit_fraction)}.`,
-    `Máximo drawdown permitido: ${fmt(settings.max_drawdown_fraction)}.`,
+  renderGrid('risk-grid', [
+    { label: 'Riesgo por trade', value: fmtPercent(model.settings.risk_per_trade_fraction) },
+    { label: 'Máx. balance por trade', value: fmtPercent(model.settings.max_trade_balance_fraction) },
+    { label: 'Límite pérdida diaria', value: fmtPercent(model.settings.daily_loss_limit_fraction) },
+    { label: 'Máx. drawdown', value: fmtPercent(model.settings.max_drawdown_fraction) },
+    { label: 'Modo inversión', value: fmtText(model.snapshot.investment_mode || 'Balanced') },
+    { label: 'Capital limit', value: fmtCurrency(model.snapshot.capital_limit_usdt) },
   ]);
 
-  renderList('settings-text', [
-    `Perfil de runtime activo: ${fmt(settings.runtime_profile)}.`,
-    `Entorno configurado: ${fmt(settings.environment)}.`,
-    `Timeframe consolidado: ${fmt(settings.timeframe)}.`,
+  renderGrid('system-grid', [
+    { label: 'Perfil runtime', value: fmtText(model.settings.runtime_profile) },
+    { label: 'Entorno', value: fmtText(model.settings.environment) },
+    { label: 'Timeframe', value: fmtText(model.settings.timeframe || model.snapshot.timeframe) },
+    { label: 'Kill switch', value: model.runtime.kill_switch ? 'ACTIVO' : 'Inactivo' },
+    { label: 'Pausa manual', value: model.runtime.manual_pause ? 'Sí' : 'No' },
+    { label: 'Exchange pause', value: fmtText(model.runtime.exchange_pause_until || '-') },
   ]);
 
-  renderList('system-text', [
-    `Reinicios registrados: ${fmt(health.restart_count)} (${bin(health.restart_count)} en binario).`,
-    `Estado principal del runtime: ${fmt(runtime.bot_status)}.`,
-    `Interruptor de seguridad (kill switch): ${runtime.kill_switch ? 'ACTIVO' : 'No activado'}.`,
-  ]);
+  document.getElementById('risk_per_trade_fraction').value = model.settings.risk_per_trade_fraction ?? 0.01;
+  document.getElementById('max_trade_balance_fraction').value = model.settings.max_trade_balance_fraction ?? 0.2;
 
-  document.getElementById('risk_per_trade_fraction').value = fmt(settings.risk_per_trade_fraction ?? 0.01);
-  document.getElementById('max_trade_balance_fraction').value = fmt(settings.max_trade_balance_fraction ?? 0.2);
-
-  pushLog('Datos del dashboard actualizados con éxito.');
+  pushLog('Dashboard actualizado correctamente.');
 }
 
 async function refreshData() {
   try {
     const data = await api('/dashboard/data');
-    connectionStatus.textContent = 'Conexión estable y segura';
+    connectionStatus.textContent = 'Conectado';
+    connectionStatus.className = 'badge badge-good';
     renderData(data);
   } catch (error) {
-    connectionStatus.textContent = 'Conexión inestable (reintentando)';
-    pushLog(`Fallo de actualización: ${error.message}`);
+    connectionStatus.textContent = 'Sin conexión';
+    connectionStatus.className = 'badge badge-danger';
+    pushLog(`Error actualizando datos: ${error.message}`);
     throw error;
   }
 }
@@ -153,7 +205,7 @@ async function bootstrap() {
     sessionUser.textContent = `Usuario: ${session.username}`;
     loginCard.classList.add('hidden');
     dashboard.classList.remove('hidden');
-    setActiveTab('dashboard');
+    setActiveTab('analytics');
     await refreshData();
     if (refreshTimer) clearInterval(refreshTimer);
     refreshTimer = setInterval(() => {
@@ -176,11 +228,11 @@ loginForm.addEventListener('submit', async (event) => {
       body: JSON.stringify({ username, password }),
     });
     csrfToken = result.csrf_token;
-    pushLog('Inicio de sesión válido.');
+    pushLog('Sesión iniciada correctamente.');
     await bootstrap();
   } catch (error) {
     loginError.textContent = error.message;
-    pushLog(`Intento de login fallido: ${error.message}`);
+    pushLog(`Error de login: ${error.message}`);
   }
 });
 
@@ -199,19 +251,19 @@ document.querySelectorAll('[data-action]').forEach((button) => {
     try {
       if (action === 'close') {
         const data = await api('/dashboard/data');
-        const symbol = data.positions?.symbol || 'BTCUSDT';
+        const symbol = data.positions?.symbol || data.snapshot?.pair || 'BTCUSDT';
         await api('/close-position', { method: 'POST', body: JSON.stringify({ symbol }) });
       } else if (action === 'kill') {
         await api('/kill-switch', { method: 'POST' });
       } else {
         await api(`/${action}`, { method: 'POST' });
       }
-      actionFeedback.textContent = `Acción ejecutada correctamente: ${action}.`;
-      pushLog(`Acción enviada: ${action}.`);
+      actionFeedback.textContent = `Acción ejecutada: ${action}.`;
+      pushLog(`Acción ejecutada: ${action}.`);
       await refreshData();
     } catch (error) {
-      actionFeedback.textContent = `Error ejecutando ${action}: ${error.message}`;
-      pushLog(`Error en acción ${action}: ${error.message}`);
+      actionFeedback.textContent = `Error en ${action}: ${error.message}`;
+      pushLog(`Error en ${action}: ${error.message}`);
     }
   });
 });
@@ -227,10 +279,11 @@ document.getElementById('runtime-form').addEventListener('submit', async (event)
   };
   try {
     await api('/runtime-settings', { method: 'POST', body: JSON.stringify(payload) });
-    actionFeedback.textContent = 'Configuración aplicada al runtime.';
+    actionFeedback.textContent = 'Configuración aplicada.';
     pushLog('Configuración runtime actualizada.');
+    await refreshData();
   } catch (error) {
-    actionFeedback.textContent = `No se pudo aplicar configuración: ${error.message}`;
+    actionFeedback.textContent = `No se pudo aplicar: ${error.message}`;
     pushLog(`Error de configuración: ${error.message}`);
   }
 });
