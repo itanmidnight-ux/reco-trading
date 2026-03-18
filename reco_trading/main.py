@@ -6,6 +6,7 @@ import threading
 
 from reco_trading.config.settings import Settings
 from reco_trading.core.bot_engine import BotEngine
+from reco_trading.database.repository import Repository
 
 
 def configure_logging() -> None:
@@ -14,6 +15,14 @@ def configure_logging() -> None:
 
 def _run_bot(settings: Settings, state_manager: object | None) -> None:
     asyncio.run(BotEngine(settings, state_manager=state_manager).run())
+
+
+async def _verify_database_connection(settings: Settings) -> None:
+    repository = Repository(settings.postgres_dsn)
+    try:
+        await repository.verify_connectivity()
+    finally:
+        await repository.close()
 
 
 def run() -> None:
@@ -27,15 +36,32 @@ def run() -> None:
         raise RuntimeError("Mainnet trading blocked: set CONFIRM_MAINNET=true to proceed")
 
     try:
+        asyncio.run(_verify_database_connection(settings))
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).error(
+            "Database unavailable; start PostgreSQL or fix POSTGRES_DSN before launching the bot: %s",
+            exc,
+        )
+        raise SystemExit(1) from None
+
+    try:
         from reco_trading.ui import StateManager, run_gui
-        from reco_trading.ui.bootstrap import hydrate_state_from_database
 
         state_manager = StateManager()
-        asyncio.run(hydrate_state_from_database(settings, state_manager))
     except Exception as exc:  # noqa: BLE001
         logging.getLogger(__name__).exception("UI initialization failed, running bot headless: %s", exc)
         _run_bot(settings, None)
         return
+
+    try:
+        from reco_trading.ui.bootstrap import hydrate_state_from_database
+
+        asyncio.run(hydrate_state_from_database(settings, state_manager))
+    except Exception as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "State hydration failed; continuing with an empty UI state because the bot can still start cleanly: %s",
+            exc,
+        )
 
     bot_thread = threading.Thread(target=_run_bot, args=(settings, state_manager), daemon=True, name="bot-engine")
     bot_thread.start()

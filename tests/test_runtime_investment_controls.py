@@ -48,3 +48,5 @@ def test_settings_tab_emits_investment_payload() -> None:
     assert payload["capital_limit_usdt"] == 250.0
     assert payload["risk_per_trade_fraction"] == pytest.approx(0.015)
     assert payload["max_trade_balance_fraction"] == pytest.approx(0.30)
+    assert "binance_api_key" not in payload
+    assert "binance_api_secret" not in payload

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from dotenv import set_key
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -33,7 +32,7 @@ class SettingsTab(QWidget):
         title = QLabel("Interface Studio")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
-        description = QLabel("Customize visual behavior, refresh and active API credentials")
+        description = QLabel("Customize visual behavior, refresh cadence and session-safe controls")
         description.setObjectName("metricLabel")
         layout.addWidget(description)
 
@@ -130,7 +129,7 @@ class SettingsTab(QWidget):
 
         creds_actions = QHBoxLayout()
         self.load_keys_btn = QPushButton("Load current keys")
-        self.save_keys_btn = QPushButton("Save keys")
+        self.save_keys_btn = QPushButton("Apply to session")
         creds_actions.addWidget(self.load_keys_btn)
         creds_actions.addWidget(self.save_keys_btn)
         creds_actions.addStretch(1)
@@ -139,7 +138,7 @@ class SettingsTab(QWidget):
         panel_layout.addWidget(visual_panel)
         panel_layout.addWidget(creds_panel)
 
-        self.status_hint = QLabel("Changes are applied in realtime. API keys can be edited and persisted to .env")
+        self.status_hint = QLabel("Changes are applied in realtime. API credentials are never broadcast in runtime settings.")
         self.status_hint.setObjectName("metricLabel")
         panel_layout.addWidget(self.status_hint)
 
@@ -177,26 +176,29 @@ class SettingsTab(QWidget):
         button.setText("Hide" if hidden else "Show")
 
     def _load_keys_from_env(self) -> None:
-        self.api_key.setText(os.getenv("BINANCE_API_KEY", ""))
-        self.api_secret.setText(os.getenv("BINANCE_API_SECRET", ""))
-        self.status_hint.setText("API keys loaded from environment.")
-        self._emit()
+        key = os.getenv("BINANCE_API_KEY", "")
+        secret = os.getenv("BINANCE_API_SECRET", "")
+        self.api_key.clear()
+        self.api_secret.clear()
+        self.api_key.setPlaceholderText(_masked_secret_hint("BINANCE API KEY", key))
+        self.api_secret.setPlaceholderText(_masked_secret_hint("BINANCE API SECRET", secret))
+        self.status_hint.setText("API credential presence loaded from environment. Values stay local to this form.")
 
     def _save_keys_to_env(self) -> None:
         key = self.api_key.text().strip()
         secret = self.api_secret.text().strip()
-        os.environ["BINANCE_API_KEY"] = key
-        os.environ["BINANCE_API_SECRET"] = secret
+        if key:
+            os.environ["BINANCE_API_KEY"] = key
+        if secret:
+            os.environ["BINANCE_API_SECRET"] = secret
 
-        env_path = Path(".env")
-        try:
-            set_key(str(env_path), "BINANCE_API_KEY", key)
-            set_key(str(env_path), "BINANCE_API_SECRET", secret)
-            self.status_hint.setText("API keys saved to .env and active in current session.")
-        except Exception as exc:  # noqa: BLE001
-            self.status_hint.setText(f"Keys updated in memory only (could not write .env): {exc}")
-
-        self._emit()
+        self.api_key.clear()
+        self.api_secret.clear()
+        self.api_key.setPlaceholderText(_masked_secret_hint("BINANCE API KEY", os.getenv("BINANCE_API_KEY", "")))
+        self.api_secret.setPlaceholderText(_masked_secret_hint("BINANCE API SECRET", os.getenv("BINANCE_API_SECRET", "")))
+        self.status_hint.setText(
+            f"Credentials applied to current process only. Persist them manually in {Path('.env')} if you need restart durability."
+        )
 
     def _apply_investment_preset(self, mode: str) -> None:
         normalized = mode.strip().lower()
@@ -247,8 +249,6 @@ class SettingsTab(QWidget):
                 "symbol_capital_limits": dict(self._symbol_capital_limits),
                 "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
                 "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
-                "binance_api_key": self.api_key.text().strip(),
-                "binance_api_secret": self.api_secret.text().strip(),
             }
         )
 
@@ -276,3 +276,12 @@ class SettingsTab(QWidget):
         finally:
             self._applying_state = False
         self._emit()
+
+
+def _masked_secret_hint(label: str, value: str) -> str:
+    if not value:
+        return f"{label} (not configured)"
+    trimmed = value.strip()
+    if len(trimmed) <= 8:
+        return f"{label} (configured)"
+    return f"{label} ({trimmed[:4]}…{trimmed[-4:]})"

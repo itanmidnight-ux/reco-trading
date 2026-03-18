@@ -23,7 +23,7 @@ if (-not (Test-Path .env)) {
 docker compose up -d postgres redis
 Start-Sleep -Seconds 6
 
-python -m compileall trading_system tests scripts
+python -m compileall reco_trading tests main.py
 pytest -q
 
-Write-Output 'Instalación completa. Ejecuta: .\.venv\Scripts\Activate.ps1; python trading_system/app/main.py'
+Write-Output 'Instalación completa. Ejecuta: .\.venv\Scripts\Activate.ps1; python main.py'
