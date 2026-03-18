@@ -62,9 +62,13 @@ class MainWindow(QMainWindow):
         self.refresh_timer.timeout.connect(self._refresh_from_snapshot)
         self.refresh_timer.start(250)
         self._last_state_event_at = 0.0
+        self._last_ui_render_ms = 0.0
+        self._ui_lag_detected = False
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
+        enriched_state = self._decorate_state(state)
+        started_at = time.perf_counter()
         for tab in (
             self.dashboard_tab,
             self.trades_tab,
@@ -76,9 +80,12 @@ class MainWindow(QMainWindow):
             self.system_tab,
         ):
             try:
-                tab.update_state(state)
+                tab.update_state(enriched_state)
             except Exception:
                 continue
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        self._last_ui_render_ms = elapsed_ms
+        self._ui_lag_detected = elapsed_ms >= max(120.0, self.refresh_timer.interval() * 0.8)
 
     def _refresh_from_snapshot(self) -> None:
         if (time.monotonic() - self._last_state_event_at) < 0.25:
@@ -87,7 +94,8 @@ class MainWindow(QMainWindow):
 
     def _on_ui_settings(self, settings: dict) -> None:
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
-        self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
+        if hasattr(self.market_tab, "chart_panel"):
+            self.market_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
         self.state_manager.push_runtime_settings(settings)
 
     def _notify(self, title: str, message: str) -> None:
@@ -106,3 +114,18 @@ class MainWindow(QMainWindow):
         animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         animation.start()
         self._current_animation = animation
+
+    def _decorate_state(self, state: dict) -> dict:
+        decorated = dict(state)
+        system = dict(decorated.get("system", {}) or {})
+        staleness_ms = max((time.monotonic() - self._last_state_event_at) * 1000, 0.0) if self._last_state_event_at else 0.0
+        system.update(
+            {
+                "ui_render_ms": round(self._last_ui_render_ms, 2),
+                "ui_staleness_ms": round(staleness_ms, 2),
+                "ui_lag_detected": self._ui_lag_detected,
+                "ui_refresh_interval_ms": self.refresh_timer.interval(),
+            }
+        )
+        decorated["system"] = system
+        return decorated

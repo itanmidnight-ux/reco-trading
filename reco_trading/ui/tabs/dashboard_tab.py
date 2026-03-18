@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from reco_trading.ui.chart_widget import CandlestickChartWidget
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
@@ -79,6 +78,10 @@ class DashboardTab(QWidget):
         body = QGridLayout()
         body.setSpacing(10)
         root.addLayout(body)
+        body.setColumnStretch(0, 1)
+        body.setColumnStretch(1, 1)
+        body.setRowStretch(0, 1)
+        body.setRowStretch(1, 1)
 
         self.market_panel = self._panel()
         self.market_cards = {
@@ -125,6 +128,7 @@ class DashboardTab(QWidget):
             account_layout.addWidget(card, (i // 2) + 1, i % 2)
 
         self.activity_panel = self._panel()
+        self.activity_panel.setMinimumHeight(280)
         activity_layout = QVBoxLayout(self.activity_panel)
         activity_layout.setContentsMargins(10, 10, 10, 10)
         activity_layout.addWidget(self._title("Bot Activity"))
@@ -137,11 +141,29 @@ class DashboardTab(QWidget):
         activity_layout.addWidget(self.feed_meta)
 
         self.chart_panel = self._panel()
+        self.chart_panel.setMinimumHeight(280)
         chart_layout = QVBoxLayout(self.chart_panel)
         chart_layout.setContentsMargins(10, 10, 10, 10)
-        chart_layout.addWidget(self._title("Realtime Chart"))
-        self.chart = CandlestickChartWidget()
-        chart_layout.addWidget(self.chart)
+        chart_layout.addWidget(self._title("Executive Monitor"))
+        self.executive_summary = QLabel("Waiting for executive runtime context")
+        self.executive_summary.setObjectName("smallMetricValue")
+        self.executive_summary.setWordWrap(True)
+        chart_layout.addWidget(self.executive_summary)
+        executive_grid = QGridLayout()
+        executive_grid.setSpacing(8)
+        self.executive_cards = {
+            "last_trade": StatCard("Last Trade", compact=True),
+            "market_regime": StatCard("Market Regime", compact=True),
+            "support_gap": StatCard("Support Gap", compact=True),
+            "resistance_gap": StatCard("Resistance Gap", compact=True),
+        }
+        for i, card in enumerate(self.executive_cards.values()):
+            executive_grid.addWidget(card, i // 2, i % 2)
+        chart_layout.addLayout(executive_grid)
+        self.executive_hint = QLabel("Chart moved to Market tab for a cleaner operator workflow.")
+        self.executive_hint.setObjectName("metricLabel")
+        self.executive_hint.setWordWrap(True)
+        chart_layout.addWidget(self.executive_hint)
 
         body.addWidget(self.market_panel, 0, 0)
         body.addWidget(self.account_panel, 0, 1)
@@ -289,12 +311,29 @@ class DashboardTab(QWidget):
         logs = state.get("logs", [])[-8:]
         feed_lines = [_format_feed_entry(entry) for entry in logs] or ["<span style='color:#9fb2d9;'>[--:--] Waiting for events</span>"]
         self.feed.setText("<br>".join(feed_lines))
+        system = state.get("system", {}) or {}
+        lag_text = "LAG" if system.get("ui_lag_detected") else "UI OK"
         self.feed_meta.setText(
-            f"Latency {_fmt_num(state.get('system', {}).get('api_latency_ms'), 0)} ms • "
+            f"Latency {_fmt_num(system.get('api_latency_ms'), 0)} ms • "
+            f"UI {_fmt_num(system.get('ui_render_ms'), 0)} ms • "
+            f"Stale {_fmt_num(system.get('ui_staleness_ms'), 0)} ms • "
+            f"{lag_text} • "
             f"Mode {state.get('runtime_settings', {}).get('investment_mode', 'Balanced')} • "
             f"Cap {_fmt_num(state.get('runtime_settings', {}).get('capital_limit_usdt'), 2)} USDT"
         )
-        self.chart.update_from_snapshot(state)
+        self.executive_summary.setText(
+            f"{pair} operator brief • signal {signal} • cooldown {state.get('cooldown', 'READY')} • "
+            f"exposure {exposure * 100:.1f}% • equity {_fmt_num(state.get('equity'), 2)} USDT."
+        )
+        self.executive_cards["last_trade"].set_value(str(state.get("last_trade", "-")))
+        self.executive_cards["market_regime"].set_value(str(state.get("market_regime", "-")))
+        self.executive_cards["support_gap"].set_value(str(state.get("distance_to_support", "-")))
+        self.executive_cards["resistance_gap"].set_value(str(state.get("distance_to_resistance", "-")))
+        self.executive_hint.setText(
+            f"System {status.replace('_', ' ').title()} • Open position "
+            f"{'YES' if state.get('has_open_position', False) else 'NO'} • "
+            f"Detailed live chart available in Market tab."
+        )
 
 
 def _fmt_num(value: Any, digits: int) -> str:
