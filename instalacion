@@ -43,13 +43,13 @@ fi
 spin "Preparando entorno virtual" "python -m venv .venv"
 spin "Activando pip en entorno" "source .venv/bin/activate && python -m pip install --upgrade pip"
 spin "Instalando dependencias" "source .venv/bin/activate && pip install -r requirements.txt"
-spin "Validando compilación" "source .venv/bin/activate && python -m compileall trading_system tests scripts"
+spin "Validando compilación" "source .venv/bin/activate && python -m compileall reco_trading tests main.py"
 spin "Ejecutando pruebas" "source .venv/bin/activate && pytest -q"
 
 echo
 echo "=== Despliegue listo ==="
 echo "Para iniciar el bot en modo local:"
-echo "  source .venv/bin/activate && python trading_system/app/main.py"
+echo "  source .venv/bin/activate && python main.py"
 echo
 echo "Para usar Docker:"
 echo "  docker compose up --build"

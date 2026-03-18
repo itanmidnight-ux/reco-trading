@@ -71,6 +71,7 @@ class BotEngine:
         self.runtime_risk_per_trade_fraction: float | None = None
         self.runtime_max_trade_balance_fraction: float | None = None
         self.runtime_capital_limit_usdt: float | None = None
+        self.runtime_symbol_capital_limits: dict[str, float] = {}
         self.runtime_investment_mode: str = "Balanced"
         self.manual_pause = False
         self.emergency_stop_active = False
@@ -118,12 +119,17 @@ class BotEngine:
             "distance_to_resistance": None,
             "investment_mode": self.runtime_investment_mode,
             "capital_limit_usdt": self.runtime_capital_limit_usdt,
+            "runtime_settings": {},
         }
 
     async def run(self) -> None:
         try:
             await self._set_state(BotState.INITIALIZING, "initialize_settings")
             await self.repository.setup()
+            runtime_bundle = await self.repository.get_runtime_settings()
+            runtime_settings = runtime_bundle.get("ui_runtime_settings", {}) if isinstance(runtime_bundle, dict) else {}
+            if isinstance(runtime_settings, dict) and runtime_settings:
+                await self._apply_runtime_settings(runtime_settings, persist=False)
             await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
             await self.client.sync_time()
             await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
@@ -261,6 +267,7 @@ class BotEngine:
             self.symbol,
             self.settings.primary_timeframe,
             {
+                "timestamp": _timestamp_to_datetime(candle.get("timestamp")),
                 "open": _as_float(candle.get("open"), price),
                 "high": _as_float(candle.get("high"), price),
                 "low": _as_float(candle.get("low"), price),
@@ -809,7 +816,7 @@ class BotEngine:
         if hasattr(self.state_manager, "pop_runtime_settings"):
             runtime_updates = self.state_manager.pop_runtime_settings()
             for update in runtime_updates:
-                self._apply_runtime_settings(update)
+                await self._apply_runtime_settings(update)
 
     async def _sleep_with_responsiveness(self, seconds: float) -> None:
         total = max(float(seconds), 0.0)
@@ -824,22 +831,32 @@ class BotEngine:
             await self._process_control_requests()
             self._sync_ui_state()
 
-    def _apply_runtime_settings(self, settings_payload: dict[str, Any]) -> None:
-        mode = str(settings_payload.get("investment_mode", self.runtime_investment_mode)).strip()
+    async def _apply_runtime_settings(self, settings_payload: dict[str, Any], *, persist: bool = True) -> None:
+        sanitized = _sanitize_runtime_settings_payload(settings_payload)
+
+        mode = str(sanitized.get("investment_mode", self.runtime_investment_mode)).strip()
         self.runtime_investment_mode = mode or self.runtime_investment_mode
 
-        risk_fraction = _as_float(settings_payload.get("risk_per_trade_fraction"), self._effective_risk_per_trade_fraction())
+        risk_fraction = _as_float(sanitized.get("risk_per_trade_fraction"), self._effective_risk_per_trade_fraction())
         max_trade_fraction = _as_float(
-            settings_payload.get("max_trade_balance_fraction"),
+            sanitized.get("max_trade_balance_fraction"),
             self._effective_max_trade_balance_fraction(),
         )
-        capital_limit = _as_float(settings_payload.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+        capital_limit = _as_float(sanitized.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+        self.runtime_symbol_capital_limits = {
+            normalize_symbol(symbol): limit
+            for symbol, limit in sanitized.get("symbol_capital_limits", {}).items()
+            if limit > 0
+        }
 
         self.runtime_risk_per_trade_fraction = min(max(risk_fraction, 0.001), 0.10)
         self.runtime_max_trade_balance_fraction = min(max(max_trade_fraction, 0.01), 1.0)
         self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
         self.snapshot["investment_mode"] = self.runtime_investment_mode
         self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
+        self.snapshot["runtime_settings"] = sanitized
+        if persist:
+            await self.repository.set_runtime_setting("ui_runtime_settings", sanitized)
 
     def _effective_risk_per_trade_fraction(self) -> float:
         if self.runtime_risk_per_trade_fraction is not None:
@@ -852,7 +869,8 @@ class BotEngine:
         return float(self.settings.max_trade_balance_fraction)
 
     def _effective_equity_for_risk(self, equity: float) -> float:
-        limit = self.runtime_capital_limit_usdt
+        symbol_limit = self.runtime_symbol_capital_limits.get(normalize_symbol(self.symbol))
+        limit = symbol_limit if symbol_limit is not None else self.runtime_capital_limit_usdt
         if limit is None:
             return max(equity, 0.0)
         return max(min(equity, limit), 0.0)
@@ -955,6 +973,7 @@ class BotEngine:
                     "largest_loss": 0.0,
                     "equity_curve": [self.snapshot.get("equity") or 0.0],
                 },
+                runtime_settings=self.snapshot.get("runtime_settings", {}),
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)
@@ -1047,3 +1066,30 @@ def _timestamp_to_datetime(value: Any) -> datetime | None:
     except (TypeError, ValueError, OSError):
         return None
     return parsed
+
+
+def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_symbol_limits = payload.get("symbol_capital_limits", {})
+    symbol_limits: dict[str, float] = {}
+    if isinstance(raw_symbol_limits, dict):
+        for symbol, limit in raw_symbol_limits.items():
+            normalized_symbol = normalize_symbol(str(symbol))
+            if not normalized_symbol:
+                continue
+            float_limit = _as_float(limit, 0.0)
+            if float_limit > 0:
+                symbol_limits[normalized_symbol] = float_limit
+
+    return {
+        "refresh_rate_ms": max(int(payload.get("refresh_rate_ms", 1000) or 1000), 250),
+        "chart_visible": bool(payload.get("chart_visible", True)),
+        "theme": str(payload.get("theme", "Dark")).strip() or "Dark",
+        "log_verbosity": str(payload.get("log_verbosity", "INFO")).strip().upper() or "INFO",
+        "default_pair": str(payload.get("default_pair", "")).strip(),
+        "default_timeframe": str(payload.get("default_timeframe", "")).strip(),
+        "investment_mode": str(payload.get("investment_mode", "Balanced")).strip() or "Balanced",
+        "capital_limit_usdt": max(_as_float(payload.get("capital_limit_usdt"), 0.0), 0.0),
+        "symbol_capital_limits": symbol_limits,
+        "risk_per_trade_fraction": min(max(_as_float(payload.get("risk_per_trade_fraction"), 0.01), 0.001), 0.10),
+        "max_trade_balance_fraction": min(max(_as_float(payload.get("max_trade_balance_fraction"), 0.20), 0.01), 1.0),
+    }
