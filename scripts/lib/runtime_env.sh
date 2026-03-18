@@ -70,35 +70,3 @@ except OSError:
     raise SystemExit(1)
 PY
 }
-
-postgres_application_reachable() {
-  python - <<'PY'
-from __future__ import annotations
-
-import asyncio
-import os
-import sys
-
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
-
-
-async def main() -> int:
-    dsn = os.environ.get("POSTGRES_DSN", "").strip()
-    if not dsn:
-        return 2
-
-    engine = create_async_engine(dsn, echo=False, future=True)
-    try:
-        async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-    except Exception:
-        return 1
-    finally:
-        await engine.dispose()
-    return 0
-
-
-raise SystemExit(asyncio.run(main()))
-PY
-}
