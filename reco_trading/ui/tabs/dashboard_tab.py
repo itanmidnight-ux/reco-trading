@@ -56,8 +56,22 @@ class DashboardTab(QWidget):
         root.addWidget(title)
 
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
-        self.top_bar.setObjectName("metricValue")
+        self.top_bar.setObjectName("statusRibbon")
         root.addWidget(self.top_bar)
+
+        self.hero_panel = self._panel()
+        hero_layout = QGridLayout(self.hero_panel)
+        hero_layout.setContentsMargins(10, 10, 10, 10)
+        hero_layout.setSpacing(10)
+        self.hero_cards = {
+            "price": StatCard("Market Price"),
+            "signal": StatCard("Signal Quality"),
+            "daily_pnl": StatCard("Session PnL"),
+            "exposure": StatCard("Current Exposure"),
+        }
+        for i, card in enumerate(self.hero_cards.values()):
+            hero_layout.addWidget(card, 0, i)
+        root.addWidget(self.hero_panel)
 
         controls = self._build_controls()
         root.addWidget(controls)
@@ -88,6 +102,10 @@ class DashboardTab(QWidget):
         market_layout.addWidget(self.signal_badge, 3, 0)
         market_layout.addWidget(self.confidence_label, 3, 1)
         market_layout.addWidget(self.confidence_bar, 4, 0, 1, 2)
+        self.market_context = QLabel("Waiting for signal context")
+        self.market_context.setObjectName("metricLabel")
+        self.market_context.setWordWrap(True)
+        market_layout.addWidget(self.market_context, 5, 0, 1, 2)
 
         self.account_panel = self._panel()
         self.account_cards = {
@@ -114,6 +132,9 @@ class DashboardTab(QWidget):
         self.feed.setWordWrap(True)
         self.feed.setObjectName("smallMetricValue")
         activity_layout.addWidget(self.feed)
+        self.feed_meta = QLabel("No alerts yet")
+        self.feed_meta.setObjectName("metricLabel")
+        activity_layout.addWidget(self.feed_meta)
 
         self.chart_panel = self._panel()
         chart_layout = QVBoxLayout(self.chart_panel)
@@ -201,26 +222,56 @@ class DashboardTab(QWidget):
         status = str(state.get("status", "-"))
         self._sync_control_buttons(status)
         self.close_active_trade_btn.setVisible(bool(state.get("has_open_position", False)))
-        self.top_bar.setText(f"{pair} | {price} | {trend} | {status}")
+        signal = str(state.get("signal", "NEUTRAL")).upper()
+        confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
+        self.top_bar.setText(
+            f"{pair}  •  Price {price}  •  {signal} {confidence}%  •  {status.replace('_', ' ').title()}"
+        )
         self.top_bar.setStyleSheet(f"color: {status_color(status)};")
+
+        exposure = _as_float(state.get("risk_metrics", {}).get("current_exposure"), 0.0)
+        self.hero_cards["price"].set_value(f"{price} USDT", tone="info", badge=pair)
+        self.hero_cards["signal"].set_value(
+            f"{signal} • {confidence}%",
+            tone=_signal_tone(signal),
+            badge=trend,
+        )
+        daily_pnl = float(state.get("daily_pnl", 0) or 0)
+        self.hero_cards["daily_pnl"].set_value(
+            f"{daily_pnl:.2f} USDT",
+            tone="positive" if daily_pnl >= 0 else "negative",
+            badge="Session",
+        )
+        self.hero_cards["exposure"].set_value(
+            f"{exposure * 100:.1f}%",
+            tone="warning" if exposure >= 0.6 else "neutral",
+            badge=str(state.get("cooldown", "READY")),
+        )
 
         self.market_cards["spread"].set_value(_fmt_num(state.get("spread"), 6))
         self.market_cards["adx"].set_value(_fmt_num(state.get("adx"), 2))
         self.market_cards["volatility_regime"].set_value(str(state.get("volatility_regime", "-")))
         self.market_cards["order_flow"].set_value(str(state.get("order_flow", "-")))
 
-        signal = str(state.get("signal", "NEUTRAL")).upper()
         self.signal_badge.setText(f"Signal: {signal}")
         self.signal_badge.setStyleSheet(
             f"padding:4px 10px; border-radius:10px; background:{signal_color(signal)}; color:#e6e8ee;"
         )
-
-        confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
         self.confidence_label.setText(f"Confidence {confidence}%")
         self.confidence_anim.stop()
         self.confidence_anim.setStartValue(self.confidence_bar.value())
         self.confidence_anim.setEndValue(confidence)
         self.confidence_anim.start()
+        self.market_context.setText(
+            " • ".join(
+                [
+                    f"Regime {state.get('volatility_regime', '-')}",
+                    f"Order flow {state.get('order_flow', '-')}",
+                    f"ADX {_fmt_num(state.get('adx'), 2)}",
+                    f"Cooldown {state.get('cooldown', 'READY')}",
+                ]
+            )
+        )
 
         self.account_cards["balance"].set_value(f"{_fmt_num(state.get('balance'), 2)} USDT")
         self.account_cards["equity"].set_value(f"{_fmt_num(state.get('equity'), 2)} USDT")
@@ -236,8 +287,18 @@ class DashboardTab(QWidget):
         self.account_cards["win_rate"].set_value(f"{float(state.get('win_rate', 0) or 0)*100:.1f}%")
 
         logs = state.get("logs", [])[-8:]
-        lines = [f"[{entry.get('time', '--:--')}] {entry.get('message', '-') }" for entry in logs] or ["[--:--] Waiting for events"]
-        self.feed.setText("\n".join(lines))
+        feed_lines = [_format_feed_entry(entry) for entry in logs] or ["<span style='color:#9fb2d9;'>[--:--] Waiting for events</span>"]
+        self.feed.setText("<br>".join(feed_lines))
+        system = state.get("system", {}) or {}
+        lag_text = "LAG" if system.get("ui_lag_detected") else "UI OK"
+        self.feed_meta.setText(
+            f"Latency {_fmt_num(system.get('api_latency_ms'), 0)} ms • "
+            f"UI {_fmt_num(system.get('ui_render_ms'), 0)} ms • "
+            f"Stale {_fmt_num(system.get('ui_staleness_ms'), 0)} ms • "
+            f"{lag_text} • "
+            f"Mode {state.get('runtime_settings', {}).get('investment_mode', 'Balanced')} • "
+            f"Cap {_fmt_num(state.get('runtime_settings', {}).get('capital_limit_usdt'), 2)} USDT"
+        )
         self.chart.update_from_snapshot(state)
 
 
@@ -250,6 +311,27 @@ def _fmt_num(value: Any, digits: int) -> str:
 
 def signal_color(signal: str) -> str:
     return {"BUY": "#16c784", "SELL": "#ea3943"}.get(signal, "#667085")
+
+
+def _signal_tone(signal: str) -> str:
+    return {"BUY": "positive", "SELL": "negative"}.get(signal, "neutral")
+
+
+def _format_feed_entry(entry: dict[str, Any]) -> str:
+    level = str(entry.get("level", "INFO")).upper()
+    color = {"ERROR": "#ea3943", "WARNING": "#f0b90b", "INFO": "#5a8dff"}.get(level, "#9fb2d9")
+    return (
+        f"<span style='color:{color}; font-weight:700;'>●</span> "
+        f"<span style='color:#9fb2d9;'>[{entry.get('time', '--:--')}]</span> "
+        f"<span style='color:#edf2ff;'>{entry.get('message', '-')}</span>"
+    )
+
+
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def status_color(status: str) -> str:

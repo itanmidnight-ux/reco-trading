@@ -71,9 +71,11 @@ class BotEngine:
         self.runtime_risk_per_trade_fraction: float | None = None
         self.runtime_max_trade_balance_fraction: float | None = None
         self.runtime_capital_limit_usdt: float | None = None
+        self.runtime_symbol_capital_limits: dict[str, float] = {}
         self.runtime_investment_mode: str = "Balanced"
         self.manual_pause = False
         self.emergency_stop_active = False
+        self.equity_curve_history: list[float] = []
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -118,17 +120,26 @@ class BotEngine:
             "distance_to_resistance": None,
             "investment_mode": self.runtime_investment_mode,
             "capital_limit_usdt": self.runtime_capital_limit_usdt,
+            "runtime_settings": {},
+            "database_status": "CONNECTING",
+            "exchange_status": "CONNECTING",
         }
 
     async def run(self) -> None:
         try:
             await self._set_state(BotState.INITIALIZING, "initialize_settings")
             await self.repository.setup()
+            self.snapshot["database_status"] = "CONNECTED"
+            runtime_bundle = await self.repository.get_runtime_settings()
+            runtime_settings = runtime_bundle.get("ui_runtime_settings", {}) if isinstance(runtime_bundle, dict) else {}
+            if isinstance(runtime_settings, dict) and runtime_settings:
+                await self._apply_runtime_settings(runtime_settings, persist=False)
             await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
             await self.client.sync_time()
             await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
             await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
             await self.order_manager.sync_rules()
+            self.snapshot["exchange_status"] = "CONNECTED"
             await self._reconcile_open_positions()
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -165,6 +176,7 @@ class BotEngine:
                         self._roll_day()
                         await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
                         market_data = await self.fetch_market_data()
+                        await self._refresh_account_snapshot(current_price=market_data.get("price"))
                         if not self._is_market_data_fresh(market_data):
                             await self._set_state(BotState.WAITING_MARKET_DATA, "stale_market_data")
                             self.snapshot["cooldown"] = "STALE_MARKET_DATA"
@@ -194,6 +206,7 @@ class BotEngine:
                         break
                     except ccxt.BaseError as exc:
                         await self._set_state(BotState.ERROR, "exchange_error")
+                        self.snapshot["exchange_status"] = "ERROR"
                         self._register_exchange_failure()
                         await self._log("ERROR", f"exchange_error={exc}")
                         await self.repository.record_error(self.state.value, "exchange", str(exc))
@@ -261,6 +274,7 @@ class BotEngine:
             self.symbol,
             self.settings.primary_timeframe,
             {
+                "timestamp": _timestamp_to_datetime(candle.get("timestamp")),
                 "open": _as_float(candle.get("open"), price),
                 "high": _as_float(candle.get("high"), price),
                 "low": _as_float(candle.get("low"), price),
@@ -305,20 +319,10 @@ class BotEngine:
             self.snapshot["cooldown"] = "SPOT_SHORT_BLOCKED"
             return False
 
-        usdt_balance, btc_balance = await self._fetch_balances()
+        usdt_balance = _as_float(self.snapshot.get("balance"), 0.0)
+        total_equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), usdt_balance))
         current_price = _as_float(self.snapshot.get("price"), 0.0)
-        btc_value = float(btc_balance * current_price)
-        total_equity = float(usdt_balance + btc_value)
-        session_pnl = float(await self.repository.get_session_pnl() or 0.0)
-
-        self.snapshot["balance"] = float(usdt_balance)
-        self.snapshot["btc_balance"] = float(btc_balance)
-        self.snapshot["btc_value"] = btc_value
-        self.snapshot["total_equity"] = total_equity
-        self.snapshot["equity"] = total_equity
-        self.snapshot["daily_pnl"] = session_pnl
-        self.snapshot["session_pnl"] = session_pnl
-        self.snapshot["trades_today"] = self.trades_today
+        session_pnl = _as_float(self.snapshot.get("session_pnl"), 0.0)
 
         self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
         if self.starting_equity is None:
@@ -761,6 +765,35 @@ class BotEngine:
         base_balance = _as_float((base or {}).get("free"), 0.0)
         return quote_balance, base_balance
 
+    async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
+        usdt_balance, btc_balance = await self._fetch_balances()
+        reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
+        btc_value = float(btc_balance * reference_price)
+        total_equity = float(usdt_balance + btc_value)
+        session_pnl = float(await self.repository.get_session_pnl() or 0.0)
+
+        self.snapshot["balance"] = float(usdt_balance)
+        self.snapshot["btc_balance"] = float(btc_balance)
+        self.snapshot["btc_value"] = btc_value
+        self.snapshot["total_equity"] = total_equity
+        self.snapshot["equity"] = total_equity
+        self.snapshot["daily_pnl"] = session_pnl
+        self.snapshot["session_pnl"] = session_pnl
+        self.snapshot["trades_today"] = self.trades_today
+        self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else 0.0
+
+        if self.starting_equity is None:
+            self.starting_equity = max(total_equity, 1.0)
+        self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
+        self._append_equity_point(total_equity)
+
+    def _append_equity_point(self, equity: float) -> None:
+        normalized = round(float(max(equity, 0.0)), 8)
+        if self.equity_curve_history and abs(self.equity_curve_history[-1] - normalized) < 1e-8:
+            return
+        self.equity_curve_history.append(normalized)
+        self.equity_curve_history = self.equity_curve_history[-240:]
+
     async def _reconcile_open_positions(self) -> None:
         open_trades = await self.repository.get_open_trades(self.symbol)
         if not open_trades:
@@ -809,7 +842,7 @@ class BotEngine:
         if hasattr(self.state_manager, "pop_runtime_settings"):
             runtime_updates = self.state_manager.pop_runtime_settings()
             for update in runtime_updates:
-                self._apply_runtime_settings(update)
+                await self._apply_runtime_settings(update)
 
     async def _sleep_with_responsiveness(self, seconds: float) -> None:
         total = max(float(seconds), 0.0)
@@ -824,22 +857,32 @@ class BotEngine:
             await self._process_control_requests()
             self._sync_ui_state()
 
-    def _apply_runtime_settings(self, settings_payload: dict[str, Any]) -> None:
-        mode = str(settings_payload.get("investment_mode", self.runtime_investment_mode)).strip()
+    async def _apply_runtime_settings(self, settings_payload: dict[str, Any], *, persist: bool = True) -> None:
+        sanitized = _sanitize_runtime_settings_payload(settings_payload)
+
+        mode = str(sanitized.get("investment_mode", self.runtime_investment_mode)).strip()
         self.runtime_investment_mode = mode or self.runtime_investment_mode
 
-        risk_fraction = _as_float(settings_payload.get("risk_per_trade_fraction"), self._effective_risk_per_trade_fraction())
+        risk_fraction = _as_float(sanitized.get("risk_per_trade_fraction"), self._effective_risk_per_trade_fraction())
         max_trade_fraction = _as_float(
-            settings_payload.get("max_trade_balance_fraction"),
+            sanitized.get("max_trade_balance_fraction"),
             self._effective_max_trade_balance_fraction(),
         )
-        capital_limit = _as_float(settings_payload.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+        capital_limit = _as_float(sanitized.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+        self.runtime_symbol_capital_limits = {
+            normalize_symbol(symbol): limit
+            for symbol, limit in sanitized.get("symbol_capital_limits", {}).items()
+            if limit > 0
+        }
 
         self.runtime_risk_per_trade_fraction = min(max(risk_fraction, 0.001), 0.10)
         self.runtime_max_trade_balance_fraction = min(max(max_trade_fraction, 0.01), 1.0)
         self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
         self.snapshot["investment_mode"] = self.runtime_investment_mode
         self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
+        self.snapshot["runtime_settings"] = sanitized
+        if persist:
+            await self.repository.set_runtime_setting("ui_runtime_settings", sanitized)
 
     def _effective_risk_per_trade_fraction(self) -> float:
         if self.runtime_risk_per_trade_fraction is not None:
@@ -852,7 +895,8 @@ class BotEngine:
         return float(self.settings.max_trade_balance_fraction)
 
     def _effective_equity_for_risk(self, equity: float) -> float:
-        limit = self.runtime_capital_limit_usdt
+        symbol_limit = self.runtime_symbol_capital_limits.get(normalize_symbol(self.symbol))
+        limit = symbol_limit if symbol_limit is not None else self.runtime_capital_limit_usdt
         if limit is None:
             return max(equity, 0.0)
         return max(min(equity, limit), 0.0)
@@ -953,8 +997,9 @@ class BotEngine:
                     "average_loss": 0.0,
                     "largest_win": 0.0,
                     "largest_loss": 0.0,
-                    "equity_curve": [self.snapshot.get("equity") or 0.0],
+                    "equity_curve": list(self.equity_curve_history) or [self.snapshot.get("equity") or 0.0],
                 },
+                runtime_settings=self.snapshot.get("runtime_settings", {}),
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)
@@ -1047,3 +1092,30 @@ def _timestamp_to_datetime(value: Any) -> datetime | None:
     except (TypeError, ValueError, OSError):
         return None
     return parsed
+
+
+def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_symbol_limits = payload.get("symbol_capital_limits", {})
+    symbol_limits: dict[str, float] = {}
+    if isinstance(raw_symbol_limits, dict):
+        for symbol, limit in raw_symbol_limits.items():
+            normalized_symbol = normalize_symbol(str(symbol))
+            if not normalized_symbol:
+                continue
+            float_limit = _as_float(limit, 0.0)
+            if float_limit > 0:
+                symbol_limits[normalized_symbol] = float_limit
+
+    return {
+        "refresh_rate_ms": max(int(payload.get("refresh_rate_ms", 1000) or 1000), 250),
+        "chart_visible": bool(payload.get("chart_visible", True)),
+        "theme": str(payload.get("theme", "Dark")).strip() or "Dark",
+        "log_verbosity": str(payload.get("log_verbosity", "INFO")).strip().upper() or "INFO",
+        "default_pair": str(payload.get("default_pair", "")).strip(),
+        "default_timeframe": str(payload.get("default_timeframe", "")).strip(),
+        "investment_mode": str(payload.get("investment_mode", "Balanced")).strip() or "Balanced",
+        "capital_limit_usdt": max(_as_float(payload.get("capital_limit_usdt"), 0.0), 0.0),
+        "symbol_capital_limits": symbol_limits,
+        "risk_per_trade_fraction": min(max(_as_float(payload.get("risk_per_trade_fraction"), 0.01), 0.001), 0.10),
+        "max_trade_balance_fraction": min(max(_as_float(payload.get("max_trade_balance_fraction"), 0.20), 0.01), 1.0),
+    }

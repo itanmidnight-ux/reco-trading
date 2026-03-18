@@ -42,10 +42,12 @@ async def hydrate_state_from_database(settings: Any, state_manager: object) -> N
         await repository.setup()
         trades = await repository.get_recent_trades(limit=200)
         logs = await repository.get_recent_logs(limit=400)
+        runtime_bundle = await repository.get_runtime_settings()
+        runtime_settings = runtime_bundle.get("ui_runtime_settings", {}) if isinstance(runtime_bundle, dict) else {}
 
         trade_history = [_format_trade(t) for t in trades]
         log_history = [_format_log(log_item) for log_item in reversed(logs)]
         if hasattr(state_manager, "update"):
-            state_manager.update(trade_history=trade_history, logs=log_history)
+            state_manager.update(trade_history=trade_history, logs=log_history, runtime_settings=runtime_settings)
     finally:
         await repository.close()

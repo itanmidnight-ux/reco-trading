@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-upsert_env_var() {
-  local env_file="$1"
-  local key="$2"
-  local value="$3"
-
-  if [ ! -f "${env_file}" ]; then
-    touch "${env_file}"
-  fi
-
-  if grep -qE "^${key}=" "${env_file}"; then
-    sed -i "s|^${key}=.*|${key}=${value}|" "${env_file}"
-  else
-    printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
-  fi
-}
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/lib/runtime_env.sh"
 
 sync_mode_to_env() {
   local mode_option="$1"
@@ -38,6 +25,34 @@ sync_mode_to_env() {
   fi
 }
 
+attempt_postgres_auto_fix() {
+  local helper="scripts/postgres/bootstrap_local_postgres.sh"
+  case "${DB_HOST:-localhost}" in
+    localhost|127.0.0.1|::1) ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  if [ ! -f "${helper}" ]; then
+    return 1
+  fi
+
+  if [ ! -x "${helper}" ]; then
+    chmod +x "${helper}"
+  fi
+
+  echo "Detecté un problema con PostgreSQL. Intentando corregirlo automáticamente..."
+  if ! "${helper}"; then
+    return 1
+  fi
+
+  load_runtime_env
+  if [ -z "${POSTGRES_DSN:-}" ]; then
+    build_postgres_dsn_from_config || true
+  fi
+}
+
 if [ -f .venv/bin/activate ]; then
   # shellcheck disable=SC1091
   source .venv/bin/activate
@@ -45,22 +60,10 @@ else
   echo "Aviso: .venv/bin/activate no existe. Usando Python del sistema."
 fi
 
-if [ -f .env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source .env
-  set +a
-fi
+load_runtime_env
 
-if [ -z "${POSTGRES_DSN:-}" ] && [ -f config/database.env ]; then
-  set -a
-  # shellcheck disable=SC1091
-  source config/database.env
-  set +a
-  if [ -n "${DB_USER:-}" ] && [ -n "${DB_PASSWORD:-}" ] && [ -n "${DB_HOST:-}" ] && [ -n "${DB_PORT:-}" ] && [ -n "${DB_NAME:-}" ]; then
-    export POSTGRES_DSN="postgresql+asyncpg://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
-    upsert_env_var .env POSTGRES_DSN "${POSTGRES_DSN}"
-  fi
+if [ -z "${POSTGRES_DSN:-}" ]; then
+  build_postgres_dsn_from_config || true
 fi
 
 echo "Seleccione modo de ejecución:"
@@ -103,6 +106,17 @@ for required_var in BINANCE_API_KEY BINANCE_API_SECRET POSTGRES_DSN; do
   fi
 done
 
+if [ "${#missing_vars[@]}" -gt 0 ] && printf '%s\n' "${missing_vars[@]}" | grep -qx "POSTGRES_DSN"; then
+  if attempt_postgres_auto_fix; then
+    missing_vars=()
+    for required_var in BINANCE_API_KEY BINANCE_API_SECRET POSTGRES_DSN; do
+      if [ -z "${!required_var:-}" ]; then
+        missing_vars+=("${required_var}")
+      fi
+    done
+  fi
+fi
+
 if [ ${#missing_vars[@]} -gt 0 ]; then
   echo "Error: faltan variables obligatorias: ${missing_vars[*]}"
   echo "Sugerencia rápida:"
@@ -113,6 +127,19 @@ if [ ${#missing_vars[@]} -gt 0 ]; then
   echo "       BINANCE_API_SECRET=tu_api_secret"
   echo "       POSTGRES_DSN=postgresql+asyncpg://trading:***@localhost:5432/reco_trading_prod"
   exit 1
+fi
+
+if ! postgres_host_reachable; then
+  if attempt_postgres_auto_fix && postgres_host_reachable; then
+    echo "PostgreSQL fue reparado automáticamente. Continuando con el arranque..."
+  else
+    echo "Error: PostgreSQL no está disponible en el host/puerto configurados por POSTGRES_DSN."
+    echo "Sugerencia rápida:"
+    echo "  1) Ejecuta scripts/postgres/bootstrap_local_postgres.sh o corrige DB_HOST/DB_PORT en config/database.env o POSTGRES_DSN en .env."
+    echo "  2) Verifica conectividad antes de arrancar el bot."
+    echo "     Ejemplo esperado: postgresql+asyncpg://usuario:clave@localhost:5432/reco_trading_prod"
+    exit 1
+  fi
 fi
 
 python main.py

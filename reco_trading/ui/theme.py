@@ -74,10 +74,26 @@ def app_stylesheet() -> str:
             font-size: 19px;
             font-weight: 700;
         }}
+        QLabel#statusRibbon {{
+            color: {COLORS['text_primary']};
+            font-size: 15px;
+            font-weight: 700;
+            padding: 12px 16px;
+            border-radius: 14px;
+            border: 1px solid rgba(122, 97, 255, 0.35);
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 rgba(22, 31, 56, 0.95), stop:1 rgba(31, 50, 89, 0.95));
+        }}
         QLabel#smallMetricValue {{
             color: {COLORS['text_primary']};
             font-size: 14px;
             font-weight: 600;
+        }}
+        QLabel#metricBadge {{
+            color: {COLORS['text_secondary']};
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.6px;
         }}
         QTableWidget, QTextEdit {{
             background: {COLORS['panel']};
