@@ -95,3 +95,27 @@ def test_dashboard_controls_and_status_colors_match_engine_states() -> None:
 
     tab.update_state({"status": "error"})
     assert "#ea3943" in tab.top_bar.styleSheet()
+
+
+def test_dashboard_tolerates_null_confidence_and_bad_candles() -> None:
+    _app()
+    tab = DashboardTab()
+
+    snapshot = {
+        "pair": "BTC/USDT",
+        "status": "WAITING_MARKET_DATA",
+        "trend": "NEUTRAL",
+        "confidence": None,
+        "daily_pnl": None,
+        "win_rate": None,
+        "candles_5m": [
+            {"open": "bad", "high": 10, "low": 5, "close": 7, "volume": 1},
+            {"open": 7, "high": 11, "low": 6, "close": 10, "volume": 2},
+        ],
+    }
+
+    tab.update_state(snapshot)
+
+    assert "BTC/USDT" in tab.top_bar.text()
+    assert "Confidence 0%" in tab.confidence_label.text()
+    assert "USDT" in tab.account_cards["daily_pnl"].value.text()

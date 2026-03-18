@@ -107,16 +107,22 @@ class CandlestickChartWidget(QWidget):
         if not raw_candles:
             return
 
-        normalized = [
-            Candle(
-                open=float(c.get("open", 0.0)),
-                high=float(c.get("high", 0.0)),
-                low=float(c.get("low", 0.0)),
-                close=float(c.get("close", 0.0)),
-                volume=float(c.get("volume", 0.0)),
-            )
-            for c in raw_candles[-120:]
-        ]
+        normalized: list[Candle] = []
+        for candle in raw_candles[-120:]:
+            try:
+                normalized.append(
+                    Candle(
+                        open=float(candle.get("open", 0.0)),
+                        high=float(candle.get("high", 0.0)),
+                        low=float(candle.get("low", 0.0)),
+                        close=float(candle.get("close", 0.0)),
+                        volume=float(candle.get("volume", 0.0)),
+                    )
+                )
+            except (TypeError, ValueError, AttributeError):
+                continue
+        if not normalized:
+            return
         signature = tuple((c.open, c.high, c.low, c.close, c.volume) for c in normalized)
         if signature == self._last_signature:
             return
