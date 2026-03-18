@@ -66,6 +66,18 @@ class TerminalDashboard:
         try:
             snap = DashboardSnapshot.from_mapping(snapshot) if isinstance(snapshot, Mapping) else snapshot
 
+            headline = Table.grid(expand=True)
+            headline.add_column(ratio=3)
+            headline.add_column(ratio=2, justify="right")
+            headline.add_row(
+                f"[bold cyan]{snap.pair or '-'}[/bold cyan]  •  [white]{snap.timeframe or '-'}[/white]",
+                f"[bold]{snap.state}[/bold]",
+            )
+            headline.add_row(
+                f"Signal [bold]{snap.signal or '-'}[/bold]  •  Trend [bold]{snap.trend or '-'}[/bold]",
+                f"Confidence [bold green]{_fmt_pct(snap.confidence)}[/bold green]",
+            )
+
             status = Table.grid(expand=True)
             status.add_column()
             status.add_column()
@@ -100,9 +112,10 @@ class TerminalDashboard:
 
             layout = Layout()
             layout.split_column(
-                Layout(Panel(status, title="Reco Trading Bot"), ratio=2),
+                Layout(Panel(headline, title="Executive Snapshot", border_style="bright_blue"), ratio=1),
+                Layout(Panel(status, title="Reco Trading Bot", border_style="cyan"), ratio=2),
                 Layout(Panel(portfolio, title="Portfolio & Risk"), ratio=2),
-                Layout(Panel(signal_table), ratio=3),
+                Layout(Panel(signal_table, border_style="magenta"), ratio=3),
             )
             return Group(layout)
         except Exception as exc:  # noqa: BLE001

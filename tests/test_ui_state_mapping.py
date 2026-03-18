@@ -95,3 +95,28 @@ def test_dashboard_controls_and_status_colors_match_engine_states() -> None:
 
     tab.update_state({"status": "error"})
     assert "#ea3943" in tab.top_bar.styleSheet()
+
+
+def test_dashboard_highlight_cards_and_feed_render_rich_snapshot() -> None:
+    _app()
+    tab = DashboardTab()
+    tab.update_state(
+        {
+            "pair": "BTC/USDT",
+            "current_price": 50123.45,
+            "trend": "BUY",
+            "signal": "BUY",
+            "confidence": 0.87,
+            "daily_pnl": 42.5,
+            "cooldown": "READY",
+            "status": "waiting_market_data",
+            "risk_metrics": {"current_exposure": 0.35},
+            "system": {"api_latency_ms": 28},
+            "runtime_settings": {"investment_mode": "Balanced", "capital_limit_usdt": 300.0},
+            "logs": [{"time": "12:00:00", "level": "INFO", "message": "signal generated"}],
+        }
+    )
+
+    assert "BUY • 87%" in tab.hero_cards["signal"].value.text()
+    assert "Balanced" in tab.feed_meta.text()
+    assert "signal generated" in tab.feed.text()
