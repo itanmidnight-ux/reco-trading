@@ -163,6 +163,10 @@ fi
 
 ensure_env_file
 
+if [[ -f scripts/ensure_postgres.sh ]]; then
+  chmod +x scripts/ensure_postgres.sh
+fi
+
 echo 'PostgreSQL sincronizado y validado correctamente.'
 echo "Archivo .env sincronizado (actualiza manualmente BINANCE_API_KEY y BINANCE_API_SECRET)."
 echo 'Instalación completada con éxito.'

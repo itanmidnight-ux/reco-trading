@@ -14,6 +14,7 @@ GRID_COLOR = "#2a2f3a"
 TEXT_COLOR = "#e6e8ee"
 BULL_COLOR = "#16c784"
 BEAR_COLOR = "#ea3943"
+ACCENT_COLOR = "#5a8dff"
 
 
 @dataclass
@@ -101,6 +102,8 @@ class CandlestickChartWidget(QWidget):
         self._ema9_line = self._price_plot.plot(pen=pg.mkPen("#4da3ff", width=1.2), name="EMA 9")
         self._ema21_line = self._price_plot.plot(pen=pg.mkPen("#f0b90b", width=1.2), name="EMA 21")
         self._ema50_line = self._price_plot.plot(pen=pg.mkPen("#c678dd", width=1.2), name="EMA 50")
+        self._last_price_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(ACCENT_COLOR, width=1, style=pg.QtCore.Qt.PenStyle.DashLine))
+        self._price_plot.addItem(self._last_price_line)
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
@@ -123,7 +126,10 @@ class CandlestickChartWidget(QWidget):
 
         self._candles = normalized
         self._last_signature = signature
-        self._status.setText("Live candles from engine stream")
+        last_close = normalized[-1].close
+        last_open = normalized[-1].open
+        direction = "Bullish" if last_close >= last_open else "Bearish"
+        self._status.setText(f"Live candles • last close {last_close:,.2f} • {direction}")
         self._update_plot_items()
 
     def _update_plot_items(self) -> None:
@@ -137,6 +143,7 @@ class CandlestickChartWidget(QWidget):
         self._ema9_line.setData(x, _ema(closes, 9))
         self._ema21_line.setData(x, _ema(closes, 21))
         self._ema50_line.setData(x, _ema(closes, 50))
+        self._last_price_line.setPos(float(closes[-1]))
 
         self._price_plot.setXRange(max(0, len(self._candles) - 120), len(self._candles))
 
@@ -150,4 +157,3 @@ def _ema(values: np.ndarray, period: int) -> np.ndarray:
     for i in range(1, values.size):
         ema[i] = (values[i] * alpha) + (ema[i - 1] * (1.0 - alpha))
     return ema
-

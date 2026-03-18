@@ -39,7 +39,10 @@ class Repository:
         self.engine = create_async_engine(dsn, echo=False, future=True)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
-    @safe_db_call()
+    async def verify_connectivity(self) -> None:
+        async with self.engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+
     async def setup(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -51,6 +54,7 @@ class Repository:
             if "exit_slippage_ratio" not in columns:
                 await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_slippage_ratio DOUBLE PRECISION"))
             await self._migrate_signals_columns(conn)
+            await self._migrate_market_data_columns(conn)
 
     async def _migrate_signals_columns(self, conn: Any) -> None:
         existing_columns = await conn.run_sync(lambda sync_conn: inspect(sync_conn).get_columns("signals"))
@@ -78,6 +82,12 @@ class Repository:
         if order_flow_column and getattr(order_flow_column.get("type"), "length", None) != 32:
             await conn.execute(text("ALTER TABLE signals ALTER COLUMN order_flow TYPE VARCHAR(32)"))
             self.logger.info("Database migration applied: widened signals.order_flow to VARCHAR(32)")
+
+    async def _migrate_market_data_columns(self, conn: Any) -> None:
+        existing_columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("market_data")})
+        if "candle_timestamp" not in existing_columns:
+            await conn.execute(text("ALTER TABLE market_data ADD COLUMN IF NOT EXISTS candle_timestamp TIMESTAMP WITH TIME ZONE"))
+            self.logger.info("Database migration applied: added market_data.candle_timestamp")
 
     @safe_db_call()
     async def record_log(self, level: str, state: str, message: str) -> None:
@@ -109,18 +119,39 @@ class Repository:
         )
 
     @safe_db_call()
-    async def record_market_candle(self, symbol: str, timeframe: str, candle: Mapping[str, float]) -> None:
-        await self._persist(
-            MarketData(
-                symbol=symbol,
-                timeframe=timeframe,
-                open=float(candle["open"]),
-                high=float(candle["high"]),
-                low=float(candle["low"]),
-                close=float(candle["close"]),
-                volume=float(candle["volume"]),
-            )
-        )
+    async def record_market_candle(self, symbol: str, timeframe: str, candle: Mapping[str, Any]) -> None:
+        candle_timestamp = candle.get("timestamp")
+        async with self.session_factory() as session:
+            existing = None
+            if isinstance(candle_timestamp, datetime):
+                query = select(MarketData).where(
+                    MarketData.symbol == symbol,
+                    MarketData.timeframe == timeframe,
+                    MarketData.candle_timestamp == candle_timestamp,
+                )
+                existing = (await session.execute(query)).scalar_one_or_none()
+
+            if existing is None:
+                session.add(
+                    MarketData(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        candle_timestamp=candle_timestamp if isinstance(candle_timestamp, datetime) else None,
+                        open=float(candle["open"]),
+                        high=float(candle["high"]),
+                        low=float(candle["low"]),
+                        close=float(candle["close"]),
+                        volume=float(candle["volume"]),
+                    )
+                )
+            else:
+                existing.open = float(candle["open"])
+                existing.high = float(candle["high"])
+                existing.low = float(candle["low"])
+                existing.close = float(candle["close"])
+                existing.volume = float(candle["volume"])
+                existing.timestamp = datetime.utcnow()
+            await session.commit()
 
     async def create_trade(
         self,
@@ -146,7 +177,6 @@ class Repository:
         await self._persist(trade)
         return trade
 
-    @safe_db_call()
     async def close_trade(self, trade_id: int, exit_price: float, pnl: float, status: str, exit_slippage_ratio: float | None = None) -> None:
         async with self.session_factory() as session:
             trade = await session.get(Trade, trade_id)
@@ -204,7 +234,6 @@ class Repository:
     async def get_daily_pnl(self) -> float:
         return await self.get_session_pnl()
 
-    @safe_db_call(default=[])
     async def get_open_trades(self, symbol: str) -> list[Trade]:
         async with self.session_factory() as session:
             q = (

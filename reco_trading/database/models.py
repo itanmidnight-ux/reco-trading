@@ -61,6 +61,7 @@ class MarketData(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    candle_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
     timeframe: Mapped[str] = mapped_column(String(8))
     open: Mapped[float] = mapped_column(Float)
