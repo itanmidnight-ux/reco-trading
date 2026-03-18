@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation
-from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QListWidget, QProgressBar, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QListWidget, QProgressBar, QVBoxLayout, QWidget
 
+from reco_trading.ui.chart_widget import CandlestickChartWidget
 from reco_trading.ui.widgets.stat_card import StatCard
 
 
@@ -22,47 +23,74 @@ class MarketTab(QWidget):
         self.market_ribbon.setObjectName("statusRibbon")
         root.addWidget(self.market_ribbon)
 
-        panel = QFrame()
-        panel.setObjectName("panelCard")
-        root.addWidget(panel)
-        layout = QGridLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setVerticalSpacing(10)
+        content = QHBoxLayout()
+        content.setSpacing(10)
+        root.addLayout(content, 1)
 
+        self.left_panel = QFrame()
+        self.left_panel.setObjectName("panelCard")
+        left_layout = QVBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(12, 12, 12, 12)
+        left_layout.addWidget(self._section_title("Live Market Stats"))
         self.cards = {
             "price": StatCard("Price", compact=True),
             "spread": StatCard("Spread", compact=True),
             "spread_ratio": StatCard("Spread %", compact=True),
-            "volatility": StatCard("Volatility", compact=True),
-            "order_flow": StatCard("Order Flow", compact=True),
             "trend": StatCard("Trend", compact=True),
             "adx": StatCard("ADX", compact=True),
-            "market_regime": StatCard("Market Regime", compact=True),
             "atr": StatCard("ATR", compact=True),
         }
-        for i, card in enumerate(self.cards.values()):
-            layout.addWidget(card, i // 3, i % 3)
-
+        for card in self.cards.values():
+            left_layout.addWidget(card)
         self.sentiment = QLabel("Sentiment: Neutral")
         self.sentiment.setObjectName("smallMetricValue")
         self.activity = QProgressBar()
         self.activity.setRange(0, 100)
-        layout.addWidget(self.sentiment, 3, 0, 1, 2)
-        layout.addWidget(self.activity, 3, 2)
+        left_layout.addWidget(self.sentiment)
+        left_layout.addWidget(self.activity)
+        left_layout.addStretch(1)
 
+        self.chart_panel = QFrame()
+        self.chart_panel.setObjectName("panelCard")
+        chart_layout = QVBoxLayout(self.chart_panel)
+        chart_layout.setContentsMargins(12, 12, 12, 12)
+        chart_layout.addWidget(self._section_title("Expanded Market Chart"))
+        self.chart = CandlestickChartWidget()
+        chart_layout.addWidget(self.chart)
+
+        self.right_panel = QFrame()
+        self.right_panel.setObjectName("panelCard")
+        right_layout = QVBoxLayout(self.right_panel)
+        right_layout.setContentsMargins(12, 12, 12, 12)
+        right_layout.addWidget(self._section_title("Execution Context"))
+        self.context_cards = {
+            "volatility": StatCard("Volatility", compact=True),
+            "order_flow": StatCard("Order Flow", compact=True),
+            "market_regime": StatCard("Market Regime", compact=True),
+        }
+        for card in self.context_cards.values():
+            right_layout.addWidget(card)
         self.orderbook = QListWidget()
         self.orderbook.addItems(["Bid/Ask depth waiting data..."])
         self.movers = QListWidget()
         self.movers.addItems(["Top movers unavailable"])
-        layout.addWidget(QLabel("Order Book Snapshot"), 4, 0)
-        layout.addWidget(QLabel("Market Intelligence"), 4, 1, 1, 2)
-        layout.addWidget(self.orderbook, 5, 0)
-        layout.addWidget(self.movers, 5, 1, 1, 2)
-        layout.setRowStretch(5, 1)
+        right_layout.addWidget(self._section_title("Order Book Snapshot"))
+        right_layout.addWidget(self.orderbook)
+        right_layout.addWidget(self._section_title("Market Intelligence"))
+        right_layout.addWidget(self.movers)
+
+        content.addWidget(self.left_panel, 2)
+        content.addWidget(self.chart_panel, 5)
+        content.addWidget(self.right_panel, 2)
 
         self._anim = QPropertyAnimation(self.activity, b"value", self)
         self._anim.setDuration(320)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def _section_title(self, title: str) -> QLabel:
+        label = QLabel(title)
+        label.setObjectName("metricLabel")
+        return label
 
     def update_state(self, state: dict) -> None:
         spread = float(state.get("spread", 0) or 0)
@@ -97,12 +125,12 @@ class MarketTab(QWidget):
         self.cards["price"].set_value(f"{price:.2f}")
         self.cards["spread"].set_value(f"{spread:.6f}")
         self.cards["spread_ratio"].set_value(f"{spread_ratio:.4f}%")
-        self.cards["volatility"].set_value(str(state.get("volatility_regime", "-")))
-        self.cards["order_flow"].set_value(str(state.get("order_flow", "-")))
         self.cards["trend"].set_value(trend)
         self.cards["adx"].set_value(f"{adx:.2f}")
-        self.cards["market_regime"].set_value(str(state.get("market_regime", "-")))
         self.cards["atr"].set_value(f"{atr:.4f}")
+        self.context_cards["volatility"].set_value(str(state.get("volatility_regime", "-")))
+        self.context_cards["order_flow"].set_value(str(state.get("order_flow", "-")))
+        self.context_cards["market_regime"].set_value(str(state.get("market_regime", "-")))
 
         normalized_trend = trend.upper().replace("BUY", "UP").replace("SELL", "DOWN")
         sentiment = "Bullish" if "UP" in normalized_trend else "Bearish" if "DOWN" in normalized_trend else "Neutral"
