@@ -54,10 +54,17 @@ class TradesTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.trade_store: list[dict] = []
+        self._history_signature: tuple[tuple[str, str, str, str], ...] = tuple()
         layout = QVBoxLayout(self)
         title = QLabel("Trade Blotter")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
+        subtitle = QLabel("Execution history, realized performance and searchable trade detail flow")
+        subtitle.setObjectName("metricLabel")
+        layout.addWidget(subtitle)
+        self.summary_ribbon = QLabel("0 trades • waiting for execution events")
+        self.summary_ribbon.setObjectName("statusRibbon")
+        layout.addWidget(self.summary_ribbon)
 
         summary_grid = QGridLayout()
         self.summary_cards = {
@@ -88,12 +95,20 @@ class TradesTab(QWidget):
 
     def add_trade(self, trade: dict) -> None:
         self.trade_store.append(trade)
+        self._history_signature = self._signature_for(self.trade_store)
         self._reload_table()
 
     def update_state(self, state: dict) -> None:
         history = state.get("trade_history", [])
-        if len(history) < len(self.trade_store):
+        signature = self._signature_for(history)
+        if signature == self._history_signature:
             return
+        if len(history) < len(self.trade_store):
+            self._history_signature = signature
+            self.trade_store = list(history)
+            self._reload_table()
+            return
+        self._history_signature = signature
         self.trade_store = list(history)
         self._reload_table()
 
@@ -128,6 +143,11 @@ class TradesTab(QWidget):
         self.summary_cards["closed"].set_value(str(closed))
         self.summary_cards["realized_pnl"].set_value(f"{realized_pnl:.4f}")
         self.summary_cards["win_rate"].set_value(f"{win_rate:.1f}%")
+        ribbon_color = "#16c784" if realized_pnl >= 0 else "#ea3943"
+        self.summary_ribbon.setText(
+            f"Open {open_count} • Closed {closed} • Realized PnL {realized_pnl:.4f} • Win Rate {win_rate:.1f}%"
+        )
+        self.summary_ribbon.setStyleSheet(f"color: {ribbon_color};")
 
     def _open_detail(self, row: int, _column: int) -> None:
         trade_id_item: QTableWidgetItem | None = self.table.item(row, 0)
@@ -136,3 +156,14 @@ class TradesTab(QWidget):
         trade = next((t for t in self.trade_store if str(t.get("trade_id")) == trade_id_item.text()), None)
         if trade:
             TradeDetailsDialog(trade, self).exec()
+
+    def _signature_for(self, trades: list[dict]) -> tuple[tuple[str, str, str, str], ...]:
+        return tuple(
+            (
+                str(trade.get("trade_id", "")),
+                str(trade.get("status", "")),
+                str(trade.get("pnl", "")),
+                str(trade.get("exit_time", "")),
+            )
+            for trade in trades
+        )

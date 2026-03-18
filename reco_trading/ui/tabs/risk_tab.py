@@ -9,6 +9,7 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class RiskTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
+        self._last_signature: tuple[object, ...] | None = None
         root = QVBoxLayout(self)
         title = QLabel("Risk Center")
         title.setObjectName("sectionTitle")
@@ -17,6 +18,9 @@ class RiskTab(QWidget):
         subtitle = QLabel("Exposure, drawdown and protection controls")
         subtitle.setObjectName("metricLabel")
         root.addWidget(subtitle)
+        self.risk_ribbon = QLabel("Risk telemetry idle • waiting for live exposure snapshot")
+        self.risk_ribbon.setObjectName("statusRibbon")
+        root.addWidget(self.risk_ribbon)
 
         panel = QFrame()
         panel.setObjectName("panelCard")
@@ -55,6 +59,17 @@ class RiskTab(QWidget):
 
     def update_state(self, state: dict) -> None:
         metrics = state.get("risk_metrics", {})
+        signature = (
+            metrics.get("risk_per_trade", "-"),
+            metrics.get("max_concurrent_trades", "-"),
+            metrics.get("daily_drawdown", "-"),
+            metrics.get("current_exposure", "-"),
+            metrics.get("consecutive_losses", "-"),
+        )
+        if signature == self._last_signature:
+            return
+        self._last_signature = signature
+
         for key, card in self.cards.items():
             card.set_value(str(metrics.get(key, "-")))
         try:
@@ -80,3 +95,6 @@ class RiskTab(QWidget):
         else:
             self.status_badge.setText("Risk posture: CAUTION")
             self.status_badge.setStyleSheet("color:#f0b90b;")
+        self.risk_ribbon.setText(
+            f"Exposure {exposure}% • Drawdown {daily_drawdown * 100:.2f}% • Consecutive losses {metrics.get('consecutive_losses', 0)}"
+        )
