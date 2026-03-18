@@ -147,6 +147,10 @@ def create_app(runtime_control: RuntimeControl, settings: Settings | None = None
     async def _dashboard_payload() -> dict[str, Any]:
         state = runtime_control.snapshot()
         snapshot = state.get("snapshot", {})
+        balance = snapshot.get("balance")
+        equity = snapshot.get("equity", snapshot.get("total_equity"))
+        daily_pnl = snapshot.get("daily_pnl")
+        win_rate = snapshot.get("win_rate")
         return {
             "health": {
                 "status": "ok",
@@ -157,10 +161,21 @@ def create_app(runtime_control: RuntimeControl, settings: Settings | None = None
                 "heartbeat_age_seconds": state["heartbeat_age_seconds"],
             },
             "metrics": {
-                "balance": snapshot.get("balance"),
-                "equity": snapshot.get("equity"),
-                "daily_pnl": snapshot.get("daily_pnl"),
-                "win_rate": snapshot.get("win_rate"),
+                "balance": balance,
+                "equity": equity,
+                "total_equity": snapshot.get("total_equity", equity),
+                "daily_pnl": daily_pnl,
+                "session_pnl": snapshot.get("session_pnl"),
+                "win_rate": win_rate,
+                "trades_today": snapshot.get("trades_today"),
+                "btc_balance": snapshot.get("btc_balance"),
+                "btc_value": snapshot.get("btc_value"),
+                "price": snapshot.get("price"),
+                "bid": snapshot.get("bid"),
+                "ask": snapshot.get("ask"),
+                "spread": snapshot.get("spread"),
+                "signal": snapshot.get("signal"),
+                "confidence": snapshot.get("confidence"),
                 "status": snapshot.get("status"),
             },
             "positions": {
@@ -169,6 +184,7 @@ def create_app(runtime_control: RuntimeControl, settings: Settings | None = None
                 "symbol": snapshot.get("pair"),
             },
             "runtime": state,
+            "snapshot": snapshot,
             "settings": _safe_settings_payload(settings),
         }
 
