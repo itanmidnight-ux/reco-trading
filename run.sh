@@ -197,15 +197,35 @@ if [ ${#missing_vars[@]} -gt 0 ]; then
   exit 1
 fi
 
-if ! postgres_host_reachable; then
-  if ! attempt_postgres_auto_fix || ! postgres_host_reachable; then
-    echo "Error: PostgreSQL no está disponible en el host/puerto configurados por POSTGRES_DSN."
-    echo "Sugerencia rápida:"
-    echo "  1) Revisa config/database.env y asegúrate de que DB_USER, DB_PASSWORD, DB_NAME, DB_HOST y DB_PORT estén completos."
-    echo "  2) Ejecuta ./scripts/ensure_postgres.sh o ./install.sh para aprovisionar PostgreSQL."
-    echo "     Ejemplo esperado: postgresql+asyncpg://usuario:clave@localhost:5432/reco_trading_prod"
-    exit 1
-  fi
+if ! python - <<'PY'
+from __future__ import annotations
+
+import os
+import socket
+import sys
+from urllib.parse import urlparse
+
+dsn = os.environ.get("POSTGRES_DSN", "")
+parsed = urlparse(dsn)
+host = parsed.hostname
+port = parsed.port or 5432
+
+if not host:
+    raise SystemExit(2)
+
+try:
+    with socket.create_connection((host, port), timeout=3):
+        raise SystemExit(0)
+except OSError:
+    raise SystemExit(1)
+PY
+then
+  echo "Error: PostgreSQL no está disponible en el host/puerto configurados por POSTGRES_DSN."
+  echo "Sugerencia rápida:"
+  echo "  1) Inicia PostgreSQL o corrige DB_HOST/DB_PORT en config/database.env o POSTGRES_DSN en .env."
+  echo "  2) Verifica conectividad antes de arrancar el bot."
+  echo "     Ejemplo esperado: postgresql+asyncpg://usuario:clave@localhost:5432/reco_trading_prod"
+  exit 1
 fi
 
 python main.py

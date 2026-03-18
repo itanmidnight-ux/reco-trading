@@ -39,10 +39,6 @@ class Repository:
         self.engine = create_async_engine(dsn, echo=False, future=True)
         self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
 
-    async def verify_connectivity(self) -> None:
-        async with self.engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-
     async def setup(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
