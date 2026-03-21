@@ -46,20 +46,42 @@ class TimeframeConfluence:
         points = sum([trend_aligned, rsi_aligned, mom_aligned, vol_compat])
         score = 0.50 + (points / 4) * 0.50
 
-        if trend_aligned:
-            notes.append("trend_aligned")
-            dominant_side = "BUY" if trend5_bull else "SELL"
-        else:
+        # Sistema de penalización diferenciada por divergencia
+        divergence_penalty = 1.0
+
+        # Trend divergence = penalización principal (35% = más agresiva)
+        if not trend_aligned:
             notes.append("trend_divergence")
             dominant_side = "MIXED"
-            score *= 0.85
+            divergence_penalty *= 0.65
 
+            # Compensación parcial si RSI alineado (añade 15% recuperación)
+            if rsi_aligned:
+                divergence_penalty *= 1.15
+        else:
+            notes.append("trend_aligned")
+            dominant_side = "BUY" if trend5_bull else "SELL"
+
+        # RSI no alineado = penalización adicional
         if rsi_aligned:
             notes.append("rsi_aligned")
+        else:
+            divergence_penalty *= 0.90
+
+        # Momentum no alineado = penalización leve
         if mom_aligned:
             notes.append("momentum_aligned")
+        else:
+            divergence_penalty *= 0.95
+
+        # Volatilidad no compatible = penalización leve
         if not vol_compat:
             notes.append("volatility_divergence")
+            divergence_penalty *= 0.95
+
+        # Aplicar penalización combinada y normalizar resultado
+        score *= divergence_penalty
+        score = round(min(max(score, 0.0), 1.0), 4)
 
         return ConfluenceResult(
             score=round(min(max(score, 0.0), 1.0), 4),

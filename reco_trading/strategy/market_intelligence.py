@@ -101,8 +101,8 @@ class LiquidityZoneDetector:
         swing_highs = recent[(recent["high"] == recent["high"].rolling(5, center=True).max()) | volume_spikes]
         swing_lows = recent[(recent["low"] == recent["low"].rolling(5, center=True).min()) | volume_spikes]
 
-        support_zone = self._cluster_price(swing_lows.get("low"), float(recent["close"].iloc[-1]), prefer="lower")
-        resistance_zone = self._cluster_price(swing_highs.get("high"), float(recent["close"].iloc[-1]), prefer="upper")
+        support_zone = self._cluster_price_dbscan(swing_lows.get("low"), float(recent["close"].iloc[-1]), prefer="lower")
+        resistance_zone = self._cluster_price_dbscan(swing_highs.get("high"), float(recent["close"].iloc[-1]), prefer="upper")
 
         price = float(recent["close"].iloc[-1])
         distance_to_support = self._distance_ratio(price, support_zone)
@@ -195,6 +195,80 @@ class LiquidityZoneDetector:
         upper = [lvl for lvl in levels if lvl >= price]
         return min(upper) if upper else max(levels)
 
+    def _cluster_price_dbscan(self, series: pd.Series | None, price: float, prefer: str) -> float | None:
+        """
+        Detecta clusters reales de liquidez usando DBSCAN.
+
+        Algoritmo:
+        1. Validar que series no está vacía y tiene mínimo 3 puntos
+        2. Si < 3 puntos, retornar mediana (DBSCAN requiere min_samples=3)
+        3. Intenta importar DBSCAN y numpy
+        4. Si falla import, fallback a método _cluster_price() original
+        5. Preparar puntos en formato (n_samples, n_features)
+        6. DBSCAN con eps=0.5% precio, min_samples=3
+        7. Identificar cluster más denso (excluye outliers -1)
+        8. Retornar centroide del cluster según prefer (lower/upper)
+
+        Args:
+            series: Serie de pandas con precios de swing.
+            price: Precio actual para normalización y preferencia.
+            prefer: "lower" para soportes o "upper" para resistencias.
+
+        Returns:
+            float | None: precio del cluster más denso, o None si no hay datos.
+        """
+        if series is None or series.empty:
+            return None
+
+        cleaned = pd.to_numeric(series, errors="coerce").dropna()
+        if len(cleaned) < 3:
+            return float(cleaned.median()) if len(cleaned) > 0 else None
+
+        try:
+            import numpy as np
+            from sklearn.cluster import DBSCAN
+        except ImportError:
+            return self._cluster_price(series, price, prefer)
+
+        points = cleaned.values.reshape(-1, 1)
+        eps = max(price, 1e-9) * 0.005
+        clusterer = DBSCAN(eps=eps, min_samples=3)
+        labels = clusterer.fit_predict(points)
+        valid_labels = labels[labels != -1]
+
+        if len(valid_labels) == 0:
+            return float(cleaned.median())
+
+        cluster_centroids: dict[int, tuple[float, int]] = {}
+        for label in np.unique(valid_labels):
+            mask = labels == label
+            cluster_values = cleaned.values[mask]
+            centroid = float(np.mean(cluster_values))
+            cluster_size = len(cluster_values)
+            cluster_centroids[int(label)] = (centroid, cluster_size)
+
+        if not cluster_centroids:
+            return float(cleaned.median())
+
+        if prefer == "lower":
+            lower_clusters = {
+                label: centroid
+                for label, (centroid, _size) in cluster_centroids.items()
+                if centroid <= price
+            }
+            if lower_clusters:
+                return max(lower_clusters.values())
+            return min(centroid for centroid, _size in cluster_centroids.values())
+
+        upper_clusters = {
+            label: centroid
+            for label, (centroid, _size) in cluster_centroids.items()
+            if centroid >= price
+        }
+        if upper_clusters:
+            return min(upper_clusters.values())
+        return max(centroid for centroid, _size in cluster_centroids.values())
+
     def _distance_ratio(self, price: float, zone: float | None) -> float | None:
         if zone is None:
             return None
@@ -204,30 +278,87 @@ class LiquidityZoneDetector:
 class MarketRegimeClassifier:
     """Classifies market regime from trend/volatility descriptors."""
 
+    def __init__(self) -> None:
+        """Inicializa clasificador de régimen con tracking de transiciones."""
+        self._last_regime: MarketRegime | None = None
+        self._regime_change_candles: int = 0
+
     def classify(self, df: pd.DataFrame) -> MarketRegimeAssessment:
+        """
+        Clasifica régimen de mercado con detección de transiciones.
+
+        Regímenes:
+        - LOW_ACTIVITY: ATR bajo, ADX bajo, volatilidad baja
+        - HIGH_VOLATILITY: ATR alto o volatilidad extrema
+        - TRENDING: ADX alto + slope significativo
+        - RANGING: ni trending ni extremo
+
+        Penalizaciones por transición:
+        - Detecta si ADX cambia >5 en últimas 5 velas
+        - Reduce risk_multiplier 15% si en transición
+        - Reduce 20% adicional durante 5 velas post-cambio
+
+        Returns:
+            MarketRegimeAssessment con risk_multiplier ajustado
+        """
         if len(df) < 50:
-            return MarketRegimeAssessment(MarketRegime.RANGING, allow_trade=True, risk_multiplier=1.0)
+            return MarketRegimeAssessment(
+                regime=MarketRegime.RANGING,
+                allow_trade=True,
+                risk_multiplier=1.0,
+            )
 
         recent = df.tail(100)
         price = float(recent["close"].iloc[-1])
         atr_ratio = float(recent["atr"].iloc[-1]) / max(price, 1e-9)
-        adx = float(recent.get("adx", pd.Series([20.0])).iloc[-1])
+        adx_series = recent.get("adx", pd.Series([20.0]))
+        adx = float(adx_series.iloc[-1])
 
         ema20 = recent["ema20"]
         slope = (float(ema20.iloc[-1]) - float(ema20.iloc[-10])) / max(price, 1e-9)
+
         returns = recent["close"].pct_change().dropna().abs()
         vol_now = float(returns.iloc[-1]) if not returns.empty else 0.0
         vol_pct = float((returns <= vol_now).mean()) if not returns.empty else 0.5
 
+        recent_5 = df.tail(5)
+        adx_recent = recent_5.get("adx", pd.Series([adx] * len(recent_5)))
+        adx_change = float(adx_recent.iloc[-1]) - float(adx_recent.iloc[0])
+        in_transition = abs(adx_change) > 5
+
         if atr_ratio < 0.002 and adx < 14 and vol_pct < 0.35:
-            return MarketRegimeAssessment(MarketRegime.LOW_ACTIVITY, allow_trade=True, risk_multiplier=0.65)
-        if atr_ratio > 0.02 or vol_pct > 0.92:
-            return MarketRegimeAssessment(MarketRegime.HIGH_VOLATILITY, allow_trade=True, risk_multiplier=0.5)
-        if adx >= 25 and abs(slope) > 0.0015:
-            return MarketRegimeAssessment(MarketRegime.TRENDING, allow_trade=True, risk_multiplier=1.0)
-        if adx >= 20 and abs(slope) > 0.001:
-            return MarketRegimeAssessment(MarketRegime.TRENDING, allow_trade=True, risk_multiplier=0.8)
-        return MarketRegimeAssessment(MarketRegime.RANGING, allow_trade=True, risk_multiplier=0.65)
+            regime = MarketRegime.LOW_ACTIVITY
+            risk_multiplier = 0.65
+        elif atr_ratio > 0.02 or vol_pct > 0.92:
+            regime = MarketRegime.HIGH_VOLATILITY
+            risk_multiplier = 0.5
+        elif adx >= 25 and abs(slope) > 0.0015:
+            regime = MarketRegime.TRENDING
+            risk_multiplier = 1.0
+        elif adx >= 20 and abs(slope) > 0.001:
+            regime = MarketRegime.TRENDING
+            risk_multiplier = 0.8
+        else:
+            regime = MarketRegime.RANGING
+            risk_multiplier = 0.65
+
+        if in_transition:
+            risk_multiplier *= 0.85
+            if self._last_regime != regime:
+                self._regime_change_candles = 5
+
+        if self._regime_change_candles > 0:
+            risk_multiplier *= 0.80
+            self._regime_change_candles -= 1
+
+        self._last_regime = regime
+        risk_multiplier = max(risk_multiplier, 0.35)
+
+        return MarketRegimeAssessment(
+            regime=regime,
+            allow_trade=True,
+            risk_multiplier=risk_multiplier,
+        )
 
 
 class MarketRangePositionFilter:

@@ -47,3 +47,17 @@ def test_insufficient_data_returns_safe_default() -> None:
     assert result.score == 0.70
     assert result.aligned is True
     assert result.dominant_side == "MIXED"
+
+
+def test_confluence_trend_divergence_penalty() -> None:
+    """Verifica penalización -35% para divergencia trend."""
+    confluence = TimeframeConfluence()
+    df5m = _frame(close=105.0, ema20=103.0, ema50=100.0, rsi=60.0, atr=1.0)
+    df15m = _frame(close=195.0, ema20=198.0, ema50=200.0, rsi=45.0, atr=2.0)
+
+    result = confluence.evaluate(df5m, df15m)
+
+    assert result.score < 0.60
+    assert result.aligned is False
+    assert result.dominant_side == "MIXED"
+    assert all(isinstance(note, str) for note in result.notes)
