@@ -68,7 +68,7 @@ class SessionTracker:
             recommendation = 'PAUSE'
             size_multiplier = 0.0
         elif streak <= -2 or (total >= 4 and win_rate < 0.45):
-            recommendation = 'REDUCE_SIZE'
+            recommendation = 'REDUCE'
             size_multiplier = 0.6
         elif streak >= 3 and win_rate >= 0.60 and mean > 0:
             recommendation = 'INCREASE'

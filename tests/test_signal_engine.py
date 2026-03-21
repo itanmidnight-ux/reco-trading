@@ -5,34 +5,39 @@ import pandas as pd
 from reco_trading.strategy.signal_engine import SignalEngine
 
 
-def _frame(*, close: float, ema20: float, ema50: float, rsi: float, volume: float = 1200.0, vol_ma20: float = 1000.0, atr: float = 1.0, adx: float = 20.0, rows: int = 30) -> pd.DataFrame:
-    base = pd.DataFrame(
+def _frame(rows: int = 3) -> pd.DataFrame:
+    return pd.DataFrame(
         {
-            "open": [close - 0.2] * rows,
-            "high": [close + 0.3] * rows,
-            "low": [close - 0.4] * rows,
-            "close": [close] * rows,
-            "ema20": [ema20] * rows,
-            "ema50": [ema50] * rows,
-            "rsi": [rsi] * rows,
-            "volume": [volume] * rows,
-            "vol_ma20": [vol_ma20] * rows,
-            "atr": [atr] * rows,
-            "adx": [adx] * rows,
-            "macd_diff": [0.1] * rows,
-            "stoch_k": [55.0] * rows,
+            "open": [100.0, 101.0, 102.0][:rows],
+            "high": [101.0, 102.0, 103.0][:rows],
+            "low": [99.0, 100.0, 101.0][:rows],
+            "close": [100.5, 101.5, 102.5][:rows],
+            "volume": [1000.0, 1200.0, 1400.0][:rows],
+            "ema20": [100.0, 101.0, 102.0][:rows],
+            "ema50": [100.0, 100.5, 101.0][:rows],
+            "rsi": [50.0, 56.0, 58.0][:rows],
+            "atr": [1.0, 1.0, 1.0][:rows],
+            "adx": [20.0, 22.0, 24.0][:rows],
+            "vol_ma20": [1000.0, 1100.0, 1200.0][:rows],
         }
     )
-    base.loc[rows - 2, ["high", "low", "close"]] = [close + 0.2, close - 0.5, close - 0.1]
-    base.loc[rows - 1, ["high", "low", "close"]] = [close + 0.4, close - 0.3, close + 0.2]
-    return base
 
 
-def test_signal_engine_sets_neutral_trend_when_timeframes_disagree() -> None:
+def test_signal_engine_returns_neutral_bundle_when_frames_are_too_short() -> None:
     engine = SignalEngine()
-    df5m = _frame(close=101.0, ema20=102.0, ema50=100.0, rsi=58.0)
-    df15m = _frame(close=101.0, ema20=99.0, ema50=100.0, rsi=45.0)
+    bundle = engine.generate(_frame(rows=1), _frame(rows=1))
+    assert bundle.regime_trade_allowed is False
+    assert bundle.trend == "NEUTRAL"
+    assert bundle.order_flow == "NEUTRAL"
 
-    result = engine.generate(df5m, df15m)
 
-    assert result.trend == "NEUTRAL"
+def test_signal_engine_trend_is_neutral_when_timeframes_disagree() -> None:
+    engine = SignalEngine()
+    df5 = _frame()
+    df15 = _frame()
+    df15.loc[df15.index[-1], "ema20"] = 100.0
+    df15.loc[df15.index[-1], "ema50"] = 101.0
+
+    bundle = engine.generate(df5, df15)
+
+    assert bundle.trend == "NEUTRAL"

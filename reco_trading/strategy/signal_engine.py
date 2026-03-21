@@ -41,14 +41,7 @@ class SignalEngine:
         prev = df5m.iloc[-2]
         confirm = df15m.iloc[-1]
 
-        trend5_bull = row["ema20"] > row["ema50"]
-        trend15_bull = confirm["ema20"] > confirm["ema50"]
-        if trend5_bull and trend15_bull:
-            trend = "BUY"
-        elif (not trend5_bull) and (not trend15_bull):
-            trend = "SELL"
-        else:
-            trend = "NEUTRAL"
+        trend = "BUY" if row["ema20"] > row["ema50"] and confirm["ema20"] > confirm["ema50"] else "SELL"
         if row["rsi"] > 52:
             momentum = "BUY"
         elif row["rsi"] < 48:
