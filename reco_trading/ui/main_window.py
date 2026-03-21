@@ -6,6 +6,7 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
 
 from reco_trading.ui.state_manager import StateManager
+from reco_trading.ui.tabs.alerts_tab import AlertsTab
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
 from reco_trading.ui.tabs.dashboard_tab import DashboardTab
 from reco_trading.ui.tabs.logs_tab import LogsTab
@@ -13,6 +14,7 @@ from reco_trading.ui.tabs.market_tab import MarketTab
 from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
+from reco_trading.ui.tabs.strategy_tab import StrategyTab
 from reco_trading.ui.tabs.trades_tab import TradesTab
 
 
@@ -34,6 +36,8 @@ class MainWindow(QMainWindow):
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
         self.analytics_tab = AnalyticsTab()
+        self.alerts_tab = AlertsTab()
+        self.strategy_tab = StrategyTab()
         self.logs_tab = LogsTab(state_manager=state_manager)
         self.risk_tab = RiskTab()
         self.settings_tab = SettingsTab()
@@ -43,6 +47,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.trades_tab, "Trades")
         tabs.addTab(self.market_tab, "Market")
         tabs.addTab(self.analytics_tab, "Analytics")
+        tabs.addTab(self.alerts_tab, "Alerts")
+        tabs.addTab(self.strategy_tab, "Strategy")
         tabs.addTab(self.logs_tab, "Logs")
         tabs.addTab(self.risk_tab, "Risk")
         tabs.addTab(self.settings_tab, "Settings")
@@ -74,6 +80,8 @@ class MainWindow(QMainWindow):
             self.trades_tab,
             self.market_tab,
             self.analytics_tab,
+            self.alerts_tab,
+            self.strategy_tab,
             self.logs_tab,
             self.risk_tab,
             self.settings_tab,
