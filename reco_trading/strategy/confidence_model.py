@@ -8,11 +8,11 @@ class ConfidenceModel:
 
     def evaluate(self, bundle: SignalBundle, trade_threshold: float = 0.0) -> tuple[str, float, str]:
         weighted_votes = {
-            "trend": 0.25,
-            "momentum": 0.15,
-            "volume": 0.10,
-            "volatility": 0.15,
-            "structure": 0.15,
+            "trend": 0.30,
+            "momentum": 0.20,
+            "volume": 0.08,
+            "volatility": 0.08,
+            "structure": 0.14,
             "order_flow": 0.20,
         }
         signal_map = {
@@ -34,14 +34,14 @@ class ConfidenceModel:
             side = "SELL"
             confidence = sell_score
 
-        if confidence < max(trade_threshold, 0.0):
+        if confidence < max(trade_threshold, 0.0) or (buy_score == sell_score == 0.0):
             side = "HOLD"
 
-        if confidence >= 0.90:
+        if confidence >= 0.88:
             grade = "EXCEPTIONAL"
-        elif confidence >= 0.85:
+        elif confidence >= 0.78:
             grade = "STRONG"
-        elif confidence >= 0.75:
+        elif confidence >= 0.62:
             grade = "ACTIONABLE"
         else:
             grade = "WEAK"
