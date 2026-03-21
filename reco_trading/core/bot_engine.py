@@ -352,21 +352,32 @@ class BotEngine:
 
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
-        side, confidence, grade = self.confidence_model.evaluate(bundle)
+        raw_side, confidence, grade = self.confidence_model.evaluate(bundle)
         conf_result = self.confluence.evaluate(market_data["frame5"], market_data["frame15"])
         if conf_result.aligned:
             final_confidence = min(confidence * 1.08, 0.99)
         else:
             penalty = max(conf_result.score, 0.50)
             final_confidence = confidence * penalty
+
+        # En modo spot no se pueden abrir cortos, así que una señal SELL no es operable.
+        # Se degrada a HOLD para evitar mostrar una oportunidad ejecutable que el bot
+        # bloqueará más adelante en validate_trade_conditions().
+        side = raw_side
+        if getattr(self.settings, "spot_only_mode", True) and raw_side == "SELL":
+            side = "HOLD"
+            grade = "NON_ACTIONABLE" if final_confidence >= self.settings.confidence_threshold else grade
+
         self.snapshot["confluence_score"] = conf_result.score
         self.snapshot["confluence_aligned"] = conf_result.aligned
+        self.snapshot["raw_signal"] = raw_side
         await self._set_state(BotState.SIGNAL_GENERATED)
         await self._persist_signal(bundle, side, final_confidence)
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {
             "bundle": bundle,
             "side": side,
+            "raw_side": raw_side,
             "confidence": final_confidence,
             "grade": grade,
             "confluence": conf_result,
