@@ -6,6 +6,7 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
 
 from reco_trading.ui.state_manager import StateManager
+from reco_trading.ui.tabs.alerts_tab import AlertsTab
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
 from reco_trading.ui.tabs.dashboard_tab import DashboardTab
 from reco_trading.ui.tabs.logs_tab import LogsTab
