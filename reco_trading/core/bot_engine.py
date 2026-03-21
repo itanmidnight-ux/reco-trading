@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os as _os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -10,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import ccxt
 from rich.live import Live
 
+from reco_trading.analytics.session_tracker import SessionTracker
 from reco_trading.config.settings import Settings
 from reco_trading.config.symbols import normalize_symbol, split_symbol
 from reco_trading.core.state_machine import BotState
@@ -30,6 +32,25 @@ from reco_trading.ui.dashboard import TerminalDashboard
 
 if TYPE_CHECKING:
     from reco_trading.ui.state_manager import StateManager
+
+
+
+try:
+    import resource as _resource
+
+    def _get_memory_mb() -> float:
+        return _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss / 1024.0
+except ImportError:
+
+    def _get_memory_mb() -> float:
+        try:
+            with open(f"/proc/{_os.getpid()}/status") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        return float(line.split()[1]) / 1024.0
+        except Exception:
+            pass
+        return 0.0
 
 
 class BotEngine:
@@ -53,7 +74,12 @@ class BotEngine:
             max_drawdown_percent=max(float(getattr(settings, "max_drawdown_fraction", 0.10)), 0.0) * 100,
         )
         self.position_manager = PositionManager()
-        self.adaptive_sizer = AdaptiveSizer(base_risk_fraction=settings.risk_per_trade_fraction)
+        self.adaptive_sizer = AdaptiveSizer(
+            base_risk_fraction=settings.risk_per_trade_fraction,
+            min_multiplier=0.15,
+            max_multiplier=1.50,
+            confidence_boost_above=0.80,
+        )
         self.market_intelligence = MarketIntelligence(settings)
         self.confluence = TimeframeConfluence()
 
@@ -81,6 +107,7 @@ class BotEngine:
         self.emergency_stop_active = False
         self.equity_curve_history: list[float] = []
         self._recent_pnls: list[float] = []
+        self.session_tracker = SessionTracker()
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -130,6 +157,14 @@ class BotEngine:
             "exchange_status": "CONNECTING",
             "confluence_score": None,
             "confluence_aligned": None,
+            "unrealized_pnl": 0.0,
+            "open_position_side": None,
+            "open_position_entry": None,
+            "open_position_qty": None,
+            "open_position_sl": None,
+            "open_position_tp": None,
+            "session_streak": 0,
+            "session_recommendation": "NORMAL",
         }
 
     async def run(self) -> None:
@@ -290,6 +325,16 @@ class BotEngine:
             },
         )
 
+        if len(frame5) >= 4:
+            recent_closes = frame5["close"].iloc[-4:]
+            price_swing = abs(float(recent_closes.iloc[-1]) - float(recent_closes.iloc[0]))
+            swing_pct = price_swing / max(float(recent_closes.iloc[0]), 1e-9)
+            if swing_pct > 0.035:
+                pause_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+                if self.pause_trading_until is None or pause_until > self.pause_trading_until:
+                    self.pause_trading_until = pause_until
+                    await self._log("WARNING", f"market_circuit_breaker swing={swing_pct:.2%} pausing_10min")
+
         return {
             "frame5": frame5,
             "frame15": frame15,
@@ -309,8 +354,11 @@ class BotEngine:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
         side, confidence, grade = self.confidence_model.evaluate(bundle)
         conf_result = self.confluence.evaluate(market_data["frame5"], market_data["frame15"])
-        adjusted_confidence = min(confidence * conf_result.score + confidence * 0.15, 0.99)
-        final_confidence = max(confidence, adjusted_confidence) if conf_result.aligned else confidence
+        if conf_result.aligned:
+            final_confidence = min(confidence * 1.08, 0.99)
+        else:
+            penalty = max(conf_result.score, 0.50)
+            final_confidence = confidence * penalty
         self.snapshot["confluence_score"] = conf_result.score
         self.snapshot["confluence_aligned"] = conf_result.aligned
         await self._set_state(BotState.SIGNAL_GENERATED)
@@ -397,6 +445,14 @@ class BotEngine:
         self.snapshot["advanced_risk_reason"] = advanced.reason
         self.snapshot["advanced_size_multiplier"] = advanced.size_multiplier
 
+        session_stats = self.session_tracker.stats()
+        if session_stats.recommendation == "PAUSE":
+            await self._set_state(BotState.PAUSED, "session_tracker_pause")
+            self.snapshot["cooldown"] = "SESSION_TRACKER_PAUSE"
+            return False
+        self.snapshot["session_streak"] = session_stats.current_streak
+        self.snapshot["session_recommendation"] = session_stats.recommendation
+
         self.snapshot["cooldown"] = "READY"
         return True
 
@@ -432,7 +488,12 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "pullback_unconfirmed")
             return
 
-        stop_loss, take_profit = self._build_stops(side, price, atr)
+        stop_loss, take_profit = self._build_stops(
+            side,
+            price,
+            atr,
+            regime=getattr(bundle, "regime", "NORMAL_VOLATILITY"),
+        )
         qty = self.calculate_position_size(
             price,
             stop_loss,
@@ -498,7 +559,12 @@ class BotEngine:
             self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=15)
             return
 
-        stop_loss, take_profit = self._build_stops(side, entry, atr)
+        stop_loss, take_profit = self._build_stops(
+            side,
+            entry,
+            atr,
+            regime=getattr(bundle, "regime", "NORMAL_VOLATILITY"),
+        )
         trade = await self.repository.create_trade(
             symbol=self.symbol,
             side=side,
@@ -555,33 +621,71 @@ class BotEngine:
             return
 
         price = float(market_data["price"])
+        atr = float(market_data.get("atr", price * 0.005))
         await self._set_state(BotState.POSITION_OPEN)
-        for position in self.position_manager.positions:
-            atr = float(market_data.get("atr", position.entry_price * 0.005))
-            breakeven_threshold = (
-                position.entry_price + (1.0 * atr)
-                if position.side == "BUY"
-                else position.entry_price - (1.0 * atr)
-            )
-            if position.side == "BUY" and price >= breakeven_threshold:
-                new_sl = self.order_manager.normalize_price(position.entry_price + (0.1 * atr))
-                if new_sl > position.stop_loss:
-                    position.stop_loss = new_sl
-            elif position.side == "SELL" and price <= breakeven_threshold:
-                new_sl = self.order_manager.normalize_price(position.entry_price - (0.1 * atr))
-                if new_sl < position.stop_loss:
-                    position.stop_loss = new_sl
 
         for position in list(self.position_manager.positions):
+            if position.atr > 0:
+                used_atr = position.atr
+            else:
+                used_atr = max(atr, price * 0.002)
+
+            breakeven_threshold = (
+                position.entry_price + used_atr
+                if position.side == "BUY"
+                else position.entry_price - used_atr
+            )
+            if position.side == "BUY" and price >= breakeven_threshold:
+                new_sl = self.order_manager.normalize_price(position.entry_price + 0.1 * used_atr)
+                if new_sl > position.stop_loss:
+                    position.stop_loss = new_sl
+                    await self._log(
+                        "INFO",
+                        f"breakeven_activated trade_id={position.trade_id} new_sl={new_sl:.4f}",
+                    )
+            elif position.side == "SELL" and price <= breakeven_threshold:
+                new_sl = self.order_manager.normalize_price(position.entry_price - 0.1 * used_atr)
+                if new_sl < position.stop_loss:
+                    position.stop_loss = new_sl
+                    await self._log(
+                        "INFO",
+                        f"breakeven_activated trade_id={position.trade_id} new_sl={new_sl:.4f}",
+                    )
+
+            if position.side == "BUY":
+                unrealized_pnl = (price - position.entry_price) * position.quantity
+            else:
+                unrealized_pnl = (position.entry_price - price) * position.quantity
+            self.snapshot["unrealized_pnl"] = unrealized_pnl
+            self.snapshot["open_position_side"] = position.side
+            self.snapshot["open_position_entry"] = position.entry_price
+            self.snapshot["open_position_qty"] = position.quantity
+            self.snapshot["open_position_sl"] = position.stop_loss
+            self.snapshot["open_position_tp"] = position.take_profit
+
             exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
 
             await self._set_state(BotState.COOLDOWN)
-            await self._log("INFO", f"exit_condition_detected trade_id={position.trade_id} reason={exit_reason} market_price={price:.8f}")
+            await self._log(
+                "INFO",
+                f"exit_condition_detected trade_id={position.trade_id} reason={exit_reason} market_price={price:.8f}",
+            )
             closed = await self._close_position(position, exit_reason, price)
             if not closed:
-                await self._log("ERROR", f"exit_close_failed trade_id={position.trade_id} reason={exit_reason} action=retry_next_loop")
+                await self._log(
+                    "ERROR",
+                    f"exit_close_failed trade_id={position.trade_id} reason={exit_reason} action=retry_next_loop",
+                )
+
+        if not self.position_manager.positions:
+            self.snapshot["unrealized_pnl"] = 0.0
+            self.snapshot["open_position_side"] = None
+            self.snapshot["open_position_entry"] = None
+            self.snapshot["open_position_qty"] = None
+            self.snapshot["open_position_sl"] = None
+            self.snapshot["open_position_tp"] = None
 
     async def force_close_position(self) -> None:
         if not self.position_manager.positions:
@@ -635,6 +739,7 @@ class BotEngine:
         )
         self.position_manager.close(position.trade_id)
         self._recent_pnls.append(pnl)
+        self.session_tracker.record(pnl)
         if len(self._recent_pnls) > 20:
             self._recent_pnls = self._recent_pnls[-20:]
         self.last_close_time = datetime.now(timezone.utc)
@@ -716,14 +821,24 @@ class BotEngine:
         strong_move_up = (close - p1c) > (0.5 * atr)
         return not (two_consecutive_bull and strong_move_up)
 
-    def _build_stops(self, side: str, entry: float, atr: float) -> tuple[float, float]:
+    def _build_stops(
+        self, side: str, entry: float, atr: float, regime: str = "NORMAL_VOLATILITY"
+    ) -> tuple[float, float]:
         atr = max(atr, entry * 0.002)
-        if side == "BUY":
-            stop_loss = self.order_manager.normalize_price(entry - (1.5 * atr))
-            take_profit = self.order_manager.normalize_price(entry + (2.0 * atr))
+        regime_upper = regime.upper()
+        if "HIGH" in regime_upper:
+            sl_mult, tp_mult = 1.2, 2.4
+        elif "LOW" in regime_upper:
+            sl_mult, tp_mult = 1.8, 3.0
         else:
-            stop_loss = self.order_manager.normalize_price(entry + (1.5 * atr))
-            take_profit = self.order_manager.normalize_price(entry - (2.0 * atr))
+            sl_mult, tp_mult = 1.5, 2.5
+
+        if side == "BUY":
+            stop_loss = self.order_manager.normalize_price(entry - sl_mult * atr)
+            take_profit = self.order_manager.normalize_price(entry + tp_mult * atr)
+        else:
+            stop_loss = self.order_manager.normalize_price(entry + sl_mult * atr)
+            take_profit = self.order_manager.normalize_price(entry - tp_mult * atr)
         return stop_loss, take_profit
 
     def _update_loss_protection(self, pnl: float) -> bool:
@@ -966,6 +1081,7 @@ class BotEngine:
             self.day_marker = today
             self.trades_today = 0
             self.win_count = 0
+            asyncio.create_task(self.repository.cleanup_old_logs(keep_days=7))
 
     def _is_cooldown_complete(self) -> bool:
         if self.last_close_time is None:
@@ -1004,6 +1120,12 @@ class BotEngine:
                 win_rate=self.snapshot.get("win_rate"),
                 last_trade=self.snapshot.get("last_trade"),
                 has_open_position=bool(self.position_manager.positions),
+                unrealized_pnl=self.snapshot.get("unrealized_pnl", 0.0),
+                open_position_side=self.snapshot.get("open_position_side"),
+                open_position_entry=self.snapshot.get("open_position_entry"),
+                open_position_qty=self.snapshot.get("open_position_qty"),
+                open_position_sl=self.snapshot.get("open_position_sl"),
+                open_position_tp=self.snapshot.get("open_position_tp"),
                 cooldown=self.snapshot.get("cooldown"),
                 status=self.snapshot.get("status", "INITIALIZING"),
                 bid=self.snapshot.get("bid", self.snapshot.get("price")),
@@ -1023,7 +1145,7 @@ class BotEngine:
                     "database_status": self.snapshot.get("database_status", "UNKNOWN"),
                     "exchange_status": self.snapshot.get("exchange_status", "UNKNOWN"),
                     "redis_status": self.snapshot.get("redis_status", "UNKNOWN"),
-                    "memory_usage_mb": 0.0,
+                    "memory_usage_mb": round(_get_memory_mb(), 1),
                     "last_server_sync": datetime.utcnow().isoformat(timespec="seconds"),
                 },
                 risk_metrics={
@@ -1043,6 +1165,14 @@ class BotEngine:
                     "largest_win": 0.0,
                     "largest_loss": 0.0,
                     "equity_curve": list(self.equity_curve_history) or [self.snapshot.get("equity") or 0.0],
+                    "session_stats": {
+                        "total_trades": self.session_tracker.stats().total_trades,
+                        "win_rate": self.session_tracker.stats().win_rate,
+                        "streak": self.session_tracker.stats().current_streak,
+                        "recommendation": self.session_tracker.stats().recommendation,
+                        "profit_factor": self.session_tracker.stats().profit_factor,
+                        "sharpe": self.session_tracker.stats().sharpe_estimate,
+                    },
                 },
                 runtime_settings=self.snapshot.get("runtime_settings", {}),
             )
