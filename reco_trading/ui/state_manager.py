@@ -49,6 +49,12 @@ class StateManager(QObject):
             "win_rate": 0.0,
             "open_position": "NONE",
             "has_open_position": False,
+            "unrealized_pnl": 0.0,
+            "open_position_side": None,
+            "open_position_entry": None,
+            "open_position_qty": None,
+            "open_position_sl": None,
+            "open_position_tp": None,
             "last_trade": "-",
             "cooldown": "READY",
             "risk_metrics": {},
@@ -57,6 +63,7 @@ class StateManager(QObject):
             "trade_history": [],
             "logs": [],
             "analytics": {},
+            "session_stats": {},
             "runtime_settings": {},
         }
 

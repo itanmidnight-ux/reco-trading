@@ -261,6 +261,16 @@ class Repository:
             result = await session.execute(q)
             return list(result.scalars().all())
 
+    @safe_db_call()
+    async def cleanup_old_logs(self, keep_days: int = 7) -> None:
+        """Elimina registros antiguos para controlar el tamaño de la DB."""
+        cutoff = datetime.utcnow() - timedelta(days=max(int(keep_days), 1))
+        async with self.session_factory() as session:
+            await session.execute(text("DELETE FROM bot_logs WHERE timestamp < :cutoff"), {"cutoff": cutoff})
+            await session.execute(text("DELETE FROM market_data WHERE timestamp < :cutoff"), {"cutoff": cutoff})
+            await session.execute(text("DELETE FROM state_changes WHERE timestamp < :cutoff"), {"cutoff": cutoff})
+            await session.commit()
+
     async def close(self) -> None:
         await self.engine.dispose()
 

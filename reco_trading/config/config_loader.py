@@ -43,10 +43,10 @@ class ConfigLoader:
 
     @staticmethod
     def _validate_trading(raw: dict[str, Any]) -> dict[str, Any]:
-        defaults = {"symbol": "BTCUSDT", "timeframe": "5m", "max_concurrent_trades": 1, "loop_sleep_seconds": 15}
+        defaults = {"symbol": "BTCUSDT", "timeframe": "5m", "max_concurrent_trades": 1, "loop_sleep_seconds": 10}
         out = {**defaults, **raw}
         out["max_concurrent_trades"] = max(int(out.get("max_concurrent_trades", 1)), 1)
-        out["loop_sleep_seconds"] = max(int(out.get("loop_sleep_seconds", 15)), 1)
+        out["loop_sleep_seconds"] = max(int(out.get("loop_sleep_seconds", 10)), 1)
         return out
 
     @staticmethod
@@ -58,7 +58,7 @@ class ConfigLoader:
 
     @staticmethod
     def _validate_strategy(raw: dict[str, Any]) -> dict[str, Any]:
-        defaults = {"min_signal_confidence": 0.75, "hold_threshold": 0.55, "use_liquidity_filter": True}
+        defaults = {"min_signal_confidence": 0.60, "hold_threshold": 0.45, "use_liquidity_filter": True}
         out = {**defaults, **raw}
-        out["min_signal_confidence"] = min(max(float(out.get("min_signal_confidence", 0.75)), 0.0), 1.0)
+        out["min_signal_confidence"] = min(max(float(out.get("min_signal_confidence", 0.60)), 0.0), 1.0)
         return out

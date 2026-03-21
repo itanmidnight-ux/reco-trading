@@ -35,12 +35,12 @@ class Settings(BaseSettings):
     # =========================
     # SIGNAL THRESHOLDS
     # =========================
-    min_signal_confidence: float = Field(default=0.45, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
+    min_signal_confidence: float = Field(default=0.55, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
     strong_signal_confidence: float = 0.85
     exceptional_signal_confidence: float = 0.90
     confidence_hold_threshold: float = 0.55
-    adx_min_threshold: float = 20.0
-    max_spread_ratio: float = 0.002
+    adx_min_threshold: float = 15.0
+    max_spread_ratio: float = 0.004
     max_slippage_ratio: float = 0.003
     min_volume_ratio: float = 0.7
 
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     liquidity_zone_filter_enabled: bool = True
     market_regime_classifier_enabled: bool = True
     market_range_filter_enabled: bool = True
-    liquidity_proximity_threshold: float = 0.0035
+    liquidity_proximity_threshold: float = 0.010
 
     # =========================
     # RISK MANAGEMENT
@@ -69,9 +69,9 @@ class Settings(BaseSettings):
     # =========================
     # COOLDOWNS
     # =========================
-    cooldown_minutes: int = 10
-    loss_pause_minutes: int = 60
-    loss_pause_after_consecutive: int = 3
+    cooldown_minutes: int = 4
+    loss_pause_minutes: int = 20
+    loss_pause_after_consecutive: int = 4
 
     # =========================
     # DATABASE
