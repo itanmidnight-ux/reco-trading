@@ -42,11 +42,51 @@ class SignalEngine:
         confirm = df15m.iloc[-1]
 
         trend = "BUY" if row["ema20"] > row["ema50"] and confirm["ema20"] > confirm["ema50"] else "SELL"
-        momentum = "BUY" if row["rsi"] > 55 else "SELL" if row["rsi"] < 45 else "NEUTRAL"
-        volume = "BUY" if row["volume"] > row["vol_ma20"] * 1.1 else "NEUTRAL"
+        if row["rsi"] > 52:
+            momentum = "BUY"
+        elif row["rsi"] < 48:
+            momentum = "SELL"
+        else:
+            momentum = "NEUTRAL"
+
+        vol_ratio = row["volume"] / max(row["vol_ma20"], 1e-9)
+        if vol_ratio > 1.05:
+            volume = "BUY"
+        elif vol_ratio < 0.60:
+            volume = "SELL"
+        else:
+            volume = "NEUTRAL"
+
         higher_high = row["high"] > prev["high"] and row["low"] > prev["low"]
         lower_low = row["high"] < prev["high"] and row["low"] < prev["low"]
         structure = "BUY" if higher_high else "SELL" if lower_low else "NEUTRAL"
+
+        if len(df5m) >= 4:
+            prev2 = df5m.iloc[-3]
+            micro_up = row["close"] > prev2["close"]
+            micro_down = row["close"] < prev2["close"]
+            if higher_high or (not lower_low and micro_up):
+                structure = "BUY"
+            elif lower_low or (not higher_high and micro_down):
+                structure = "SELL"
+            else:
+                structure = "NEUTRAL"
+
+        macd_diff_now = _safe_float(row.get("macd_diff"), 0.0)
+        macd_diff_prev = _safe_float(prev.get("macd_diff"), 0.0)
+        macd_cross_up = macd_diff_now > 0 and macd_diff_prev <= 0
+        macd_cross_down = macd_diff_now < 0 and macd_diff_prev >= 0
+
+        stoch_k = _safe_float(row.get("stoch_k"), 50.0)
+        stoch_oversold = stoch_k < 25
+        stoch_overbought = stoch_k > 75
+
+        if momentum == "BUY" and macd_cross_up:
+            momentum = "BUY"
+        elif momentum == "NEUTRAL" and macd_cross_up and not stoch_overbought:
+            momentum = "BUY"
+        elif momentum == "NEUTRAL" and macd_cross_down and not stoch_oversold:
+            momentum = "SELL"
 
         regime_decision: RegimeDecision = self.regime_filter.evaluate(df5m)
         order_flow_decision: OrderFlowDecision = self.order_flow_analyzer.evaluate(df5m)
@@ -74,3 +114,10 @@ class SignalEngine:
         ema_distance = abs(recent["ema20"].iloc[-1] - recent["ema50"].iloc[-1]) / recent["close"].iloc[-1]
         crossings = ((recent["ema20"] > recent["ema50"]).astype(int).diff().abs() == 1).sum()
         return atr_ratio < 0.003 or ema_distance < 0.001 or crossings >= 6
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default

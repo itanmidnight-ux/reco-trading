@@ -33,8 +33,8 @@ class PositionManager:
     def check_exit(self, position: Position, current_price: float) -> str | None:
         atr = max(position.atr, position.entry_price * 0.002)
         risk_distance = max(position.initial_risk_distance, 1e-9)
-        activation_distance = 1.5 * atr
-        trailing_distance = 1.2 * atr
+        activation_distance = 1.0 * atr
+        trailing_distance = 0.8 * atr
 
         if position.side == "BUY":
             if current_price <= position.stop_loss:
@@ -43,6 +43,11 @@ class PositionManager:
                 return "TAKE_PROFIT_HIT"
 
             profit = current_price - position.entry_price
+            profit_in_atr = profit / max(atr, 1e-9)
+            if profit_in_atr > 3.0:
+                trailing_distance = 0.5 * atr
+            elif profit_in_atr > 2.0:
+                trailing_distance = 0.65 * atr
             if profit >= max(activation_distance, risk_distance):
                 trail = current_price - trailing_distance
                 position.trailing_stop = max(position.trailing_stop or position.stop_loss, trail)

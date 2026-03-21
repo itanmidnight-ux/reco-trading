@@ -137,15 +137,15 @@ class LiquidityZoneDetector:
 
         if target_distance is None:
             return LiquidityFilterAssessment(
-                allow_trade=False,
-                liquidity_multiplier=0.0,
+                allow_trade=True,
+                liquidity_multiplier=0.70,
                 liquidity_distance=None,
                 zone_type=zone_type,
             )
 
         base_threshold = max(float(self.proximity_threshold), 1e-4)
-        medium_threshold = base_threshold * 2.5
-        extended_threshold = base_threshold * 4.5
+        medium_threshold = base_threshold * 6.0
+        extended_threshold = base_threshold * 15.0
 
         if target_distance <= base_threshold:
             return LiquidityFilterAssessment(
@@ -169,8 +169,8 @@ class LiquidityZoneDetector:
                 zone_type=zone_type,
             )
         return LiquidityFilterAssessment(
-            allow_trade=False,
-            liquidity_multiplier=0.0,
+            allow_trade=True,
+            liquidity_multiplier=0.70,
             liquidity_distance=target_distance,
             zone_type=zone_type,
         )

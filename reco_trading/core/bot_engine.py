@@ -19,9 +19,11 @@ from reco_trading.exchange.binance_client import BinanceClient
 from reco_trading.exchange.order_manager import OrderManager
 from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.advanced_risk_manager import AdvancedRiskManager
+from reco_trading.risk.adaptive_sizer import AdaptiveSizer
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
+from reco_trading.strategy.confluence import TimeframeConfluence
 from reco_trading.strategy.market_intelligence import MarketIntelligence
 from reco_trading.strategy.signal_engine import SignalBundle, SignalEngine
 from reco_trading.ui.dashboard import TerminalDashboard
@@ -51,7 +53,9 @@ class BotEngine:
             max_drawdown_percent=max(float(getattr(settings, "max_drawdown_fraction", 0.10)), 0.0) * 100,
         )
         self.position_manager = PositionManager()
+        self.adaptive_sizer = AdaptiveSizer(base_risk_fraction=settings.risk_per_trade_fraction)
         self.market_intelligence = MarketIntelligence(settings)
+        self.confluence = TimeframeConfluence()
 
         self.state_manager = state_manager
         self.trades_today = 0
@@ -76,6 +80,7 @@ class BotEngine:
         self.manual_pause = False
         self.emergency_stop_active = False
         self.equity_curve_history: list[float] = []
+        self._recent_pnls: list[float] = []
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -123,6 +128,8 @@ class BotEngine:
             "runtime_settings": {},
             "database_status": "CONNECTING",
             "exchange_status": "CONNECTING",
+            "confluence_score": None,
+            "confluence_aligned": None,
         }
 
     async def run(self) -> None:
@@ -301,10 +308,21 @@ class BotEngine:
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
         side, confidence, grade = self.confidence_model.evaluate(bundle)
+        conf_result = self.confluence.evaluate(market_data["frame5"], market_data["frame15"])
+        adjusted_confidence = min(confidence * conf_result.score + confidence * 0.15, 0.99)
+        final_confidence = max(confidence, adjusted_confidence) if conf_result.aligned else confidence
+        self.snapshot["confluence_score"] = conf_result.score
+        self.snapshot["confluence_aligned"] = conf_result.aligned
         await self._set_state(BotState.SIGNAL_GENERATED)
-        await self._persist_signal(bundle, side, confidence)
+        await self._persist_signal(bundle, side, final_confidence)
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
-        return {"bundle": bundle, "side": side, "confidence": confidence, "grade": grade}
+        return {
+            "bundle": bundle,
+            "side": side,
+            "confidence": final_confidence,
+            "grade": grade,
+            "confluence": conf_result,
+        }
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
         confidence = float(analysis["confidence"])
@@ -538,6 +556,22 @@ class BotEngine:
 
         price = float(market_data["price"])
         await self._set_state(BotState.POSITION_OPEN)
+        for position in self.position_manager.positions:
+            atr = float(market_data.get("atr", position.entry_price * 0.005))
+            breakeven_threshold = (
+                position.entry_price + (1.0 * atr)
+                if position.side == "BUY"
+                else position.entry_price - (1.0 * atr)
+            )
+            if position.side == "BUY" and price >= breakeven_threshold:
+                new_sl = self.order_manager.normalize_price(position.entry_price + (0.1 * atr))
+                if new_sl > position.stop_loss:
+                    position.stop_loss = new_sl
+            elif position.side == "SELL" and price <= breakeven_threshold:
+                new_sl = self.order_manager.normalize_price(position.entry_price - (0.1 * atr))
+                if new_sl < position.stop_loss:
+                    position.stop_loss = new_sl
+
         for position in list(self.position_manager.positions):
             exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
@@ -600,6 +634,9 @@ class BotEngine:
             exit_slippage_ratio=exit_slippage_ratio,
         )
         self.position_manager.close(position.trade_id)
+        self._recent_pnls.append(pnl)
+        if len(self._recent_pnls) > 20:
+            self._recent_pnls = self._recent_pnls[-20:]
         self.last_close_time = datetime.now(timezone.utc)
         if self._update_loss_protection(pnl):
             await self._log("WARNING", "loss_protection_enabled")
@@ -637,39 +674,47 @@ class BotEngine:
     def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
         equity = self._effective_equity_for_risk(equity)
-        sizing = self.risk_manager.position_size_for_risk(
+        decision = self.adaptive_sizer.compute(
             equity=equity,
-            risk_fraction=self._effective_risk_per_trade_fraction(),
             price=price,
-            stop_loss_price=stop_loss,
+            stop_loss=stop_loss,
             atr=atr,
-            atr_floor_multiplier=0.5,
+            confidence=_as_float(self.snapshot.get("confidence"), 0.0),
+            recent_pnls=list(self._recent_pnls),
+            volatility_multiplier=max(size_multiplier, 0.1),
         )
-        # Keep raw risk-derived size here. Binance filter normalization (minQty/stepSize/minNotional)
-        # is applied centrally in execute_trade via normalize_order_quantity.
-        qty = sizing.quantity * max(size_multiplier, 0.1)
-        return float(max(qty, 0.0))
+        self.snapshot["adaptive_size_reason"] = decision.reason
+        self.snapshot["adaptive_size_multiplier"] = decision.size_multiplier
+        return float(max(decision.quantity, 0.0))
 
     def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
+        """
+        Confirmación de entrada con momentum mínimo.
+        No bloquea en tendencia. Solo rechaza si la vela más reciente va
+        fuertemente en contra de la señal (2 velas consecutivas contrarias).
+        """
         frame5 = market_data.get("frame5")
-        if frame5 is None or len(frame5) < 5:
-            return False
+        if frame5 is None or len(frame5) < 4:
+            return True
+
         row = frame5.iloc[-1]
-        prev = frame5.iloc[-2]
-        close = _as_float(row.get("close"), _as_float(market_data.get("price"), 0.0))
-        open_px = _as_float(row.get("open"), close)
-        ema20 = _as_float(row.get("ema20"), close)
-        recent_high = _as_float(frame5["high"].tail(5).max(), close)
-        recent_low = _as_float(frame5["low"].tail(5).min(), close)
+        prev1 = frame5.iloc[-2]
+        prev2 = frame5.iloc[-3]
+
+        close = _as_float(row.get("close"), 0.0)
+        open_ = _as_float(row.get("open"), close)
+        p1c = _as_float(prev1.get("close"), close)
+        p2c = _as_float(prev2.get("close"), close)
+        atr = _as_float(row.get("atr"), close * 0.005)
 
         if side == "BUY":
-            pullback = close <= ema20 or close < (recent_high * 0.999)
-            reversal = close > open_px and close > _as_float(prev.get("close"), close)
-            return pullback and reversal
+            two_consecutive_bear = (p1c < _as_float(prev1.get("open"), p1c)) and (p2c < _as_float(prev2.get("open"), p2c))
+            strong_move_down = (p1c - close) > (0.5 * atr)
+            return not (two_consecutive_bear and strong_move_down)
 
-        pullback = close >= ema20 or close > (recent_low * 1.001)
-        rejection = close < open_px and close < _as_float(prev.get("close"), close)
-        return pullback and rejection
+        two_consecutive_bull = (p1c > _as_float(prev1.get("open"), p1c)) and (p2c > _as_float(prev2.get("open"), p2c))
+        strong_move_up = (close - p1c) > (0.5 * atr)
+        return not (two_consecutive_bull and strong_move_up)
 
     def _build_stops(self, side: str, entry: float, atr: float) -> tuple[float, float]:
         atr = max(atr, entry * 0.002)
