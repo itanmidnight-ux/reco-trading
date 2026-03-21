@@ -89,11 +89,6 @@ class DashboardTab(QWidget):
         }
         for i, card in enumerate(self.pos_cards.values()):
             position_layout.addWidget(card, 1 + i // 4, i % 4)
-        self.pnl_bar = QProgressBar()
-        self.pnl_bar.setRange(-100, 100)
-        self.pnl_bar.setValue(0)
-        self.pnl_bar.setTextVisible(False)
-        position_layout.addWidget(self.pnl_bar, 2, 0, 1, 4)
         root.addWidget(self.position_panel)
         self.position_panel.setVisible(False)
 
@@ -264,16 +259,6 @@ class DashboardTab(QWidget):
             self.pos_cards["sl"].set_value(_fmt_num(sl, 2), tone="negative")
             self.pos_cards["tp"].set_value(_fmt_num(tp, 2), tone="positive")
             self.pos_cards["size"].set_value(_fmt_num(qty, 6))
-            if tp != sl:
-                pct = int(((price_value - sl) / (tp - sl)) * 100)
-                pct = max(-100, min(100, pct))
-                self.pnl_bar.setValue(pct)
-                color = "#16c784" if pct > 50 else "#f0b90b" if pct > 0 else "#ea3943"
-                self.pnl_bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; }}")
-            else:
-                self.pnl_bar.setValue(0)
-        else:
-            self.pnl_bar.setValue(0)
 
         signal = str(state.get("signal", "NEUTRAL")).upper()
         confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
