@@ -53,6 +53,10 @@ class RiskTab(QWidget):
         self._anim = QPropertyAnimation(self.exposure_bar, b"value", self)
         self._anim.setDuration(300)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.live_position_label = QLabel("No open position")
+        self.live_position_label.setObjectName("smallMetricValue")
+        self.live_position_label.setWordWrap(True)
+        panel_layout.addWidget(self.live_position_label)
 
     def update_state(self, state: dict) -> None:
         metrics = state.get("risk_metrics", {})
@@ -92,3 +96,18 @@ class RiskTab(QWidget):
         else:
             self.status_badge.setText("Risk posture: CAUTION")
             self.status_badge.setStyleSheet("color:#f0b90b;")
+
+        unrealized = float(state.get("unrealized_pnl") or 0)
+        has_pos = bool(state.get("has_open_position", False))
+        if has_pos:
+            side = str(state.get("open_position_side") or "-").upper()
+            entry = float(state.get("open_position_entry") or 0)
+            sl = float(state.get("open_position_sl") or 0)
+            color = "#16c784" if unrealized >= 0 else "#ea3943"
+            self.live_position_label.setText(
+                f"{side} @ {entry:.2f}  |  Unrealized: {unrealized:+.4f} USDT  |  SL: {sl:.2f}"
+            )
+            self.live_position_label.setStyleSheet(f"color: {color};")
+        else:
+            self.live_position_label.setText("No open position")
+            self.live_position_label.setStyleSheet("color: #9fb2d9;")
