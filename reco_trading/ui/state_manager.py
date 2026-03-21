@@ -47,7 +47,6 @@ class StateManager(QObject):
             "session_pnl": 0.0,
             "trades_today": 0,
             "win_rate": 0.0,
-            "open_position": "NONE",
             "has_open_position": False,
             "unrealized_pnl": 0.0,
             "open_position_side": None,

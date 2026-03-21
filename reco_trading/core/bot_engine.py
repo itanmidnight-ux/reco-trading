@@ -380,7 +380,7 @@ class BotEngine:
             self.snapshot["cooldown"] = "HOLD_SIGNAL"
             return False
 
-        if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self.position_manager.positions:
+        if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell():
             await self._set_state(BotState.WAITING_MARKET_DATA, "spot_short_blocked")
             self.snapshot["cooldown"] = "SPOT_SHORT_BLOCKED"
             return False
@@ -466,7 +466,7 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "invalid_side")
             return
 
-        if getattr(self.settings, "spot_only_mode", True) and side != "BUY":
+        if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell():
             await self._set_state(BotState.WAITING_MARKET_DATA, "spot_open_only_buy")
             return
 
@@ -506,6 +506,13 @@ class BotEngine:
             await self._log("WARNING", "quantity_below_minimum")
             return
 
+        if getattr(self.settings, "spot_only_mode", True) and side == "SELL":
+            available_sell_qty = self.order_manager.normalize_quantity(self._available_spot_sell_quantity())
+            qty = min(qty, available_sell_qty)
+            if qty <= 0:
+                await self._log("WARNING", "spot_sell_without_inventory")
+                return
+
         original_qty = qty
         equity = max(_as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)), 0.0)
         normalized_qty = self.order_manager.normalize_order_quantity(
@@ -521,6 +528,12 @@ class BotEngine:
                 f"order_rejected_after_normalization symbol={self.symbol} original_quantity={original_qty:.8f} price={price:.8f}",
             )
             return
+        if getattr(self.settings, "spot_only_mode", True) and side == "SELL":
+            normalized_available_qty = self.order_manager.normalize_quantity(self._available_spot_sell_quantity())
+            normalized_qty = min(normalized_qty, normalized_available_qty)
+            if normalized_qty <= 0:
+                await self._log("WARNING", "spot_sell_quantity_below_inventory")
+                return
         qty = normalized_qty
         if abs(qty - original_qty) > 0:
             rules = self.order_manager.rules
@@ -775,6 +788,18 @@ class BotEngine:
                 }
             )
         return True
+
+    def _available_spot_sell_quantity(self) -> float:
+        """Cantidad base disponible para ejecutar una venta en spot."""
+        return max(_as_float(self.snapshot.get("btc_balance"), 0.0), 0.0)
+
+    def _can_execute_spot_sell(self) -> bool:
+        """Determina si una señal SELL es operable en spot con inventario disponible."""
+        if not getattr(self.settings, "spot_only_mode", True):
+            return True
+        if self.position_manager.positions:
+            return True
+        return self._available_spot_sell_quantity() > 0.0
 
     def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
@@ -1098,6 +1123,7 @@ class BotEngine:
         if not self.state_manager:
             return
         try:
+            _ss = self.session_tracker.stats()
             self.state_manager.update(
                 pair=self.snapshot.get("pair", ""),
                 timeframe=self.snapshot.get("timeframe", ""),
@@ -1224,6 +1250,11 @@ class BotEngine:
                         "low": _as_float(row.get("low"), 0.0),
                         "close": _as_float(row.get("close"), 0.0),
                         "volume": _as_float(row.get("volume"), 0.0),
+                        "rsi": _as_float(row.get("rsi"), 50.0),
+                        "macd_diff": _as_float(row.get("macd_diff"), 0.0),
+                        "macd": _as_float(row.get("macd"), 0.0),
+                        "macd_signal": _as_float(row.get("macd_signal"), 0.0),
+                        "ema9": _as_float(row.get("ema9"), 0.0),
                     }
                 )
             except Exception:  # noqa: BLE001

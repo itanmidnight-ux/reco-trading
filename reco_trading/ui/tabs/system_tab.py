@@ -58,6 +58,11 @@ class SystemTab(QWidget):
         ui_render_ms = system.get("ui_render_ms", "-")
         ui_staleness_ms = system.get("ui_staleness_ms", "-")
         ui_lag_detected = bool(system.get("ui_lag_detected", False))
+        uptime_s = float(system.get("uptime_seconds", 0) or 0)
+        h = int(uptime_s // 3600)
+        m = int((uptime_s % 3600) // 60)
+        s = int(uptime_s % 60)
+        uptime_str = f"{h:02d}:{m:02d}:{s:02d}"
         signature = (
             state.get("bot_version") or "reco-trading",
             exchange_status,
@@ -80,7 +85,15 @@ class SystemTab(QWidget):
         self.cards["database"].set_value(database_status)
         self.cards["latency"].set_value(f"{system.get('api_latency_ms', '-') } ms")
         self.cards["ui_render"].set_value(f"{ui_render_ms} ms")
-        self.cards["memory"].set_value(f"{system.get('memory_usage_mb', '-') } MB")
+        mem_raw = system.get("memory_usage_mb", 0)
+        try:
+            mem_mb = float(mem_raw)
+            mem_text = f"{mem_mb:.1f} MB"
+            if mem_mb > 400:
+                mem_text += " HIGH"
+        except (TypeError, ValueError):
+            mem_text = "-"
+        self.cards["memory"].set_value(mem_text)
         self.cards["redis"].set_value(redis_status)
 
         if all(value in {"OK", "CONNECTED", "ONLINE", "UNKNOWN"} for value in (exchange_status, database_status, redis_status)) and not ui_lag_detected:
@@ -93,7 +106,7 @@ class SystemTab(QWidget):
         self.events.clear()
         self.events.addItems(
             [
-                f"Uptime: {system.get('uptime_seconds', 0)}s",
+                f"Uptime: {uptime_str}",
                 f"Last server sync: {system.get('last_server_sync', '-')}",
                 f"Exchange: {exchange_status}",
                 f"Database: {database_status}",
