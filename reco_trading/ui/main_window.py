@@ -36,7 +36,6 @@ class MainWindow(QMainWindow):
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
         self.analytics_tab = AnalyticsTab()
-        self.alerts_tab = AlertsTab()
         self.strategy_tab = StrategyTab()
         self.logs_tab = LogsTab(state_manager=state_manager)
         self.risk_tab = RiskTab()
@@ -47,7 +46,6 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.trades_tab, "Trades")
         tabs.addTab(self.market_tab, "Market")
         tabs.addTab(self.analytics_tab, "Analytics")
-        tabs.addTab(self.alerts_tab, "Alerts")
         tabs.addTab(self.strategy_tab, "Strategy")
         tabs.addTab(self.logs_tab, "Logs")
         tabs.addTab(self.risk_tab, "Risk")
@@ -80,7 +78,6 @@ class MainWindow(QMainWindow):
             self.trades_tab,
             self.market_tab,
             self.analytics_tab,
-            self.alerts_tab,
             self.strategy_tab,
             self.logs_tab,
             self.risk_tab,
