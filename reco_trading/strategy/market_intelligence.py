@@ -262,9 +262,13 @@ class MarketRangePositionFilter:
         is_trending = market_regime == MarketRegime.TRENDING or adx >= 25
         if side == "BUY":
             if resistance_distance <= (proximity_floor * 0.5):
-                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
+                if is_trending:
+                    return RangeFilterAssessment(allow_trade=True, range_multiplier=0.30, position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.15, position_in_range=position_in_range)
             if resistance_distance <= proximity_floor:
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.4, position_in_range=position_in_range)
+                if is_trending:
+                    return RangeFilterAssessment(allow_trade=True, range_multiplier=0.30, position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.15, position_in_range=position_in_range)
             if support_distance <= proximity_floor:
                 support_boost = 1.2 if not is_trending else 1.1
                 return RangeFilterAssessment(allow_trade=True, range_multiplier=min(support_boost, 1.0), position_in_range=position_in_range)
@@ -272,9 +276,13 @@ class MarketRangePositionFilter:
 
         if side == "SELL":
             if support_distance <= (proximity_floor * 0.5):
-                return RangeFilterAssessment(allow_trade=False, range_multiplier=0.0, position_in_range=position_in_range)
+                if is_trending:
+                    return RangeFilterAssessment(allow_trade=True, range_multiplier=0.30, position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.15, position_in_range=position_in_range)
             if support_distance <= proximity_floor:
-                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.4, position_in_range=position_in_range)
+                if is_trending:
+                    return RangeFilterAssessment(allow_trade=True, range_multiplier=0.30, position_in_range=position_in_range)
+                return RangeFilterAssessment(allow_trade=True, range_multiplier=0.15, position_in_range=position_in_range)
             if resistance_distance <= proximity_floor:
                 resistance_boost = 1.2 if not is_trending else 1.1
                 return RangeFilterAssessment(allow_trade=True, range_multiplier=min(resistance_boost, 1.0), position_in_range=position_in_range)

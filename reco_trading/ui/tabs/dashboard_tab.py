@@ -73,6 +73,30 @@ class DashboardTab(QWidget):
             hero_layout.addWidget(card, 0, i)
         root.addWidget(self.hero_panel)
 
+        self.position_panel = self._panel()
+        position_layout = QGridLayout(self.position_panel)
+        position_layout.setContentsMargins(10, 10, 10, 10)
+        position_layout.setSpacing(8)
+        position_layout.addWidget(self._title("Open Position"), 0, 0, 1, 4)
+        self.pos_cards = {
+            "side": StatCard("Side", compact=True),
+            "entry": StatCard("Entry", compact=True),
+            "current": StatCard("Current", compact=True),
+            "pnl": StatCard("Unrealized PnL", compact=True),
+            "sl": StatCard("Stop Loss", compact=True),
+            "tp": StatCard("Take Profit", compact=True),
+            "size": StatCard("Size", compact=True),
+        }
+        for i, card in enumerate(self.pos_cards.values()):
+            position_layout.addWidget(card, 1 + i // 4, i % 4)
+        self.pnl_bar = QProgressBar()
+        self.pnl_bar.setRange(-100, 100)
+        self.pnl_bar.setValue(0)
+        self.pnl_bar.setTextVisible(False)
+        position_layout.addWidget(self.pnl_bar, 2, 0, 1, 4)
+        root.addWidget(self.position_panel)
+        self.position_panel.setVisible(False)
+
         controls = self._build_controls()
         root.addWidget(controls)
 
@@ -222,6 +246,35 @@ class DashboardTab(QWidget):
         status = str(state.get("status", "-"))
         self._sync_control_buttons(status)
         self.close_active_trade_btn.setVisible(bool(state.get("has_open_position", False)))
+        has_position = bool(state.get("has_open_position", False))
+        self.position_panel.setVisible(has_position)
+        if has_position:
+            price_value = float(state.get("current_price", state.get("price", 0)) or 0)
+            entry = float(state.get("open_position_entry") or 0)
+            qty = float(state.get("open_position_qty") or 0)
+            sl = float(state.get("open_position_sl") or 0)
+            tp = float(state.get("open_position_tp") or 0)
+            side_value = str(state.get("open_position_side") or "-").upper()
+            upnl = float(state.get("unrealized_pnl") or 0)
+            tone_pnl = "positive" if upnl >= 0 else "negative"
+            self.pos_cards["side"].set_value(side_value, tone="positive" if side_value == "BUY" else "negative")
+            self.pos_cards["entry"].set_value(_fmt_num(entry, 2))
+            self.pos_cards["current"].set_value(_fmt_num(price_value, 2))
+            self.pos_cards["pnl"].set_value(f"{upnl:+.4f} USDT", tone=tone_pnl)
+            self.pos_cards["sl"].set_value(_fmt_num(sl, 2), tone="negative")
+            self.pos_cards["tp"].set_value(_fmt_num(tp, 2), tone="positive")
+            self.pos_cards["size"].set_value(_fmt_num(qty, 6))
+            if tp != sl:
+                pct = int(((price_value - sl) / (tp - sl)) * 100)
+                pct = max(-100, min(100, pct))
+                self.pnl_bar.setValue(pct)
+                color = "#16c784" if pct > 50 else "#f0b90b" if pct > 0 else "#ea3943"
+                self.pnl_bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; }}")
+            else:
+                self.pnl_bar.setValue(0)
+        else:
+            self.pnl_bar.setValue(0)
+
         signal = str(state.get("signal", "NEUTRAL")).upper()
         confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
         self.top_bar.setText(
