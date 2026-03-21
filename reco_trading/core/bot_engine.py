@@ -61,7 +61,8 @@ class BotEngine:
         self.logger = logging.getLogger(__name__)
         self.state = BotState.INITIALIZING
 
-        self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
+        market_type = "spot" if getattr(settings, "spot_only_mode", False) else "future"
+        self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet, market_type=market_type)
         self.symbol = normalize_symbol(settings.trading_symbol)
         self.order_manager = OrderManager(self.client, self.symbol)
         self.market_stream = MarketStream(self.client, self.symbol, settings.history_limit)

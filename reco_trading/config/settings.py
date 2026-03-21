@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     max_concurrent_trades: int = 1
     max_trades_per_day: int = 10
     max_trade_balance_fraction: float = 0.20
-    spot_only_mode: bool = True
+    spot_only_mode: bool = False
     daily_loss_limit_fraction: float = 0.03
     max_drawdown_fraction: float = 0.10
 

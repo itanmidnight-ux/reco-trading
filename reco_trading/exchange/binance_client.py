@@ -12,15 +12,20 @@ import ccxt
 class BinanceClient:
     """Async wrapper for Binance via ccxt with retry and time sync safety."""
 
-    def __init__(self, api_key: str, api_secret: str, testnet: bool) -> None:
+    def __init__(self, api_key: str, api_secret: str, testnet: bool, market_type: str = "spot") -> None:
         self.logger = logging.getLogger(__name__)
+        normalized_market_type = "spot" if str(market_type).lower() == "spot" else "future"
         self.exchange = ccxt.binance(
             {
                 "apiKey": api_key,
                 "secret": api_secret,
                 "enableRateLimit": True,
                 "recvWindow": 10000,
-                "options": {"defaultType": "spot", "adjustForTimeDifference": True, "recvWindow": 10000},
+                "options": {
+                    "defaultType": normalized_market_type,
+                    "adjustForTimeDifference": True,
+                    "recvWindow": 10000,
+                },
             }
         )
         self.time_offset_ms = 0

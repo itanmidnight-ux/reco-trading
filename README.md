@@ -1,6 +1,6 @@
-# Reco Trading Bot (Binance Spot)
+# Reco Trading Bot (Binance Spot/Futures)
 
-Production-oriented algorithmic trading bot for small-capital spot trading on Binance, built around a state-machine engine, multi-factor voting signals, strict risk controls, and persistent telemetry.
+Production-oriented algorithmic trading bot for Binance spot or futures-style directional trading, built around a state-machine engine, multi-factor voting signals, strict risk controls, and persistent telemetry.
 
 ## Overview
 
@@ -155,6 +155,7 @@ Required:
 
 Optional:
 - `BINANCE_TESTNET` (`true`/`false`, default `true`)
+- `SPOT_ONLY_MODE` (`true` for spot-only buy/close flow, `false` to allow directional BUY/SELL entries; default `false`)
 - `ENVIRONMENT` (default `testnet`)
 - `RUNTIME_PROFILE` (default `paper`)
 
