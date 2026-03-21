@@ -1098,6 +1098,7 @@ class BotEngine:
         if not self.state_manager:
             return
         try:
+            _ss = self.session_tracker.stats()
             self.state_manager.update(
                 pair=self.snapshot.get("pair", ""),
                 timeframe=self.snapshot.get("timeframe", ""),
@@ -1166,12 +1167,12 @@ class BotEngine:
                     "largest_loss": 0.0,
                     "equity_curve": list(self.equity_curve_history) or [self.snapshot.get("equity") or 0.0],
                     "session_stats": {
-                        "total_trades": self.session_tracker.stats().total_trades,
-                        "win_rate": self.session_tracker.stats().win_rate,
-                        "streak": self.session_tracker.stats().current_streak,
-                        "recommendation": self.session_tracker.stats().recommendation,
-                        "profit_factor": self.session_tracker.stats().profit_factor,
-                        "sharpe": self.session_tracker.stats().sharpe_estimate,
+                        "total_trades": _ss.total_trades,
+                        "win_rate": _ss.win_rate,
+                        "streak": _ss.current_streak,
+                        "recommendation": _ss.recommendation,
+                        "profit_factor": _ss.profit_factor,
+                        "sharpe": _ss.sharpe_estimate,
                     },
                 },
                 runtime_settings=self.snapshot.get("runtime_settings", {}),
@@ -1224,6 +1225,11 @@ class BotEngine:
                         "low": _as_float(row.get("low"), 0.0),
                         "close": _as_float(row.get("close"), 0.0),
                         "volume": _as_float(row.get("volume"), 0.0),
+                        "rsi": _as_float(row.get("rsi"), 50.0),
+                        "macd_diff": _as_float(row.get("macd_diff"), 0.0),
+                        "macd": _as_float(row.get("macd"), 0.0),
+                        "macd_signal": _as_float(row.get("macd_signal"), 0.0),
+                        "ema9": _as_float(row.get("ema9"), 0.0),
                     }
                 )
             except Exception:  # noqa: BLE001

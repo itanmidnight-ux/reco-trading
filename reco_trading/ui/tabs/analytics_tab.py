@@ -142,3 +142,16 @@ class AnalyticsTab(QWidget):
         self.insights.addItem(f"Open position: {state.get('open_position', '-')}")
         self.insights.addItem(f"Trades today: {state.get('trades_today', 0)}")
         self.insights.addItem(f"Session PnL: {state.get('session_pnl', 0)}")
+        session_stats = (
+            state.get("session_stats")
+            or (state.get("analytics") or {}).get("session_stats", {})
+        )
+        if session_stats:
+            streak = int(session_stats.get("streak", 0))
+            rec = str(session_stats.get("recommendation", "NORMAL"))
+            pf_sess = float(session_stats.get("profit_factor", 0) or 0)
+            sharpe = float(session_stats.get("sharpe", 0) or 0)
+            self.insights.addItem(f"Session streak: {'+' if streak > 0 else ''}{streak}")
+            self.insights.addItem(f"Recommendation: {rec}")
+            self.insights.addItem(f"Session PF: {pf_sess:.2f}")
+            self.insights.addItem(f"Sharpe est.: {sharpe:.2f}")

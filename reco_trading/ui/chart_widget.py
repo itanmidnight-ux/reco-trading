@@ -24,6 +24,11 @@ class Candle:
     low: float
     close: float
     volume: float
+    rsi: float = 50.0
+    macd_diff: float = 0.0
+    macd: float = 0.0
+    macd_signal: float = 0.0
+    ema9: float = 0.0
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -104,6 +109,37 @@ class CandlestickChartWidget(QWidget):
         self._ema50_line = self._price_plot.plot(pen=pg.mkPen("#c678dd", width=1.2), name="EMA 50")
         self._last_price_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(ACCENT_COLOR, width=1, style=pg.QtCore.Qt.PenStyle.DashLine))
         self._price_plot.addItem(self._last_price_line)
+        self._graphics.ci.layout.setRowStretchFactor(0, 6)
+        self._graphics.nextRow()
+        self._rsi_plot = self._graphics.addPlot(row=1, col=0)
+        self._rsi_plot.showGrid(x=True, y=True, alpha=0.20)
+        self._rsi_plot.setLabel("left", "RSI")
+        self._rsi_plot.setYRange(0, 100)
+        self._rsi_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._rsi_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._rsi_plot.getViewBox().setBackgroundColor(BG_COLOR)
+        self._graphics.ci.layout.setRowStretchFactor(1, 2)
+        for level, color in [(70, "#ea3943"), (30, "#16c784"), (50, "#9fb2d9")]:
+            self._rsi_plot.addItem(
+                pg.InfiniteLine(pos=level, angle=0, movable=False,
+                                pen=pg.mkPen(color, width=0.8,
+                                             style=pg.QtCore.Qt.PenStyle.DashLine))
+            )
+        self._rsi_line = self._rsi_plot.plot(pen=pg.mkPen("#ffffff", width=1.2))
+        self._graphics.nextRow()
+        self._macd_plot = self._graphics.addPlot(row=2, col=0)
+        self._macd_plot.showGrid(x=True, y=True, alpha=0.20)
+        self._macd_plot.setLabel("left", "MACD")
+        self._macd_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._macd_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
+        self._macd_plot.getViewBox().setBackgroundColor(BG_COLOR)
+        self._graphics.ci.layout.setRowStretchFactor(2, 2)
+        self._macd_line = self._macd_plot.plot(pen=pg.mkPen("#5a8dff", width=1.0))
+        self._signal_line = self._macd_plot.plot(pen=pg.mkPen("#f0b90b", width=1.0))
+        self._macd_hist = pg.BarGraphItem(x=[], height=[], width=0.6, brush="#ea3943")
+        self._macd_plot.addItem(self._macd_hist)
+        self._rsi_plot.setXLink(self._price_plot)
+        self._macd_plot.setXLink(self._price_plot)
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
@@ -117,10 +153,19 @@ class CandlestickChartWidget(QWidget):
                 low=float(c.get("low", 0.0)),
                 close=float(c.get("close", 0.0)),
                 volume=float(c.get("volume", 0.0)),
+                rsi=float(c.get("rsi", 50.0)),
+                macd_diff=float(c.get("macd_diff", 0.0)),
+                macd=float(c.get("macd", 0.0)),
+                macd_signal=float(c.get("macd_signal", 0.0)),
+                ema9=float(c.get("ema9", 0.0)),
             )
             for c in raw_candles[-120:]
         ]
-        signature = tuple((c.open, c.high, c.low, c.close, c.volume) for c in normalized)
+        signature = tuple(
+            (c.open, c.high, c.low, c.close, c.volume,
+             round(c.rsi, 1), round(c.macd_diff, 6))
+            for c in normalized
+        )
         if signature == self._last_signature:
             return
 
@@ -136,7 +181,8 @@ class CandlestickChartWidget(QWidget):
         if not self._candles:
             return
 
-        x = np.arange(len(self._candles), dtype=float)
+        n = len(self._candles)
+        x = np.arange(n, dtype=float)
         closes = np.array([c.close for c in self._candles], dtype=float)
         self._candles_item.set_candles(self._candles)
 
@@ -144,8 +190,17 @@ class CandlestickChartWidget(QWidget):
         self._ema21_line.setData(x, _ema(closes, 21))
         self._ema50_line.setData(x, _ema(closes, 50))
         self._last_price_line.setPos(float(closes[-1]))
-
-        self._price_plot.setXRange(max(0, len(self._candles) - 120), len(self._candles))
+        rsi_vals = np.array([c.rsi for c in self._candles], dtype=float)
+        macd_vals = np.array([c.macd for c in self._candles], dtype=float)
+        sig_vals = np.array([c.macd_signal for c in self._candles], dtype=float)
+        hist_vals = np.array([c.macd_diff for c in self._candles], dtype=float)
+        self._rsi_line.setData(x, rsi_vals)
+        self._macd_line.setData(x, macd_vals)
+        self._signal_line.setData(x, sig_vals)
+        brushes = ["#16c784" if v >= 0 else "#ea3943" for v in hist_vals]
+        self._macd_hist.setOpts(x=x, height=hist_vals, width=0.6, brushes=brushes)
+        view_start = max(0, n - 120)
+        self._price_plot.setXRange(view_start, n, padding=0)
 
 
 def _ema(values: np.ndarray, period: int) -> np.ndarray:
