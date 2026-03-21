@@ -1225,6 +1225,11 @@ class BotEngine:
                         "low": _as_float(row.get("low"), 0.0),
                         "close": _as_float(row.get("close"), 0.0),
                         "volume": _as_float(row.get("volume"), 0.0),
+                        "rsi": _as_float(row.get("rsi"), 50.0),
+                        "macd_diff": _as_float(row.get("macd_diff"), 0.0),
+                        "macd": _as_float(row.get("macd"), 0.0),
+                        "macd_signal": _as_float(row.get("macd_signal"), 0.0),
+                        "ema9": _as_float(row.get("ema9"), 0.0),
                     }
                 )
             except Exception:  # noqa: BLE001
