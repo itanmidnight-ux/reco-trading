@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     spot_only_mode: bool = True
     daily_loss_limit_fraction: float = 0.03
     max_drawdown_fraction: float = 0.10
+    capital_reserve_ratio: float = 0.15
+    min_cash_buffer_usdt: float = 10.0
+    enable_capital_profiles: bool = True
+    enforce_fee_floor: bool = True
+    estimated_fee_rate: float = 0.001
+    min_expected_reward_risk: float = 1.8
 
     # =========================
     # COOLDOWNS

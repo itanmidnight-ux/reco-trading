@@ -82,6 +82,16 @@ class SettingsTab(QWidget):
         self.max_allocation.setDecimals(1)
         self.max_allocation.setValue(20.0)
         self.max_allocation.setSuffix(" %")
+        self.reserve_ratio = QDoubleSpinBox()
+        self.reserve_ratio.setRange(0.0, 90.0)
+        self.reserve_ratio.setDecimals(1)
+        self.reserve_ratio.setValue(15.0)
+        self.reserve_ratio.setSuffix(" %")
+        self.cash_buffer = QDoubleSpinBox()
+        self.cash_buffer.setRange(0.0, 1_000_000.0)
+        self.cash_buffer.setDecimals(2)
+        self.cash_buffer.setValue(10.0)
+        self.cash_buffer.setSuffix(" USDT")
 
         form.addRow("Refresh rate (ms)", self.refresh_rate)
         form.addRow("Chart visibility", self.chart_visible)
@@ -94,6 +104,8 @@ class SettingsTab(QWidget):
         form.addRow("Per-pair budget", self.symbol_budget)
         form.addRow("Risk per trade", self.risk_per_trade)
         form.addRow("Max allocation", self.max_allocation)
+        form.addRow("Reserve ratio", self.reserve_ratio)
+        form.addRow("Cash buffer", self.cash_buffer)
         visual_layout.addLayout(form)
 
         self.simulation_hint = QLabel("Estimated max order: 0.00 USDT")
@@ -157,6 +169,8 @@ class SettingsTab(QWidget):
         self.symbol_budget.valueChanged.connect(self._emit)
         self.risk_per_trade.valueChanged.connect(self._emit)
         self.max_allocation.valueChanged.connect(self._emit)
+        self.reserve_ratio.valueChanged.connect(self._emit)
+        self.cash_buffer.valueChanged.connect(self._emit)
 
         self.load_keys_btn.clicked.connect(self._load_keys_from_env)
         self.save_keys_btn.clicked.connect(self._save_keys_to_env)
@@ -205,12 +219,18 @@ class SettingsTab(QWidget):
         if normalized == "conservative":
             self.risk_per_trade.setValue(0.5)
             self.max_allocation.setValue(10.0)
+            self.reserve_ratio.setValue(25.0)
+            self.cash_buffer.setValue(15.0)
         elif normalized == "balanced":
             self.risk_per_trade.setValue(1.0)
             self.max_allocation.setValue(20.0)
+            self.reserve_ratio.setValue(15.0)
+            self.cash_buffer.setValue(10.0)
         elif normalized == "aggressive":
             self.risk_per_trade.setValue(2.0)
             self.max_allocation.setValue(35.0)
+            self.reserve_ratio.setValue(8.0)
+            self.cash_buffer.setValue(5.0)
         self._emit()
 
     def _on_default_pair_changed(self, pair: str) -> None:
@@ -249,6 +269,8 @@ class SettingsTab(QWidget):
                 "symbol_capital_limits": dict(self._symbol_capital_limits),
                 "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
                 "max_trade_balance_fraction": self.max_allocation.value() / 100.0,
+                "capital_reserve_ratio": self.reserve_ratio.value() / 100.0,
+                "min_cash_buffer_usdt": self.cash_buffer.value(),
             }
         )
 
@@ -267,6 +289,10 @@ class SettingsTab(QWidget):
             self.risk_per_trade.setValue(max(risk_fraction * 100.0, 0.1))
             max_trade_fraction = float(runtime.get("max_trade_balance_fraction", 0.2) or 0.2)
             self.max_allocation.setValue(max(max_trade_fraction * 100.0, 1.0))
+            reserve_ratio = float(runtime.get("capital_reserve_ratio", 0.15) or 0.15)
+            self.reserve_ratio.setValue(max(reserve_ratio * 100.0, 0.0))
+            cash_buffer = float(runtime.get("min_cash_buffer_usdt", 10.0) or 10.0)
+            self.cash_buffer.setValue(max(cash_buffer, 0.0))
             symbol_limits = runtime.get("symbol_capital_limits", {})
             if isinstance(symbol_limits, dict):
                 self._symbol_capital_limits = {str(k): float(v) for k, v in symbol_limits.items() if float(v) > 0}
