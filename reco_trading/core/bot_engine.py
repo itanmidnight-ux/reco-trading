@@ -572,6 +572,17 @@ class BotEngine:
             if normalized_qty <= 0:
                 await self._log("WARNING", "spot_sell_quantity_below_inventory")
                 return
+
+        min_notional_buffer = self._current_capital_profile().min_operable_notional_buffer
+        required_notional = self.order_manager.rules.min_notional * max(min_notional_buffer, 1.0) if self.order_manager.rules else 0.0
+        if required_notional > 0 and (normalized_qty * price) < required_notional:
+            await self._log(
+                "WARNING",
+                "profile_notional_buffer_rejected "
+                f"symbol={self.symbol} notional={(normalized_qty * price):.8f} required={required_notional:.8f} "
+                f"profile={self._current_capital_profile().name}",
+            )
+            return
         qty = normalized_qty
         if abs(qty - original_qty) > 0:
             rules = self.order_manager.rules
@@ -1322,11 +1333,19 @@ class BotEngine:
                 },
                 risk_metrics={
                     "risk_per_trade": f"{self._effective_risk_per_trade_fraction():.2%}",
-                    "max_concurrent_trades": self.settings.max_concurrent_trades,
+                    "max_concurrent_trades": self._effective_max_concurrent_trades(),
                     "max_trade_allocation": f"{self._effective_max_trade_balance_fraction():.2%}",
-                    "daily_drawdown": f"{max(0.0, -_as_float(self.snapshot.get('daily_pnl'), 0.0)):.4f}",
+                    "daily_drawdown": max(0.0, -_as_float(self.snapshot.get("daily_pnl"), 0.0)),
                     "consecutive_losses": self.consecutive_losses,
                     "current_exposure": self._current_exposure(),
+                    "capital_profile": self.snapshot.get("capital_profile", "UNKNOWN"),
+                    "operable_capital_usdt": self.snapshot.get("operable_capital_usdt"),
+                    "capital_reserve_ratio": self.snapshot.get("capital_reserve_ratio"),
+                    "min_cash_buffer_usdt": self.snapshot.get("min_cash_buffer_usdt"),
+                    "setup_quality_score": self.snapshot.get("signal_quality_score"),
+                    "advanced_risk_reason": self.snapshot.get("advanced_risk_reason", "OK"),
+                    "adaptive_size_multiplier": self.snapshot.get("adaptive_size_multiplier", 1.0),
+                    "advanced_size_multiplier": self.snapshot.get("advanced_size_multiplier", 1.0),
                 },
                 analytics={
                     "total_trades": self.trades_today,
