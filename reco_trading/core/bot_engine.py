@@ -5,6 +5,7 @@ import logging
 import os as _os
 import time
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +23,7 @@ from reco_trading.exchange.order_manager import OrderManager
 from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.advanced_risk_manager import AdvancedRiskManager
 from reco_trading.risk.adaptive_sizer import AdaptiveSizer
+from reco_trading.risk.capital_profile import CapitalProfile, CapitalProfileManager
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
@@ -74,6 +76,7 @@ class BotEngine:
             max_drawdown_percent=max(float(getattr(settings, "max_drawdown_fraction", 0.10)), 0.0) * 100,
         )
         self.position_manager = PositionManager()
+        self.capital_profile_manager = CapitalProfileManager()
         self.adaptive_sizer = AdaptiveSizer(
             base_risk_fraction=settings.risk_per_trade_fraction,
             min_multiplier=0.15,
@@ -101,6 +104,8 @@ class BotEngine:
         self.runtime_risk_per_trade_fraction: float | None = None
         self.runtime_max_trade_balance_fraction: float | None = None
         self.runtime_capital_limit_usdt: float | None = None
+        self.runtime_capital_reserve_ratio: float | None = None
+        self.runtime_min_cash_buffer_usdt: float | None = None
         self.runtime_symbol_capital_limits: dict[str, float] = {}
         self.runtime_investment_mode: str = "Balanced"
         self.manual_pause = False
@@ -152,6 +157,10 @@ class BotEngine:
             "distance_to_resistance": None,
             "investment_mode": self.runtime_investment_mode,
             "capital_limit_usdt": self.runtime_capital_limit_usdt,
+            "operable_capital_usdt": None,
+            "capital_profile": "UNKNOWN",
+            "capital_reserve_ratio": float(getattr(self.settings, "capital_reserve_ratio", 0.15)),
+            "min_cash_buffer_usdt": float(getattr(self.settings, "min_cash_buffer_usdt", 10.0)),
             "runtime_settings": {},
             "database_status": "CONNECTING",
             "exchange_status": "CONNECTING",
@@ -353,12 +362,23 @@ class BotEngine:
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
         side, confidence, grade = self.confidence_model.evaluate(bundle)
+        raw_side = side
         conf_result = self.confluence.evaluate(market_data["frame5"], market_data["frame15"])
         if conf_result.aligned:
             final_confidence = min(confidence * 1.08, 0.99)
         else:
             penalty = max(conf_result.score, 0.50)
             final_confidence = confidence * penalty
+        if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell():
+            side = "HOLD"
+
+        setup_quality = self._build_setup_quality_score(
+            bundle=bundle,
+            final_confidence=final_confidence,
+            confluence_score=conf_result.score,
+        )
+        self.snapshot["raw_signal"] = raw_side
+        self.snapshot["signal_quality_score"] = setup_quality
         self.snapshot["confluence_score"] = conf_result.score
         self.snapshot["confluence_aligned"] = conf_result.aligned
         await self._set_state(BotState.SIGNAL_GENERATED)
@@ -366,15 +386,19 @@ class BotEngine:
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {
             "bundle": bundle,
+            "raw_side": raw_side,
             "side": side,
             "confidence": final_confidence,
             "grade": grade,
             "confluence": conf_result,
+            "setup_quality": setup_quality,
         }
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
         confidence = float(analysis["confidence"])
         side = str(analysis.get("side", "HOLD")).upper()
+        profile = self._current_capital_profile()
+        min_confidence = max(self.settings.confidence_threshold, self._effective_min_signal_confidence())
         if side == "HOLD":
             await self._set_state(BotState.WAITING_MARKET_DATA, "hold_signal")
             self.snapshot["cooldown"] = "HOLD_SIGNAL"
@@ -414,12 +438,13 @@ class BotEngine:
             self.snapshot["cooldown"] = "ACTIVE"
             return False
 
+        self.risk_manager.max_trades_per_day = self._effective_max_trades_per_day()
         risk = self.risk_manager.validate(
             balance=usdt_balance,
             daily_pnl=session_pnl,
             trades_today=self.trades_today,
             confidence=confidence,
-            confidence_threshold=self.settings.confidence_threshold,
+            confidence_threshold=min_confidence,
         )
         if not risk.approved:
             await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_MARKET_DATA, risk.reason)
@@ -439,7 +464,7 @@ class BotEngine:
             await self._set_state(BotState.PAUSED, advanced.reason)
             self.snapshot["cooldown"] = advanced.reason
             if advanced.pause_trading:
-                self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self.settings.loss_pause_minutes)
+                self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self._effective_loss_pause_minutes())
             return False
 
         self.snapshot["advanced_risk_reason"] = advanced.reason
@@ -452,6 +477,19 @@ class BotEngine:
             return False
         self.snapshot["session_streak"] = session_stats.current_streak
         self.snapshot["session_recommendation"] = session_stats.recommendation
+
+        setup_quality = _as_float(analysis.get("setup_quality"), _as_float(self.snapshot.get("signal_quality_score"), 0.0))
+        if setup_quality < self._effective_entry_quality_floor():
+            await self._set_state(BotState.WAITING_MARKET_DATA, "setup_quality_too_low")
+            self.snapshot["cooldown"] = "SETUP_QUALITY_TOO_LOW"
+            return False
+
+        if not self._trade_costs_are_acceptable(side):
+            await self._set_state(BotState.WAITING_MARKET_DATA, "trade_costs_too_high")
+            self.snapshot["cooldown"] = "TRADE_COSTS_TOO_HIGH"
+            return False
+
+        self.snapshot["capital_profile"] = profile.name
 
         self.snapshot["cooldown"] = "READY"
         return True
@@ -474,13 +512,13 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "regime_filter")
             return
 
-        if not self.position_manager.can_open(self.settings.max_concurrent_trades):
+        if not self.position_manager.can_open(self._effective_max_concurrent_trades()):
             await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
 
         spread = _as_float(market_data.get("spread"), 0.0)
         spread_ratio = spread / max(price, 1e-9)
-        if spread_ratio > _as_float(self.settings.max_spread_ratio, 0.002):
+        if spread_ratio > self._effective_max_spread_ratio():
             await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide")
             return
 
@@ -803,18 +841,22 @@ class BotEngine:
 
     def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
+        profile = self._current_capital_profile()
         equity = self._effective_equity_for_risk(equity)
+        operable_equity = self._operable_equity_for_trading(equity, profile)
         decision = self.adaptive_sizer.compute(
-            equity=equity,
+            equity=operable_equity,
             price=price,
             stop_loss=stop_loss,
             atr=atr,
             confidence=_as_float(self.snapshot.get("confidence"), 0.0),
             recent_pnls=list(self._recent_pnls),
-            volatility_multiplier=max(size_multiplier, 0.1),
+            volatility_multiplier=max(size_multiplier * profile.size_multiplier, 0.1),
         )
         self.snapshot["adaptive_size_reason"] = decision.reason
         self.snapshot["adaptive_size_multiplier"] = decision.size_multiplier
+        self.snapshot["operable_capital_usdt"] = operable_equity
+        self.snapshot["capital_profile"] = profile.name
         return float(max(decision.quantity, 0.0))
 
     def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
@@ -872,8 +914,8 @@ class BotEngine:
         else:
             self.consecutive_losses = 0
 
-        if self.consecutive_losses >= self.settings.loss_pause_after_consecutive:
-            self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self.settings.loss_pause_minutes)
+        if self.consecutive_losses >= self._effective_loss_pause_after_consecutive():
+            self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self._effective_loss_pause_minutes())
             self.consecutive_losses = 0
             return True
         return False
@@ -913,7 +955,9 @@ class BotEngine:
                 "change_24h": market_data.get("change_24h"),
                 "candles_5m": list(market_data.get("candles_5m") or [])[-120:],
                 "signal": analysis.get("side"),
+                "raw_signal": analysis.get("raw_side"),
                 "confidence": analysis.get("confidence"),
+                "signal_quality_score": analysis.get("setup_quality"),
                 "status": self.state.value,
                 "signals": {
                     "trend": bundle.trend,
@@ -966,6 +1010,11 @@ class BotEngine:
         self.snapshot["session_pnl"] = session_pnl
         self.snapshot["trades_today"] = self.trades_today
         self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else 0.0
+
+        profile = self._current_capital_profile()
+        operable_capital = self._operable_equity_for_trading(total_equity, profile)
+        self.snapshot["capital_profile"] = profile.name
+        self.snapshot["operable_capital_usdt"] = operable_capital
 
         if self.starting_equity is None:
             self.starting_equity = max(total_equity, 1.0)
@@ -1054,6 +1103,14 @@ class BotEngine:
             self._effective_max_trade_balance_fraction(),
         )
         capital_limit = _as_float(sanitized.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+        reserve_ratio = _as_float(
+            sanitized.get("capital_reserve_ratio"),
+            self.runtime_capital_reserve_ratio if self.runtime_capital_reserve_ratio is not None else getattr(self.settings, "capital_reserve_ratio", 0.15),
+        )
+        min_cash_buffer = _as_float(
+            sanitized.get("min_cash_buffer_usdt"),
+            self.runtime_min_cash_buffer_usdt if self.runtime_min_cash_buffer_usdt is not None else getattr(self.settings, "min_cash_buffer_usdt", 10.0),
+        )
         self.runtime_symbol_capital_limits = {
             normalize_symbol(symbol): limit
             for symbol, limit in sanitized.get("symbol_capital_limits", {}).items()
@@ -1063,21 +1120,15 @@ class BotEngine:
         self.runtime_risk_per_trade_fraction = min(max(risk_fraction, 0.001), 0.10)
         self.runtime_max_trade_balance_fraction = min(max(max_trade_fraction, 0.01), 1.0)
         self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
+        self.runtime_capital_reserve_ratio = min(max(reserve_ratio, 0.0), 0.90)
+        self.runtime_min_cash_buffer_usdt = max(min_cash_buffer, 0.0)
         self.snapshot["investment_mode"] = self.runtime_investment_mode
         self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
+        self.snapshot["capital_reserve_ratio"] = self.runtime_capital_reserve_ratio
+        self.snapshot["min_cash_buffer_usdt"] = self.runtime_min_cash_buffer_usdt
         self.snapshot["runtime_settings"] = sanitized
         if persist:
             await self.repository.set_runtime_setting("ui_runtime_settings", sanitized)
-
-    def _effective_risk_per_trade_fraction(self) -> float:
-        if self.runtime_risk_per_trade_fraction is not None:
-            return self.runtime_risk_per_trade_fraction
-        return float(self.settings.risk_per_trade_fraction)
-
-    def _effective_max_trade_balance_fraction(self) -> float:
-        if self.runtime_max_trade_balance_fraction is not None:
-            return self.runtime_max_trade_balance_fraction
-        return float(self.settings.max_trade_balance_fraction)
 
     def _effective_equity_for_risk(self, equity: float) -> float:
         symbol_limit = self.runtime_symbol_capital_limits.get(normalize_symbol(self.symbol))
@@ -1085,6 +1136,101 @@ class BotEngine:
         if limit is None:
             return max(equity, 0.0)
         return max(min(equity, limit), 0.0)
+
+    def _current_capital_profile(self) -> CapitalProfile:
+        equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)))
+        if not hasattr(self, "capital_profile_manager") or self.capital_profile_manager is None:
+            self.capital_profile_manager = CapitalProfileManager()
+        settings = getattr(self, "settings", None)
+        if not getattr(settings, "enable_capital_profiles", True):
+            equity = max(equity, 1000.0)
+        return self.capital_profile_manager.select(equity)
+
+    def _operable_equity_for_trading(self, equity: float, profile: CapitalProfile | None = None) -> float:
+        active_profile = profile or self._current_capital_profile()
+        capital_limit = self._effective_equity_cap()
+        runtime_reserve_ratio = getattr(self, "runtime_capital_reserve_ratio", None)
+        runtime_cash_buffer = getattr(self, "runtime_min_cash_buffer_usdt", None)
+        reserve_ratio = runtime_reserve_ratio if runtime_reserve_ratio is not None else active_profile.reserve_ratio
+        reserve_buffer = runtime_cash_buffer if runtime_cash_buffer is not None else active_profile.reserve_buffer_usdt
+        effective_profile = CapitalProfile(
+            **{**asdict(active_profile), "reserve_ratio": reserve_ratio, "reserve_buffer_usdt": reserve_buffer}
+        )
+        return self.capital_profile_manager.operable_capital(equity, effective_profile, capital_limit)
+
+    def _effective_equity_cap(self) -> float | None:
+        symbol_limits = getattr(self, "runtime_symbol_capital_limits", {}) or {}
+        symbol = normalize_symbol(getattr(self, "symbol", ""))
+        symbol_limit = symbol_limits.get(symbol)
+        if symbol_limit is not None:
+            return symbol_limit
+        return getattr(self, "runtime_capital_limit_usdt", None)
+
+    def _effective_risk_per_trade_fraction(self) -> float:
+        profile_fraction = self._current_capital_profile().risk_per_trade_fraction
+        if self.runtime_risk_per_trade_fraction is not None:
+            return min(self.runtime_risk_per_trade_fraction, profile_fraction)
+        return min(float(self.settings.risk_per_trade_fraction), profile_fraction)
+
+    def _effective_max_trade_balance_fraction(self) -> float:
+        profile_fraction = self._current_capital_profile().max_trade_balance_fraction
+        if self.runtime_max_trade_balance_fraction is not None:
+            return min(self.runtime_max_trade_balance_fraction, profile_fraction)
+        return min(float(self.settings.max_trade_balance_fraction), profile_fraction)
+
+    def _effective_min_signal_confidence(self) -> float:
+        return max(float(self._current_capital_profile().min_confidence), float(self.settings.confidence_threshold))
+
+    def _effective_max_spread_ratio(self) -> float:
+        return min(float(getattr(self.settings, "max_spread_ratio", 0.004)), float(self._current_capital_profile().max_spread_ratio))
+
+    def _effective_max_trades_per_day(self) -> int:
+        return min(int(self.settings.max_trades_per_day), int(self._current_capital_profile().max_trades_per_day))
+
+    def _effective_cooldown_minutes(self) -> int:
+        return max(int(self.settings.cooldown_minutes), int(self._current_capital_profile().cooldown_minutes))
+
+    def _effective_loss_pause_minutes(self) -> int:
+        return max(int(self.settings.loss_pause_minutes), int(self._current_capital_profile().loss_pause_minutes))
+
+    def _effective_loss_pause_after_consecutive(self) -> int:
+        return min(int(self.settings.loss_pause_after_consecutive), int(self._current_capital_profile().loss_pause_after_consecutive))
+
+    def _effective_max_concurrent_trades(self) -> int:
+        return min(int(self.settings.max_concurrent_trades), int(self._current_capital_profile().max_concurrent_trades))
+
+    def _effective_entry_quality_floor(self) -> float:
+        return float(self._current_capital_profile().entry_quality_floor)
+
+    def _build_setup_quality_score(self, *, bundle: SignalBundle, final_confidence: float, confluence_score: float) -> float:
+        confidence_component = max(min(final_confidence, 1.0), 0.0) * 0.45
+        confluence_component = max(min(confluence_score, 1.0), 0.0) * 0.25
+        directional_votes = sum(
+            1
+            for signal in (bundle.trend, bundle.momentum, bundle.structure, bundle.order_flow)
+            if signal in {"BUY", "SELL"}
+        )
+        vote_component = min(directional_votes / 4.0, 1.0) * 0.20
+        regime_component = (0.10 if bundle.regime_trade_allowed else 0.0) * max(float(bundle.size_multiplier), 0.0)
+        return round(min(confidence_component + confluence_component + vote_component + regime_component, 1.0), 4)
+
+    def _trade_costs_are_acceptable(self, side: str) -> bool:
+        if side not in {"BUY", "SELL"}:
+            return False
+        if not getattr(self.settings, "enforce_fee_floor", True):
+            return True
+        price = _as_float(self.snapshot.get("price"), 0.0)
+        if price <= 0:
+            return False
+        spread_ratio = _as_float(self.snapshot.get("spread"), 0.0) / price
+        fee_rate = max(_as_float(getattr(self.settings, "estimated_fee_rate", 0.001), 0.001), 0.0)
+        total_cost = max((fee_rate * 2.0) + spread_ratio, 0.0)
+        atr = _as_float(self.snapshot.get("atr"), 0.0)
+        expected_move = atr / price if atr > 0 else 0.0
+        min_rr = max(_as_float(getattr(self.settings, "min_expected_reward_risk", 1.8), 1.8), float(self._current_capital_profile().min_expected_reward_risk))
+        if total_cost <= 0:
+            return True
+        return expected_move >= (total_cost * min_rr)
 
     async def _set_state(self, new_state: BotState, context: str = "") -> None:
         if new_state == self.state:
@@ -1111,7 +1257,7 @@ class BotEngine:
     def _is_cooldown_complete(self) -> bool:
         if self.last_close_time is None:
             return True
-        return datetime.now(timezone.utc) - self.last_close_time >= timedelta(minutes=self.settings.cooldown_minutes)
+        return datetime.now(timezone.utc) - self.last_close_time >= timedelta(minutes=self._effective_cooldown_minutes())
 
     def _safe_live_update(self, live: Live) -> None:
         try:
@@ -1321,6 +1467,8 @@ def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any
         "default_timeframe": str(payload.get("default_timeframe", "")).strip(),
         "investment_mode": str(payload.get("investment_mode", "Balanced")).strip() or "Balanced",
         "capital_limit_usdt": max(_as_float(payload.get("capital_limit_usdt"), 0.0), 0.0),
+        "capital_reserve_ratio": min(max(_as_float(payload.get("capital_reserve_ratio"), 0.15), 0.0), 0.90),
+        "min_cash_buffer_usdt": max(_as_float(payload.get("min_cash_buffer_usdt"), 10.0), 0.0),
         "symbol_capital_limits": symbol_limits,
         "risk_per_trade_fraction": min(max(_as_float(payload.get("risk_per_trade_fraction"), 0.01), 0.001), 0.10),
         "max_trade_balance_fraction": min(max(_as_float(payload.get("max_trade_balance_fraction"), 0.20), 0.01), 1.0),
