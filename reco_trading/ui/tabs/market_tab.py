@@ -36,6 +36,8 @@ class MarketTab(QWidget):
             "adx": StatCard("ADX", compact=True),
             "market_regime": StatCard("Market Regime", compact=True),
             "atr": StatCard("ATR", compact=True),
+            "raw_signal": StatCard("Raw Signal", compact=True),
+            "quality": StatCard("Setup Quality", compact=True),
         }
         for i, card in enumerate(self.cards.values()):
             layout.addWidget(card, i // 3, i % 3)
@@ -86,6 +88,8 @@ class MarketTab(QWidget):
             round(volume, 8),
             state.get("distance_to_support", "-"),
             state.get("distance_to_resistance", "-"),
+            state.get("raw_signal", "-"),
+            state.get("signal_quality_score", "-"),
         )
         if signature == self._last_signature:
             return
@@ -100,6 +104,8 @@ class MarketTab(QWidget):
         self.cards["adx"].set_value(f"{adx:.2f}")
         self.cards["market_regime"].set_value(str(state.get("market_regime", "-")))
         self.cards["atr"].set_value(f"{atr:.4f}")
+        self.cards["raw_signal"].set_value(str(state.get("raw_signal", state.get("signal", "-"))))
+        self.cards["quality"].set_value(f"{_as_float(state.get('signal_quality_score'), 0.0) * 100:.0f}%")
 
         normalized_trend = trend.upper().replace("BUY", "UP").replace("SELL", "DOWN")
         sentiment = "Bullish" if "UP" in normalized_trend else "Bearish" if "DOWN" in normalized_trend else "Neutral"
@@ -126,6 +132,7 @@ class MarketTab(QWidget):
                 f"Volatility Regime: {state.get('volatility_regime', '-')}",
                 f"Order Flow Bias: {state.get('order_flow', '-')}",
                 f"Volume: {volume:.2f}",
+                f"Setup Quality: {_as_float(state.get('signal_quality_score'), 0.0) * 100:.0f}%",
                 f"Distance to Support: {state.get('distance_to_support', '-')}",
                 f"Distance to Resistance: {state.get('distance_to_resistance', '-')}",
             ]

@@ -25,6 +25,8 @@ class DashboardSnapshot:
     balance: float | None = None
     equity: float | None = None
     daily_pnl: float | None = None
+    operable_capital_usdt: float | None = None
+    capital_profile: str | None = None
     trades_today: int = 0
     win_rate: float | None = None
     last_trade: str | None = None
@@ -48,6 +50,8 @@ class DashboardSnapshot:
             balance=_to_float(data.get("balance")),
             equity=_to_float(data.get("equity")),
             daily_pnl=_to_float(data.get("daily_pnl")),
+            operable_capital_usdt=_to_float(data.get("operable_capital_usdt")),
+            capital_profile=_to_text(data.get("capital_profile")),
             trades_today=int(data.get("trades_today", 0) or 0),
             win_rate=_to_float(data.get("win_rate")),
             last_trade=_to_text(data.get("last_trade")),
@@ -98,6 +102,8 @@ class TerminalDashboard:
             portfolio.add_column()
             portfolio.add_row("Balance", f"{_fmt_num(snap.balance, 4)} USDT")
             portfolio.add_row("Equity", f"{_fmt_num(snap.equity, 4)} USDT")
+            portfolio.add_row("Operable Capital", f"{_fmt_num(snap.operable_capital_usdt, 4)} USDT")
+            portfolio.add_row("Capital Profile", snap.capital_profile or "-")
             portfolio.add_row("Daily PnL", f"{_fmt_num(snap.daily_pnl, 4)} USDT")
             portfolio.add_row("Trades Today", str(snap.trades_today))
             portfolio.add_row("Win Rate", _fmt_pct(snap.win_rate))
