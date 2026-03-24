@@ -102,7 +102,17 @@ class Repository:
         await self._persist(StateChange(from_state=from_state, to_state=to_state, context=context, timestamp=datetime.utcnow()))
 
     @safe_db_call()
-    async def record_signal(self, symbol: str, payload: Mapping[str, str], confidence: float, action: str) -> None:
+    async def record_signal(
+        self,
+        symbol: str,
+        payload: Mapping[str, str],
+        confidence: float,
+        action: str,
+        *,
+        factor_scores: Mapping[str, float] | None = None,
+        gating: Mapping[str, Any] | None = None,
+        decision_reason: str = "UNKNOWN",
+    ) -> None:
         await self._persist(
             Signal(
                 symbol=symbol,
@@ -115,6 +125,9 @@ class Repository:
                 regime=payload.get("regime", "NORMAL_VOLATILITY"),
                 confidence=confidence,
                 action=action,
+                factor_scores_json=json.dumps(dict(factor_scores or {})),
+                gating_json=json.dumps(dict(gating or {})),
+                decision_reason=decision_reason[:160],
             )
         )
 

@@ -179,6 +179,14 @@ class DashboardTab(QWidget):
         self.execution_insight.setWordWrap(True)
         self.execution_insight.setObjectName("metricLabel")
         activity_layout.addWidget(self.execution_insight)
+        self.health_label = QLabel("Health: waiting metrics")
+        self.health_label.setWordWrap(True)
+        self.health_label.setObjectName("metricLabel")
+        activity_layout.addWidget(self.health_label)
+        self.decision_trace_label = QLabel("Decision trace unavailable")
+        self.decision_trace_label.setWordWrap(True)
+        self.decision_trace_label.setObjectName("metricLabel")
+        activity_layout.addWidget(self.decision_trace_label)
 
         self.chart_panel = self._panel()
         self.chart_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -397,6 +405,20 @@ class DashboardTab(QWidget):
                 ]
             )
         )
+        latency_p95 = _as_float(state.get("api_latency_p95_ms"), 0.0)
+        stale_ratio = _as_float(state.get("stale_market_data_ratio"), 0.0)
+        reconnects = int(state.get("exchange_reconnections", 0) or 0)
+        breaker = int(state.get("circuit_breaker_trips", 0) or 0)
+        db_status = str(state.get("database_status", "UNKNOWN"))
+        ex_status = str(state.get("exchange_status", "UNKNOWN"))
+        self.health_label.setText(
+            f"Health p95={latency_p95:.1f}ms • stale={stale_ratio:.1%} • reconnect={reconnects} • CB={breaker} • DB={db_status} • EX={ex_status}"
+        )
+        trace = state.get("decision_trace", {}) or {}
+        factor_scores = trace.get("factor_scores", {}) if isinstance(trace, dict) else {}
+        compact_scores = ", ".join(f"{k}:{float(v):+.2f}" for k, v in list(factor_scores.items())[:4]) or "n/a"
+        decision_reason = str(state.get("decision_reason", "-"))
+        self.decision_trace_label.setText(f"Decision trace: {compact_scores} • reason={decision_reason}")
         self.chart.update_from_snapshot(state)
 
 
