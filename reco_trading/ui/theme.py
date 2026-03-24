@@ -3,9 +3,9 @@ from __future__ import annotations
 _DARK_COLORS = {
     "background": "#0b1020",
     "background_alt": "#111933",
-    "panel": "#141d35",
-    "panel_alt": "#1a2643",
-    "border": "#273658",
+    "panel": "#111a2e",
+    "panel_alt": "#17243f",
+    "border": "#30456f",
     "text_primary": "#edf2ff",
     "text_secondary": "#9fb2d9",
     "positive": "#22d39b",
@@ -14,6 +14,22 @@ _DARK_COLORS = {
     "info": "#5a8dff",
     "neutral": "#7f93bf",
     "accent": "#7b61ff",
+}
+
+_MIDNIGHT_COLORS = {
+    "background": "#05070f",
+    "background_alt": "#0a1020",
+    "panel": "#0c1326",
+    "panel_alt": "#121d39",
+    "border": "#2b3e67",
+    "text_primary": "#f1f5ff",
+    "text_secondary": "#9cb0d8",
+    "positive": "#22d39b",
+    "negative": "#ff6b88",
+    "warning": "#ffca70",
+    "info": "#60a5ff",
+    "neutral": "#7f93bf",
+    "accent": "#8b7bff",
 }
 
 _LIGHT_COLORS = {
@@ -33,10 +49,20 @@ _LIGHT_COLORS = {
 }
 
 
+
+def get_theme_colors(theme: str = "Dark") -> dict[str, str]:
+    normalized = str(theme or "Dark").strip().lower()
+    if normalized in {"light", "white", "blanco"}:
+        return dict(_LIGHT_COLORS)
+    if normalized in {"midnight", "amoled", "true dark"}:
+        return dict(_MIDNIGHT_COLORS)
+    return dict(_DARK_COLORS)
+
+
 def app_stylesheet(theme: str = "Dark") -> str:
     try:
         normalized = str(theme or "Dark").strip().lower()
-        colors = _LIGHT_COLORS if normalized in {"light", "white", "blanco"} else _DARK_COLORS
+        colors = get_theme_colors(theme)
         style = f"""
         QWidget {{
             background-color: {colors['background']};
@@ -47,8 +73,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
         QMainWindow, QTabWidget::pane, QScrollArea {{
             border: 1px solid {colors['border']};
             border-radius: 12px;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {colors['background']}, stop:1 {colors['background_alt']});
+            background: {colors['background']};
         }}
         QScrollArea > QWidget > QWidget {{
             background: transparent;
@@ -70,12 +95,11 @@ def app_stylesheet(theme: str = "Dark") -> str:
         }}
         QTabBar::tab:selected {{
             color: white;
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {colors['accent']}, stop:1 {colors['info']});
+            background: {colors['accent']};
+            border-color: {colors['info']};
         }}
         QFrame#metricCard, QFrame#panelCard {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {colors['panel']}, stop:1 {colors['panel_alt']});
+            background: {colors['panel']};
             border: 1px solid {colors['border']};
             border-radius: 12px;
         }}
@@ -152,14 +176,13 @@ def app_stylesheet(theme: str = "Dark") -> str:
             border-radius: 6px;
         }}
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-            background: {"#ffffff" if colors is _LIGHT_COLORS else "#101933"};
+            background: {"#ffffff" if normalized in {"light", "white", "blanco"} else "#0d1528"};
             border: 1px solid {colors['border']};
             border-radius: 8px;
             padding: 7px;
         }}
         QPushButton {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {colors['accent']}, stop:1 {colors['info']});
+            background: {colors['accent']};
             border: 1px solid {colors['border']};
             border-radius: 8px;
             padding: 8px 12px;
@@ -167,8 +190,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
             font-weight: 600;
         }}
         QPushButton:hover {{
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {colors['info']}, stop:1 {colors['accent']});
+            background: {colors['info']};
             border: 1px solid {colors['info']};
         }}
         QPushButton:pressed {{

@@ -38,6 +38,10 @@ class MainWindow(QMainWindow):
             print(f"Theme loading failed: {exc}")
 
         tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.setUsesScrollButtons(True)
+        tabs.setElideMode(0)
+
         self.dashboard_tab = DashboardTab(state_manager=state_manager)
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
@@ -48,15 +52,15 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
 
-        tabs.addTab(self.dashboard_tab, tr("tab.dashboard", self._current_language))
-        tabs.addTab(self.trades_tab, tr("tab.trades", self._current_language))
-        tabs.addTab(self.market_tab, tr("tab.market", self._current_language))
-        tabs.addTab(self.analytics_tab, tr("tab.analytics", self._current_language))
-        tabs.addTab(self.strategy_tab, tr("tab.strategy", self._current_language))
-        tabs.addTab(self.logs_tab, tr("tab.logs", self._current_language))
-        tabs.addTab(self.risk_tab, tr("tab.risk", self._current_language))
-        tabs.addTab(self.settings_tab, tr("tab.settings", self._current_language))
-        tabs.addTab(self.system_tab, tr("tab.system", self._current_language))
+        tabs.addTab(self.dashboard_tab, _tab_label("dashboard", self._current_language))
+        tabs.addTab(self.trades_tab, _tab_label("trades", self._current_language))
+        tabs.addTab(self.market_tab, _tab_label("market", self._current_language))
+        tabs.addTab(self.analytics_tab, _tab_label("analytics", self._current_language))
+        tabs.addTab(self.strategy_tab, _tab_label("strategy", self._current_language))
+        tabs.addTab(self.logs_tab, _tab_label("logs", self._current_language))
+        tabs.addTab(self.risk_tab, _tab_label("risk", self._current_language))
+        tabs.addTab(self.settings_tab, _tab_label("settings", self._current_language))
+        tabs.addTab(self.system_tab, _tab_label("system", self._current_language))
         self.setCentralWidget(tabs)
         self.tabs = tabs
 
@@ -149,15 +153,15 @@ class MainWindow(QMainWindow):
         self._current_language = normalized
         self.setWindowTitle(tr("window_title", normalized))
         labels = [
-            tr("tab.dashboard", normalized),
-            tr("tab.trades", normalized),
-            tr("tab.market", normalized),
-            tr("tab.analytics", normalized),
-            tr("tab.strategy", normalized),
-            tr("tab.logs", normalized),
-            tr("tab.risk", normalized),
-            tr("tab.settings", normalized),
-            tr("tab.system", normalized),
+            _tab_label("dashboard", normalized),
+            _tab_label("trades", normalized),
+            _tab_label("market", normalized),
+            _tab_label("analytics", normalized),
+            _tab_label("strategy", normalized),
+            _tab_label("logs", normalized),
+            _tab_label("risk", normalized),
+            _tab_label("settings", normalized),
+            _tab_label("system", normalized),
         ]
         for idx, label in enumerate(labels):
             self.tabs.setTabText(idx, label)
@@ -169,15 +173,8 @@ class MainWindow(QMainWindow):
         widget = self.tabs.widget(index)
         if not widget:
             return
-        effect = QGraphicsOpacityEffect(widget)
-        widget.setGraphicsEffect(effect)
-        animation = QPropertyAnimation(effect, b"opacity", widget)
-        animation.setDuration(260)
-        animation.setStartValue(0.45)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        animation.start()
-        self._current_animation = animation
+        # Keep tabs crisp/solid: avoid opacity animations that can look blurry.
+        widget.setGraphicsEffect(None)
 
     def _decorate_state(self, state: dict) -> dict:
         decorated = dict(state)
@@ -193,3 +190,18 @@ class MainWindow(QMainWindow):
         )
         decorated["system"] = system
         return decorated
+
+
+def _tab_label(tab_key: str, language: str) -> str:
+    base = {
+        "dashboard": "📊",
+        "trades": "💱",
+        "market": "📈",
+        "analytics": "🧠",
+        "strategy": "🧭",
+        "logs": "🧾",
+        "risk": "🛡️",
+        "settings": "⚙️",
+        "system": "🖥️",
+    }.get(tab_key, "•")
+    return f"{base} {tr('tab.{tab_key}', language)}"

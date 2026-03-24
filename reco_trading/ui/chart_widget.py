@@ -136,6 +136,7 @@ class CandlestickChartWidget(QWidget):
         self._price_plot.getViewBox().setBackgroundColor(BG_COLOR)
 
         self._candles_item = CandlestickItem()
+        self._candles_item.setZValue(5)
         self._price_plot.addItem(self._candles_item)
 
         self._ema9_line = self._price_plot.plot(pen=pg.mkPen(EMA_FAST_COLOR, width=1.5), name="EMA 9")
@@ -228,8 +229,15 @@ class CandlestickChartWidget(QWidget):
         self._crosshair_h.setPen(pg.mkPen(text_secondary, width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
-        raw_candles = snapshot.get("candles_5m", [])
+        raw_candles = (
+            snapshot.get("candles_5m")
+            or snapshot.get("candles")
+            or snapshot.get("klines_5m")
+            or (snapshot.get("market", {}) or {}).get("candles_5m")
+            or []
+        )
         if not raw_candles:
+            self._status.setText("Waiting for candle stream (candles_5m / candles / klines_5m)…")
             return
 
         normalized = [
@@ -293,6 +301,10 @@ class CandlestickChartWidget(QWidget):
         self._macd_hist.setOpts(x=x, height=hist_vals, width=0.6, brushes=brushes)
         view_start = max(0, n - 120)
         self._price_plot.setXRange(view_start, n, padding=0)
+        low = float(np.min([c.low for c in self._candles]))
+        high = float(np.max([c.high for c in self._candles]))
+        span = max(high - low, 1e-6)
+        self._price_plot.setYRange(low - (span * 0.05), high + (span * 0.05), padding=0)
 
     def _on_mouse_moved(self, pos: object) -> None:
         if not self._price_plot.sceneBoundingRect().contains(pos):

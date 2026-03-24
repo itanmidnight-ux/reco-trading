@@ -58,7 +58,7 @@ class SettingsTab(QWidget):
         self.chart_visible = QCheckBox()
         self.chart_visible.setChecked(True)
         self.theme = QComboBox()
-        self.theme.addItems(["Dark", "Light"])
+        self.theme.addItems(["Dark", "Midnight", "Light"])
         self.language = QComboBox()
         self.language.addItems(["English", "Español"])
         self.log_verbosity = QComboBox()
