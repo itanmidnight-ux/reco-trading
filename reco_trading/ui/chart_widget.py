@@ -15,6 +15,9 @@ TEXT_COLOR = "#e6e8ee"
 BULL_COLOR = "#16c784"
 BEAR_COLOR = "#ea3943"
 ACCENT_COLOR = "#5a8dff"
+EMA_FAST_COLOR = "#4da3ff"
+EMA_MID_COLOR = "#f0b90b"
+EMA_SLOW_COLOR = "#c678dd"
 
 
 @dataclass
@@ -32,7 +35,7 @@ class Candle:
 
 
 class CandlestickItem(pg.GraphicsObject):
-    def __init__(self, body_width: float = 0.68) -> None:
+    def __init__(self, body_width: float = 0.66) -> None:
         super().__init__()
         self._body_width = body_width
         self._picture = QPicture()
@@ -47,7 +50,9 @@ class CandlestickItem(pg.GraphicsObject):
         picture = QPicture()
         painter = QPainter(picture)
         bull_pen = QPen(pg.mkColor(BULL_COLOR))
+        bull_pen.setWidthF(1.15)
         bear_pen = QPen(pg.mkColor(BEAR_COLOR))
+        bear_pen.setWidthF(1.15)
         bull_brush = QBrush(pg.mkColor(BULL_COLOR))
         bear_brush = QBrush(pg.mkColor(BEAR_COLOR))
 
@@ -87,13 +92,15 @@ class CandlestickChartWidget(QWidget):
         self._status.setObjectName("metricLabel")
         layout.addWidget(self._status)
 
-        pg.setConfigOptions(antialias=False, background=BG_COLOR, foreground=TEXT_COLOR)
+        pg.setConfigOptions(antialias=True, background=BG_COLOR, foreground=TEXT_COLOR)
 
         self._graphics = pg.GraphicsLayoutWidget()
         layout.addWidget(self._graphics)
 
         self._price_plot = self._graphics.addPlot(row=0, col=0)
         self._price_plot.showGrid(x=True, y=True, alpha=0.25)
+        self._price_plot.setMenuEnabled(False)
+        self._price_plot.hideButtons()
         self._price_plot.setLabel("left", "Price")
         self._price_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
         self._price_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
@@ -104,15 +111,25 @@ class CandlestickChartWidget(QWidget):
         self._candles_item = CandlestickItem()
         self._price_plot.addItem(self._candles_item)
 
-        self._ema9_line = self._price_plot.plot(pen=pg.mkPen("#4da3ff", width=1.2), name="EMA 9")
-        self._ema21_line = self._price_plot.plot(pen=pg.mkPen("#f0b90b", width=1.2), name="EMA 21")
-        self._ema50_line = self._price_plot.plot(pen=pg.mkPen("#c678dd", width=1.2), name="EMA 50")
+        self._ema9_line = self._price_plot.plot(pen=pg.mkPen(EMA_FAST_COLOR, width=1.5), name="EMA 9")
+        self._ema21_line = self._price_plot.plot(pen=pg.mkPen(EMA_MID_COLOR, width=1.4), name="EMA 21")
+        self._ema50_line = self._price_plot.plot(pen=pg.mkPen(EMA_SLOW_COLOR, width=1.2), name="EMA 50")
+        self._ema_spread_fill = pg.FillBetweenItem(
+            self._ema9_line,
+            self._ema21_line,
+            brush=pg.mkBrush(90, 141, 255, 35),
+        )
+        self._price_plot.addItem(self._ema_spread_fill)
         self._last_price_line = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen(ACCENT_COLOR, width=1, style=pg.QtCore.Qt.PenStyle.DashLine))
         self._price_plot.addItem(self._last_price_line)
+        self._last_price_label = pg.TextItem("", anchor=(0, 0.5), color=TEXT_COLOR)
+        self._price_plot.addItem(self._last_price_label)
         self._graphics.ci.layout.setRowStretchFactor(0, 6)
         self._graphics.nextRow()
         self._rsi_plot = self._graphics.addPlot(row=1, col=0)
         self._rsi_plot.showGrid(x=True, y=True, alpha=0.20)
+        self._rsi_plot.setMenuEnabled(False)
+        self._rsi_plot.hideButtons()
         self._rsi_plot.setLabel("left", "RSI")
         self._rsi_plot.setYRange(0, 100)
         self._rsi_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
@@ -129,6 +146,8 @@ class CandlestickChartWidget(QWidget):
         self._graphics.nextRow()
         self._macd_plot = self._graphics.addPlot(row=2, col=0)
         self._macd_plot.showGrid(x=True, y=True, alpha=0.20)
+        self._macd_plot.setMenuEnabled(False)
+        self._macd_plot.hideButtons()
         self._macd_plot.setLabel("left", "MACD")
         self._macd_plot.getAxis("left").setTextPen(pg.mkColor(TEXT_COLOR))
         self._macd_plot.getAxis("bottom").setTextPen(pg.mkColor(TEXT_COLOR))
@@ -138,6 +157,11 @@ class CandlestickChartWidget(QWidget):
         self._signal_line = self._macd_plot.plot(pen=pg.mkPen("#f0b90b", width=1.0))
         self._macd_hist = pg.BarGraphItem(x=[], height=[], width=0.6, brush="#ea3943")
         self._macd_plot.addItem(self._macd_hist)
+        self._crosshair_v = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#7f93bf", width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
+        self._crosshair_h = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen("#7f93bf", width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
+        self._price_plot.addItem(self._crosshair_v, ignoreBounds=True)
+        self._price_plot.addItem(self._crosshair_h, ignoreBounds=True)
+        self._graphics.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._rsi_plot.setXLink(self._price_plot)
         self._macd_plot.setXLink(self._price_plot)
 
@@ -174,7 +198,11 @@ class CandlestickChartWidget(QWidget):
         last_close = normalized[-1].close
         last_open = normalized[-1].open
         direction = "Bullish" if last_close >= last_open else "Bearish"
-        self._status.setText(f"Live candles • last close {last_close:,.2f} • {direction}")
+        session_low = min(c.low for c in normalized)
+        session_high = max(c.high for c in normalized)
+        self._status.setText(
+            f"Live candles • close {last_close:,.2f} • {direction} • range {session_low:,.2f}-{session_high:,.2f}"
+        )
         self._update_plot_items()
 
     def _update_plot_items(self) -> None:
@@ -190,6 +218,8 @@ class CandlestickChartWidget(QWidget):
         self._ema21_line.setData(x, _ema(closes, 21))
         self._ema50_line.setData(x, _ema(closes, 50))
         self._last_price_line.setPos(float(closes[-1]))
+        self._last_price_label.setText(f" {closes[-1]:,.2f}")
+        self._last_price_label.setPos(max(n - 1.5, 0), float(closes[-1]))
         rsi_vals = np.array([c.rsi for c in self._candles], dtype=float)
         macd_vals = np.array([c.macd for c in self._candles], dtype=float)
         sig_vals = np.array([c.macd_signal for c in self._candles], dtype=float)
@@ -201,6 +231,13 @@ class CandlestickChartWidget(QWidget):
         self._macd_hist.setOpts(x=x, height=hist_vals, width=0.6, brushes=brushes)
         view_start = max(0, n - 120)
         self._price_plot.setXRange(view_start, n, padding=0)
+
+    def _on_mouse_moved(self, pos: object) -> None:
+        if not self._price_plot.sceneBoundingRect().contains(pos):
+            return
+        mouse_point = self._price_plot.getViewBox().mapSceneToView(pos)
+        self._crosshair_v.setPos(mouse_point.x())
+        self._crosshair_h.setPos(mouse_point.y())
 
 
 def _ema(values: np.ndarray, period: int) -> np.ndarray:

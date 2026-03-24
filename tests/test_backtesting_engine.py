@@ -24,3 +24,7 @@ def test_backtesting_engine_runs_and_produces_metrics() -> None:
     assert len(result.equity_curve) > 1
     assert result.metrics.max_drawdown >= 0
     assert 0 <= result.metrics.win_rate <= 1
+    assert isinstance(result.metrics.benchmark_buy_hold_return, float)
+    assert isinstance(result.metrics.alpha_vs_buy_hold, float)
+    assert isinstance(result.metrics.rolling_return_30, float)
+    assert isinstance(result.metrics.rolling_return_90, float)

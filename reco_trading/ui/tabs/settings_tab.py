@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from reco_trading.ui.i18n import tr, normalize_language
 
 
 class SettingsTab(QWidget):
@@ -28,11 +29,15 @@ class SettingsTab(QWidget):
         super().__init__()
         self._applying_state = False
         self._symbol_capital_limits: dict[str, float] = {}
+        self._form_labels: dict[str, QLabel] = {}
+        self._lang = "English"
         layout = QVBoxLayout(self)
-        title = QLabel("Interface Studio")
+        self.title_label = QLabel("Interface Studio")
+        title = self.title_label
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
-        description = QLabel("Customize visual behavior, refresh cadence and session-safe controls")
+        self.description_label = QLabel("Customize visual behavior, refresh cadence and session-safe controls")
+        description = self.description_label
         description.setObjectName("metricLabel")
         layout.addWidget(description)
 
@@ -53,11 +58,30 @@ class SettingsTab(QWidget):
         self.chart_visible = QCheckBox()
         self.chart_visible.setChecked(True)
         self.theme = QComboBox()
-        self.theme.addItems(["Dark", "Dark+Contrast"])
+        self.theme.addItems(["Dark", "Light"])
+        self.language = QComboBox()
+        self.language.addItems(["English", "Español"])
         self.log_verbosity = QComboBox()
         self.log_verbosity.addItems(["INFO", "WARNING", "ERROR"])
         self.default_pair = QComboBox()
-        self.default_pair.addItems(["BTC/USDT", "ETH/USDT", "SOL/USDT"])
+        self.default_pair.addItems(
+            [
+                "BTC/USDT",
+                "ETH/USDT",
+                "SOL/USDT",
+                "BNB/USDT",
+                "XRP/USDT",
+                "DOGE/USDT",
+                "ADA/USDT",
+                "LINK/USDT",
+                "AVAX/USDT",
+                "LTC/USDT",
+                "DOT/USDT",
+                "TON/USDT",
+                "SUI/USDT",
+                "SHIB/USDT",
+            ]
+        )
         self.default_tf = QComboBox()
         self.default_tf.addItems(["1m / 5m", "5m / 15m", "15m / 1h"])
         self.investment_mode = QComboBox()
@@ -93,25 +117,26 @@ class SettingsTab(QWidget):
         self.cash_buffer.setValue(10.0)
         self.cash_buffer.setSuffix(" USDT")
 
-        form.addRow("Refresh rate (ms)", self.refresh_rate)
-        form.addRow("Chart visibility", self.chart_visible)
-        form.addRow("Theme", self.theme)
-        form.addRow("Log verbosity", self.log_verbosity)
-        form.addRow("Default pair", self.default_pair)
-        form.addRow("Default timeframe", self.default_tf)
-        form.addRow("Investment mode", self.investment_mode)
-        form.addRow("Capital limit", self.capital_limit)
-        form.addRow("Per-pair budget", self.symbol_budget)
-        form.addRow("Risk per trade", self.risk_per_trade)
-        form.addRow("Max allocation", self.max_allocation)
-        form.addRow("Reserve ratio", self.reserve_ratio)
-        form.addRow("Cash buffer", self.cash_buffer)
+        self._add_form_row(form, "refresh_rate", "Refresh rate (ms)", self.refresh_rate)
+        self._add_form_row(form, "chart_visibility", "Chart visibility", self.chart_visible)
+        self._add_form_row(form, "theme", "Theme", self.theme)
+        self._add_form_row(form, "language", "Language", self.language)
+        self._add_form_row(form, "log_verbosity", "Log verbosity", self.log_verbosity)
+        self._add_form_row(form, "default_pair", "Default pair", self.default_pair)
+        self._add_form_row(form, "default_timeframe", "Default timeframe", self.default_tf)
+        self._add_form_row(form, "investment_mode", "Investment mode", self.investment_mode)
+        self._add_form_row(form, "capital_limit", "Capital limit", self.capital_limit)
+        self._add_form_row(form, "pair_budget", "Per-pair budget", self.symbol_budget)
+        self._add_form_row(form, "risk_per_trade", "Risk per trade", self.risk_per_trade)
+        self._add_form_row(form, "max_allocation", "Max allocation", self.max_allocation)
+        self._add_form_row(form, "reserve_ratio", "Reserve ratio", self.reserve_ratio)
+        self._add_form_row(form, "cash_buffer", "Cash buffer", self.cash_buffer)
         visual_layout.addLayout(form)
 
         self.simulation_hint = QLabel("Estimated max order: 0.00 USDT")
         self.simulation_hint.setObjectName("metricLabel")
         visual_layout.addWidget(self.simulation_hint)
-        self.optimization_hint = QLabel("Optimizer: waiting for account snapshot")
+        self.optimization_hint = QLabel(tr("settings.optimizer_waiting", self._lang))
         self.optimization_hint.setObjectName("metricLabel")
         visual_layout.addWidget(self.optimization_hint)
 
@@ -157,6 +182,10 @@ class SettingsTab(QWidget):
         self.status_hint.setObjectName("metricLabel")
         panel_layout.addWidget(self.status_hint)
 
+        self.preview_theme_btn = QPushButton("Preview theme")
+        self.preview_theme_btn.clicked.connect(self._preview_theme)
+        panel_layout.addWidget(self.preview_theme_btn)
+
         self.apply_btn = QPushButton("Apply now")
         self.apply_btn.clicked.connect(self._emit)
         panel_layout.addWidget(self.apply_btn)
@@ -164,6 +193,7 @@ class SettingsTab(QWidget):
         self.refresh_rate.valueChanged.connect(self._emit)
         self.chart_visible.stateChanged.connect(self._emit)
         self.theme.currentTextChanged.connect(self._emit)
+        self.language.currentTextChanged.connect(self._on_language_changed)
         self.log_verbosity.currentTextChanged.connect(self._emit)
         self.default_pair.currentTextChanged.connect(self._on_default_pair_changed)
         self.default_tf.currentTextChanged.connect(self._emit)
@@ -181,6 +211,31 @@ class SettingsTab(QWidget):
         self._load_keys_from_env()
         self._on_default_pair_changed(self.default_pair.currentText())
         self._apply_investment_preset(self.investment_mode.currentText())
+        self._apply_language("English")
+
+    def _add_form_row(self, form: QFormLayout, key: str, text: str, widget: QWidget) -> None:
+        label = QLabel(text)
+        self._form_labels[key] = label
+        form.addRow(label, widget)
+
+    def _on_language_changed(self, lang: str) -> None:
+        self._apply_language(lang)
+        self._emit()
+
+    def _apply_language(self, lang: str) -> None:
+        selected = normalize_language(lang)
+        self._lang = selected
+        self.title_label.setText(tr("settings.title", selected))
+        self.description_label.setText(tr("settings.description", selected))
+        for key, label in self._form_labels.items():
+            label.setText(tr(f"settings.{key}", selected))
+        self.load_keys_btn.setText(tr("settings.load_keys", selected))
+        self.save_keys_btn.setText(tr("settings.save_keys", selected))
+        self.apply_btn.setText(tr("settings.apply_now", selected))
+        self.preview_theme_btn.setText("Vista previa de tema" if selected == "Español" else "Preview theme")
+        # refresh dynamic hint line with translated prefix
+        current_value = self.simulation_hint.text().split(":")[-1].strip() if ":" in self.simulation_hint.text() else "0.00 USDT"
+        self.simulation_hint.setText(f"{tr('settings.sim_prefix', selected)}: {current_value}")
 
     def _section_title(self, text: str) -> QLabel:
         title = QLabel(text)
@@ -262,13 +317,15 @@ class SettingsTab(QWidget):
         capital_limit = self.capital_limit.value()
         effective_capital = budget_value if budget_value > 0 else capital_limit
         estimated_order = effective_capital * (self.max_allocation.value() / 100.0)
-        self.simulation_hint.setText(f"Estimated max order: {estimated_order:.2f} USDT")
+        hint_prefix = tr("settings.sim_prefix", self._lang)
+        self.simulation_hint.setText(f"{hint_prefix}: {estimated_order:.2f} USDT")
 
         self.settings_changed.emit(
             {
                 "refresh_rate_ms": self.refresh_rate.value(),
                 "chart_visible": self.chart_visible.isChecked(),
                 "theme": self.theme.currentText(),
+                "language": self.language.currentText(),
                 "log_verbosity": self.log_verbosity.currentText(),
                 "default_pair": self.default_pair.currentText(),
                 "default_timeframe": self.default_tf.currentText(),
@@ -292,6 +349,12 @@ class SettingsTab(QWidget):
             mode = str(runtime.get("investment_mode", "")).strip()
             if mode and mode in {self.investment_mode.itemText(i) for i in range(self.investment_mode.count())}:
                 self.investment_mode.setCurrentText(mode)
+            language = str(runtime.get("language", "English")).strip()
+            if language in {self.language.itemText(i) for i in range(self.language.count())}:
+                self.language.setCurrentText(language)
+            theme = str(runtime.get("theme", "Dark")).strip()
+            if theme in {self.theme.itemText(i) for i in range(self.theme.count())}:
+                self.theme.setCurrentText(theme)
             capital_limit = float(runtime.get("capital_limit_usdt", 0.0) or 0.0)
             self.capital_limit.setValue(max(capital_limit, 0.0))
             risk_fraction = float(runtime.get("risk_per_trade_fraction", 0.01) or 0.01)
@@ -311,7 +374,8 @@ class SettingsTab(QWidget):
             optimized_capital = runtime.get("capital_limit_usdt")
             if optimized_risk is not None and optimized_alloc is not None:
                 self.optimization_hint.setText(
-                    "Optimizer: "
+                    ("Optimizador: " if self._lang == "Español" else "Optimizer: ")
+                    + " "
                     f"risk {float(optimized_risk)*100:.2f}% | "
                     f"allocation {float(optimized_alloc)*100:.2f}% | "
                     f"capital {float(optimized_capital or 0.0):.2f} USDT"
@@ -321,6 +385,9 @@ class SettingsTab(QWidget):
         finally:
             self._applying_state = False
         self._emit()
+
+    def _preview_theme(self) -> None:
+        self.settings_changed.emit({"theme": self.theme.currentText(), "language": self.language.currentText()})
 
 
 def _masked_secret_hint(label: str, value: str) -> str:
