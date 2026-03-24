@@ -235,36 +235,6 @@ class CandlestickChartWidget(QWidget):
         view_start = max(0, n - 120)
         self._price_plot.setXRange(view_start, n, padding=0)
 
-    def set_theme(self, theme: str) -> None:
-        self._theme_name = str(theme or "Dark")
-        colors = get_theme_colors(self._theme_name)
-        bg = colors["background"]
-        text = colors["text_primary"]
-        grid = colors["border"]
-        info = colors["info"]
-        warning = colors["warning"]
-        neutral = colors["text_secondary"]
-
-        self._graphics.setBackground(bg)
-        for plot in (self._price_plot, self._rsi_plot, self._macd_plot):
-            plot.getViewBox().setBackgroundColor(bg)
-            plot.getAxis("left").setTextPen(pg.mkColor(text))
-            plot.getAxis("bottom").setTextPen(pg.mkColor(text))
-            plot.getAxis("left").setPen(pg.mkColor(grid))
-            plot.getAxis("bottom").setPen(pg.mkColor(grid))
-
-        self._ema9_line.setPen(pg.mkPen(info, width=1.5))
-        self._ema21_line.setPen(pg.mkPen(warning, width=1.4))
-        self._ema50_line.setPen(pg.mkPen(colors["accent"], width=1.2))
-        self._last_price_line.setPen(pg.mkPen(info, width=1, style=pg.QtCore.Qt.PenStyle.DashLine))
-        self._last_price_label.setColor(pg.mkColor(text))
-        self._rsi_line.setPen(pg.mkPen(text, width=1.2))
-        self._macd_line.setPen(pg.mkPen(info, width=1.0))
-        self._signal_line.setPen(pg.mkPen(warning, width=1.0))
-        self._crosshair_v.setPen(pg.mkPen(neutral, width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
-        self._crosshair_h.setPen(pg.mkPen(neutral, width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
-        self._ema_spread_fill.setBrush(pg.mkBrush(pg.mkColor(info + "55")))
-
     def _on_mouse_moved(self, pos: object) -> None:
         if not self._price_plot.sceneBoundingRect().contains(pos):
             return
