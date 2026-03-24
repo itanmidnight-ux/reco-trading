@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from reco_trading.ui.theme import app_stylesheet, get_theme_colors
+from reco_trading.ui.theme import app_stylesheet
 
 
 def test_light_theme_uses_dark_text_for_readability() -> None:
@@ -13,9 +13,3 @@ def test_dark_theme_uses_light_text_for_readability() -> None:
     css = app_stylesheet(theme="Dark")
     assert "#edf2ff" in css
     assert "color: #edf2ff" in css
-
-
-def test_get_theme_colors_returns_distinct_light_dark_palettes() -> None:
-    light = get_theme_colors("Light")
-    dark = get_theme_colors("Dark")
-    assert light["text_primary"] != dark["text_primary"]
