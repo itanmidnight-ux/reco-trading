@@ -20,9 +20,18 @@ class PerformanceMetrics:
     total_spread_cost: float
     total_slippage_cost: float
     net_return_after_costs: float
+    benchmark_buy_hold_return: float
+    alpha_vs_buy_hold: float
+    rolling_return_30: float
+    rolling_return_90: float
 
 
-def compute_metrics(trades: list[SimulatedTrade], starting_equity: float, equity_curve: list[float]) -> PerformanceMetrics:
+def compute_metrics(
+    trades: list[SimulatedTrade],
+    starting_equity: float,
+    equity_curve: list[float],
+    benchmark_buy_hold_return: float = 0.0,
+) -> PerformanceMetrics:
     if starting_equity <= 0:
         starting_equity = 1.0
 
@@ -55,6 +64,10 @@ def compute_metrics(trades: list[SimulatedTrade], starting_equity: float, equity
     else:
         sharpe = float((returns.mean() / returns.std(ddof=0)) * math.sqrt(252))
 
+    rolling_return_30 = _rolling_return(curve, 30)
+    rolling_return_90 = _rolling_return(curve, 90)
+    alpha_vs_buy_hold = float(total_return - benchmark_buy_hold_return)
+
     return PerformanceMetrics(
         total_return=float(total_return),
         win_rate=float(win_rate),
@@ -66,4 +79,19 @@ def compute_metrics(trades: list[SimulatedTrade], starting_equity: float, equity
         total_spread_cost=float(spread_cost),
         total_slippage_cost=float(slippage_cost),
         net_return_after_costs=float(net_return_after_costs),
+        benchmark_buy_hold_return=float(benchmark_buy_hold_return),
+        alpha_vs_buy_hold=float(alpha_vs_buy_hold),
+        rolling_return_30=float(rolling_return_30),
+        rolling_return_90=float(rolling_return_90),
     )
+
+
+def _rolling_return(curve: pd.Series, window: int) -> float:
+    if len(curve) < 2:
+        return 0.0
+    if len(curve) <= window:
+        start = float(curve.iloc[0])
+    else:
+        start = float(curve.iloc[-window - 1])
+    end = float(curve.iloc[-1])
+    return (end - start) / max(start, 1e-9)

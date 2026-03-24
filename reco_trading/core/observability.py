@@ -18,6 +18,7 @@ class RuntimeObservability:
     circuit_breaker_trips: int = 0
     stale_market_data_loops: int = 0
     total_loops: int = 0
+    stage_latency_samples_ms: dict[str, deque[float]] = field(default_factory=dict)
     db_healthy: bool = False
     exchange_healthy: bool = False
     _lock: RLock = field(default_factory=RLock)
@@ -25,6 +26,14 @@ class RuntimeObservability:
     def record_api_latency(self, latency_ms: float) -> None:
         with self._lock:
             self.latency_samples_ms.append(max(0.0, float(latency_ms)))
+
+    def record_stage_latency(self, stage: str, latency_ms: float) -> None:
+        normalized = str(stage or "unknown").strip().lower()
+        if not normalized:
+            normalized = "unknown"
+        with self._lock:
+            bucket = self.stage_latency_samples_ms.setdefault(normalized, deque(maxlen=200))
+            bucket.append(max(0.0, float(latency_ms)))
 
     def record_error(self, component: str) -> None:
         with self._lock:
@@ -66,6 +75,12 @@ class RuntimeObservability:
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            stage_latency_last_ms = {
+                stage: float(samples[-1]) for stage, samples in self.stage_latency_samples_ms.items() if samples
+            }
+            stage_latency_p95_ms = {
+                stage: _p95(samples) for stage, samples in self.stage_latency_samples_ms.items() if samples
+            }
             return {
                 "api_latency_p95_ms": self.latency_p95_ms(),
                 "api_latency_last_ms": float(self.latency_samples_ms[-1]) if self.latency_samples_ms else 0.0,
@@ -75,6 +90,8 @@ class RuntimeObservability:
                 "db_healthy": int(self.db_healthy),
                 "exchange_healthy": int(self.exchange_healthy),
                 "component_errors": dict(self.component_errors),
+                "stage_latency_last_ms": stage_latency_last_ms,
+                "stage_latency_p95_ms": stage_latency_p95_ms,
             }
 
     def to_prometheus_text(self) -> str:
@@ -95,7 +112,16 @@ class RuntimeObservability:
         ]
         for component, total in sorted(snap["component_errors"].items()):
             lines.append(f'reco_component_errors_total{{component="{component}"}} {int(total)}')
+        for stage, latency in sorted(snap.get("stage_latency_p95_ms", {}).items()):
+            lines.append(f'reco_stage_latency_p95_ms{{stage="{stage}"}} {float(latency):.6f}')
         return "\n".join(lines) + "\n"
+
+
+def _p95(samples: deque[float]) -> float:
+    if len(samples) < 2:
+        return float(samples[0]) if samples else 0.0
+    bins = quantiles(list(samples), n=100, method="inclusive")
+    return float(bins[94])
 
 
 class _ObservabilityHandler(BaseHTTPRequestHandler):
