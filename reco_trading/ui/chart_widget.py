@@ -9,8 +9,6 @@ from PySide6.QtCore import QRectF
 from PySide6.QtGui import QBrush, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
-from reco_trading.ui.theme import get_theme_colors
-
 BG_COLOR = "#131722"
 GRID_COLOR = "#2a2f3a"
 TEXT_COLOR = "#e6e8ee"
@@ -105,13 +103,8 @@ _FALLBACK_LIGHT = {
 
 
 def _resolve_theme_colors(theme: str) -> dict[str, str]:
-    try:
-        return dict(get_theme_colors(theme))
-    except Exception:
-        normalized = str(theme or "Dark").strip().lower()
-        if normalized in {"light", "white", "blanco"}:
-            return dict(_FALLBACK_LIGHT)
-        return dict(_FALLBACK_DARK)
+    normalized = str(theme or "Dark").strip().lower()
+    return dict(_FALLBACK_LIGHT if normalized in {"light", "white", "blanco"} else _FALLBACK_DARK)
 
 
 class CandlestickChartWidget(QWidget):
@@ -212,9 +205,6 @@ class CandlestickChartWidget(QWidget):
         info = colors.get("info", ACCENT_COLOR)
         warning = colors.get("warning", EMA_MID_COLOR)
         accent = colors.get("accent", EMA_SLOW_COLOR)
-        global BULL_COLOR, BEAR_COLOR
-        BULL_COLOR = colors.get("positive", BULL_COLOR)
-        BEAR_COLOR = colors.get("negative", BEAR_COLOR)
 
         pg.setConfigOptions(antialias=True, background=background, foreground=text_primary)
         self._graphics.setBackground(background)

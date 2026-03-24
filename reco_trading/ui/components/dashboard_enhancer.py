@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QListWidget, QTableWidget, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QListWidget, QTableWidget, QWidget
 
 
 def enhance_dashboard_widget(widget: QWidget) -> None:
@@ -15,9 +15,6 @@ def enhance_dashboard_widget(widget: QWidget) -> None:
         table.setWordWrap(False)
         table.setCornerButtonEnabled(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.horizontalHeader().setHighlightSections(False)
-        table.horizontalHeader().setDefaultAlignment(0x84)
 
     for list_widget in widget.findChildren(QListWidget):
         list_widget.setAlternatingRowColors(True)
