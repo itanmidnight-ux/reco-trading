@@ -25,6 +25,7 @@ from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.advanced_risk_manager import AdvancedRiskManager
 from reco_trading.risk.adaptive_sizer import AdaptiveSizer
 from reco_trading.risk.capital_profile import CapitalProfile, CapitalProfileManager
+from reco_trading.risk.investment_optimizer import InvestmentOptimizer
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.risk.portfolio_risk import PortfolioRiskController
 from reco_trading.strategy.confidence_model import ConfidenceModel
@@ -111,6 +112,8 @@ class BotEngine:
         self.runtime_min_cash_buffer_usdt: float | None = None
         self.runtime_symbol_capital_limits: dict[str, float] = {}
         self.runtime_investment_mode: str = "Balanced"
+        self.runtime_dynamic_exit_enabled: bool = False
+        self.runtime_confidence_boost_multiplier: float = 1.0
         self.manual_pause = False
         self.emergency_stop_active = False
         self.equity_curve_history: list[float] = []
@@ -122,6 +125,7 @@ class BotEngine:
             symbol_caps=dict(getattr(self.settings, "symbol_capital_limits", {}) or {}),
         )
         self.observability = RuntimeObservability()
+        self.investment_optimizer = InvestmentOptimizer()
         self._metrics_server_started = False
 
         self._cached_frame5: Any | None = None
@@ -176,6 +180,13 @@ class BotEngine:
             "capital_reserve_ratio": float(getattr(self.settings, "capital_reserve_ratio", 0.15)),
             "min_cash_buffer_usdt": float(getattr(self.settings, "min_cash_buffer_usdt", 10.0)),
             "runtime_settings": {},
+            "dynamic_exit_enabled": self.runtime_dynamic_exit_enabled,
+            "optimized_risk_per_trade_fraction": None,
+            "optimized_max_trade_balance_fraction": None,
+            "optimized_capital_limit_usdt": None,
+            "optimization_reason": None,
+            "live_trade_risk_fraction": None,
+            "live_trade_max_allocation_fraction": None,
             "database_status": "CONNECTING",
             "exchange_status": "CONNECTING",
             "confluence_score": None,
@@ -419,7 +430,11 @@ class BotEngine:
             "sell_score": float(explained.get("sell_score", 0.0)),
         }
         self.snapshot["decision_trace"] = decision_trace
-        await self._persist_signal(bundle, side, final_confidence, decision_trace=decision_trace)
+        try:
+            await self._persist_signal(bundle, side, final_confidence, decision_trace=decision_trace)
+        except TypeError:
+            # Backward compatibility for lightweight test doubles overriding _persist_signal.
+            await self._persist_signal(bundle, side, final_confidence)
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {
             "bundle": bundle,
@@ -606,13 +621,20 @@ class BotEngine:
             atr,
             regime=getattr(bundle, "regime", "NORMAL_VOLATILITY"),
         )
+        trade_controls = self._compute_per_trade_investment_controls(
+            confidence=_as_float(analysis.get("confidence"), 0.0),
+            price=price,
+            atr=atr,
+        )
         qty = self.calculate_position_size(
             price,
             stop_loss,
             atr,
             float(bundle.size_multiplier)
             * max(float(intelligence_size_multiplier), 0.1)
-            * max(_as_float(self.snapshot.get("advanced_size_multiplier"), 1.0), 0.1),
+            * max(_as_float(self.snapshot.get("advanced_size_multiplier"), 1.0), 0.1)
+            * self._confidence_size_multiplier(_as_float(analysis.get("confidence"), 0.0)),
+            risk_fraction_override=trade_controls["risk_per_trade_fraction"],
         )
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
@@ -632,7 +654,7 @@ class BotEngine:
             price=price,
             quantity=qty,
             equity=equity,
-            max_trade_balance_fraction=self._effective_max_trade_balance_fraction(),
+            max_trade_balance_fraction=trade_controls["max_trade_balance_fraction"],
         )
         if normalized_qty is None:
             await self._log(
@@ -722,6 +744,7 @@ class BotEngine:
                 take_profit=take_profit,
                 atr=max(atr, 0.0),
                 initial_risk_distance=abs(entry - stop_loss),
+                dynamic_exit_enabled=self.runtime_dynamic_exit_enabled,
             )
         )
 
@@ -799,7 +822,10 @@ class BotEngine:
             self.snapshot["open_position_sl"] = position.stop_loss
             self.snapshot["open_position_tp"] = position.take_profit
 
-            exit_reason = self.position_manager.check_exit(position, price)
+            structure_exit_reason = self._detect_structure_exit(position, market_data, price, used_atr)
+            exit_reason = self._resolve_structure_exit_signal(position, structure_exit_reason)
+            if exit_reason is None:
+                exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
 
@@ -822,6 +848,67 @@ class BotEngine:
             self.snapshot["open_position_qty"] = None
             self.snapshot["open_position_sl"] = None
             self.snapshot["open_position_tp"] = None
+
+    def _detect_structure_exit(
+        self,
+        position: Position,
+        market_data: dict[str, Any],
+        current_price: float,
+        atr: float,
+    ) -> str | None:
+        frame5 = market_data.get("frame5")
+        if frame5 is None or not hasattr(frame5, "iloc") or len(frame5) < 8:
+            return None
+
+        try:
+            closes = frame5["close"]
+            highs = frame5["high"]
+            lows = frame5["low"]
+        except Exception:
+            return None
+
+        last_close = _as_float(closes.iloc[-1], current_price)
+        prev_close = _as_float(closes.iloc[-2], last_close)
+        prev2_close = _as_float(closes.iloc[-3], prev_close)
+        recent_swing_high = max(float(highs.iloc[-7:-1].max()), current_price)
+        recent_swing_low = min(float(lows.iloc[-7:-1].min()), current_price)
+        ema20 = _as_float(frame5.iloc[-1].get("ema20"), last_close)
+        used_atr = max(float(atr), current_price * 0.0015)
+
+        if position.side == "BUY":
+            open_profit = current_price - position.entry_price
+            if open_profit <= max(used_atr * 0.35, 1e-9):
+                return None
+            retrace_from_high = max((position.peak_price or current_price) - current_price, 0.0)
+            bearish_shift = last_close < prev_close < prev2_close
+            broke_micro_support = last_close < (recent_swing_low + used_atr * 0.10)
+            rejected_from_high = (recent_swing_high - current_price) >= max(used_atr * 0.65, open_profit * 0.45)
+            below_structure_ma = last_close < ema20
+            if (broke_micro_support and bearish_shift) or (rejected_from_high and below_structure_ma) or retrace_from_high >= used_atr:
+                return "STRUCTURE_REVERSAL_EXIT"
+            return None
+
+        open_profit = position.entry_price - current_price
+        if open_profit <= max(used_atr * 0.35, 1e-9):
+            return None
+        retrace_from_low = max(current_price - (position.peak_price or current_price), 0.0)
+        bullish_shift = last_close > prev_close > prev2_close
+        broke_micro_resistance = last_close > (recent_swing_high - used_atr * 0.10)
+        rejected_from_low = (current_price - recent_swing_low) >= max(used_atr * 0.65, open_profit * 0.45)
+        above_structure_ma = last_close > ema20
+        if (broke_micro_resistance and bullish_shift) or (rejected_from_low and above_structure_ma) or retrace_from_low >= used_atr:
+            return "STRUCTURE_REVERSAL_EXIT"
+        return None
+
+    def _resolve_structure_exit_signal(self, position: Position, structure_exit_reason: str | None) -> str | None:
+        if not structure_exit_reason:
+            position.structure_exit_votes = 0
+            return None
+        position.structure_exit_votes = min(position.structure_exit_votes + 1, 3)
+        self.snapshot["structure_exit_votes"] = position.structure_exit_votes
+        if position.structure_exit_votes < 2:
+            return None
+        return structure_exit_reason
 
     async def force_close_position(self) -> None:
         if not self.position_manager.positions:
@@ -924,11 +1011,22 @@ class BotEngine:
             return True
         return self._available_spot_sell_quantity() > 0.0
 
-    def calculate_position_size(self, price: float, stop_loss: float, atr: float, size_multiplier: float) -> float:
+    def calculate_position_size(
+        self,
+        price: float,
+        stop_loss: float,
+        atr: float,
+        size_multiplier: float,
+        *,
+        risk_fraction_override: float | None = None,
+    ) -> float:
         equity = _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))
         profile = self._current_capital_profile()
         equity = self._effective_equity_for_risk(equity)
         operable_equity = self._operable_equity_for_trading(equity, profile)
+        active_risk_fraction = _as_float(risk_fraction_override, self._effective_risk_per_trade_fraction())
+        previous_base_risk = self.adaptive_sizer.base_risk_fraction
+        self.adaptive_sizer.base_risk_fraction = min(max(active_risk_fraction, 0.001), 0.10)
         decision = self.adaptive_sizer.compute(
             equity=operable_equity,
             price=price,
@@ -938,11 +1036,58 @@ class BotEngine:
             recent_pnls=list(self._recent_pnls),
             volatility_multiplier=max(size_multiplier * profile.size_multiplier, 0.1),
         )
+        self.adaptive_sizer.base_risk_fraction = previous_base_risk
         self.snapshot["adaptive_size_reason"] = decision.reason
         self.snapshot["adaptive_size_multiplier"] = decision.size_multiplier
         self.snapshot["operable_capital_usdt"] = operable_equity
         self.snapshot["capital_profile"] = profile.name
+        self.snapshot["live_trade_risk_fraction"] = active_risk_fraction
         return float(max(decision.quantity, 0.0))
+
+    def _compute_per_trade_investment_controls(self, *, confidence: float, price: float, atr: float) -> dict[str, float]:
+        base_risk = self._effective_risk_per_trade_fraction()
+        base_allocation = self._effective_max_trade_balance_fraction()
+        optimized_risk = _as_float(self.snapshot.get("optimized_risk_per_trade_fraction"), base_risk)
+        optimized_allocation = _as_float(self.snapshot.get("optimized_max_trade_balance_fraction"), base_allocation)
+        anchor_risk = min(base_risk, optimized_risk) if "auto" in str(self.runtime_investment_mode).lower() else base_risk
+        anchor_allocation = (
+            min(base_allocation, optimized_allocation) if "auto" in str(self.runtime_investment_mode).lower() else base_allocation
+        )
+
+        conf = max(min(float(confidence), 1.0), 0.0)
+        if conf >= 0.90:
+            confidence_mult = 1.25
+        elif conf >= 0.80:
+            confidence_mult = 1.10
+        elif conf <= 0.65:
+            confidence_mult = 0.75
+        else:
+            confidence_mult = 1.0
+
+        volatility_ratio = max(float(atr), 0.0) / max(float(price), 1e-9)
+        if volatility_ratio >= 0.02:
+            volatility_mult = 0.70
+        elif volatility_ratio >= 0.01:
+            volatility_mult = 0.85
+        else:
+            volatility_mult = 1.0
+
+        total_equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), 0.0))
+        peak_equity = max(_as_float(getattr(self, "equity_peak", total_equity), total_equity), 1e-9)
+        drawdown = max((peak_equity - total_equity) / peak_equity, 0.0)
+        drawdown_mult = max(1.0 - drawdown * 1.8, 0.40)
+
+        profile = self._current_capital_profile()
+        trade_risk = anchor_risk * confidence_mult * volatility_mult * drawdown_mult
+        trade_allocation = anchor_allocation * confidence_mult * volatility_mult * drawdown_mult
+        trade_risk = min(max(trade_risk, 0.001), profile.risk_per_trade_fraction, 0.10)
+        trade_allocation = min(max(trade_allocation, 0.01), profile.max_trade_balance_fraction, 1.0)
+        self.snapshot["live_trade_risk_fraction"] = trade_risk
+        self.snapshot["live_trade_max_allocation_fraction"] = trade_allocation
+        return {
+            "risk_per_trade_fraction": trade_risk,
+            "max_trade_balance_fraction": trade_allocation,
+        }
 
     def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
         """
@@ -1203,19 +1348,26 @@ class BotEngine:
 
         mode = str(sanitized.get("investment_mode", self.runtime_investment_mode)).strip()
         self.runtime_investment_mode = mode or self.runtime_investment_mode
+        auto_profile = self._auto_investment_controls(self.runtime_investment_mode, sanitized)
 
-        risk_fraction = _as_float(sanitized.get("risk_per_trade_fraction"), self._effective_risk_per_trade_fraction())
+        risk_fraction = _as_float(
+            auto_profile.get("risk_per_trade_fraction", sanitized.get("risk_per_trade_fraction")),
+            self._effective_risk_per_trade_fraction(),
+        )
         max_trade_fraction = _as_float(
-            sanitized.get("max_trade_balance_fraction"),
+            auto_profile.get("max_trade_balance_fraction", sanitized.get("max_trade_balance_fraction")),
             self._effective_max_trade_balance_fraction(),
         )
-        capital_limit = _as_float(sanitized.get("capital_limit_usdt"), self.runtime_capital_limit_usdt or 0.0)
+        capital_limit = _as_float(
+            auto_profile.get("capital_limit_usdt", sanitized.get("capital_limit_usdt")),
+            self.runtime_capital_limit_usdt or 0.0,
+        )
         reserve_ratio = _as_float(
-            sanitized.get("capital_reserve_ratio"),
+            auto_profile.get("capital_reserve_ratio", sanitized.get("capital_reserve_ratio")),
             self.runtime_capital_reserve_ratio if self.runtime_capital_reserve_ratio is not None else getattr(self.settings, "capital_reserve_ratio", 0.15),
         )
         min_cash_buffer = _as_float(
-            sanitized.get("min_cash_buffer_usdt"),
+            auto_profile.get("min_cash_buffer_usdt", sanitized.get("min_cash_buffer_usdt")),
             self.runtime_min_cash_buffer_usdt if self.runtime_min_cash_buffer_usdt is not None else getattr(self.settings, "min_cash_buffer_usdt", 10.0),
         )
         self.runtime_symbol_capital_limits = {
@@ -1229,13 +1381,64 @@ class BotEngine:
         self.runtime_capital_limit_usdt = capital_limit if capital_limit > 0 else None
         self.runtime_capital_reserve_ratio = min(max(reserve_ratio, 0.0), 0.90)
         self.runtime_min_cash_buffer_usdt = max(min_cash_buffer, 0.0)
+        self.runtime_dynamic_exit_enabled = bool(
+            auto_profile.get("dynamic_exit_enabled", sanitized.get("dynamic_exit_enabled", self.runtime_dynamic_exit_enabled))
+        )
+        self.runtime_confidence_boost_multiplier = _as_float(
+            auto_profile.get("confidence_boost_multiplier", self.runtime_confidence_boost_multiplier),
+            self.runtime_confidence_boost_multiplier,
+        )
         self.snapshot["investment_mode"] = self.runtime_investment_mode
         self.snapshot["capital_limit_usdt"] = self.runtime_capital_limit_usdt
         self.snapshot["capital_reserve_ratio"] = self.runtime_capital_reserve_ratio
         self.snapshot["min_cash_buffer_usdt"] = self.runtime_min_cash_buffer_usdt
-        self.snapshot["runtime_settings"] = sanitized
+        self.snapshot["dynamic_exit_enabled"] = self.runtime_dynamic_exit_enabled
+        self.snapshot["optimized_risk_per_trade_fraction"] = auto_profile.get("risk_per_trade_fraction")
+        self.snapshot["optimized_max_trade_balance_fraction"] = auto_profile.get("max_trade_balance_fraction")
+        self.snapshot["optimized_capital_limit_usdt"] = auto_profile.get("capital_limit_usdt")
+        self.snapshot["optimization_reason"] = auto_profile.get("optimization_reason")
+        self.snapshot["runtime_settings"] = {**sanitized, **auto_profile}
         if persist:
-            await self.repository.set_runtime_setting("ui_runtime_settings", sanitized)
+            await self.repository.set_runtime_setting("ui_runtime_settings", {**sanitized, **auto_profile})
+
+    def _auto_investment_controls(self, mode: str, sanitized_payload: dict[str, Any] | None = None) -> dict[str, float | bool | str]:
+        normalized_mode = str(mode).strip().lower()
+        if normalized_mode not in {"auto", "auto-optimized", "auto_optimized"}:
+            return {}
+
+        equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)))
+        profile = self._current_capital_profile()
+        volatility_ratio = _as_float(self.snapshot.get("atr"), 0.0) / max(_as_float(self.snapshot.get("price"), 0.0), 1e-9)
+        peak = _as_float(getattr(self, "equity_peak", equity), equity)
+        drawdown_fraction = max((peak - equity) / max(peak, 1e-9), 0.0) if peak > 0 else 0.0
+        win_rate = self.snapshot.get("win_rate")
+        trades_today = int(getattr(self, "trades_today", 0))
+        win_count = int(getattr(self, "win_count", 0))
+        if win_rate is None and trades_today > 0:
+            win_rate = _as_float(win_count / max(trades_today, 1), 0.5)
+
+        payload = sanitized_payload or {}
+        risk_cap = payload.get("risk_per_trade_fraction")
+        allocation_cap = payload.get("max_trade_balance_fraction")
+        optimized = self.investment_optimizer.optimize(
+            equity=equity,
+            profile=profile,
+            volatility_ratio=volatility_ratio,
+            drawdown_fraction=drawdown_fraction,
+            win_rate=_as_float(win_rate, 0.5) if win_rate is not None else None,
+            risk_cap=_as_float(risk_cap, profile.risk_per_trade_fraction) if risk_cap is not None else None,
+            allocation_cap=_as_float(allocation_cap, profile.max_trade_balance_fraction) if allocation_cap is not None else None,
+        )
+        return {
+            "risk_per_trade_fraction": optimized.risk_per_trade_fraction,
+            "max_trade_balance_fraction": optimized.max_trade_balance_fraction,
+            "capital_reserve_ratio": optimized.capital_reserve_ratio,
+            "min_cash_buffer_usdt": optimized.min_cash_buffer_usdt,
+            "capital_limit_usdt": optimized.capital_limit_usdt,
+            "dynamic_exit_enabled": optimized.dynamic_exit_enabled,
+            "confidence_boost_multiplier": optimized.confidence_boost_multiplier,
+            "optimization_reason": optimized.optimization_reason,
+        }
 
     def _effective_equity_for_risk(self, equity: float) -> float:
         symbol_limit = self.runtime_symbol_capital_limits.get(normalize_symbol(self.symbol))
@@ -1320,6 +1523,17 @@ class BotEngine:
         vote_component = min(directional_votes / 4.0, 1.0) * 0.20
         regime_component = (0.10 if bundle.regime_trade_allowed else 0.0) * max(float(bundle.size_multiplier), 0.0)
         return round(min(confidence_component + confluence_component + vote_component + regime_component, 1.0), 4)
+
+    def _confidence_size_multiplier(self, confidence: float) -> float:
+        conf = max(min(float(confidence), 1.0), 0.0)
+        base = max(_as_float(getattr(self, "runtime_confidence_boost_multiplier", 1.0), 1.0), 0.75)
+        if conf >= 0.90:
+            return 1.20 * base
+        if conf >= 0.85:
+            return 1.10 * base
+        if conf <= 0.65:
+            return 0.85 * min(base, 1.0)
+        return 1.0 * base
 
     def _trade_costs_are_acceptable(self, side: str) -> bool:
         if side not in {"BUY", "SELL"}:
@@ -1590,6 +1804,7 @@ def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any
         "default_pair": str(payload.get("default_pair", "")).strip(),
         "default_timeframe": str(payload.get("default_timeframe", "")).strip(),
         "investment_mode": str(payload.get("investment_mode", "Balanced")).strip() or "Balanced",
+        "dynamic_exit_enabled": bool(payload.get("dynamic_exit_enabled", False)),
         "capital_limit_usdt": max(_as_float(payload.get("capital_limit_usdt"), 0.0), 0.0),
         "capital_reserve_ratio": min(max(_as_float(payload.get("capital_reserve_ratio"), 0.15), 0.0), 0.90),
         "min_cash_buffer_usdt": max(_as_float(payload.get("min_cash_buffer_usdt"), 10.0), 0.0),
