@@ -203,13 +203,13 @@ def app_stylesheet(theme: str = "Dark") -> str:
             color: {colors['neutral']};
         }}
 
-        QStatusBar {{
+        QStatusBar {
             background: {colors['panel']};
             color: {colors['text_secondary']};
             border-top: 1px solid {colors['border']};
             padding: 4px;
-        }}
-        QStatusBar QLabel {{
+        }
+        QStatusBar QLabel {
             color: {colors['text_secondary']};
             border: 1px solid {colors['border']};
             border-radius: 8px;
@@ -218,34 +218,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
             background: {colors['panel_alt']};
             font-size: 11px;
             font-weight: 600;
-        }}
-
-        QScrollBar:vertical {{
-            background: {colors['panel']};
-            width: 10px;
-            margin: 4px;
-            border-radius: 5px;
-        }}
-        QScrollBar::handle:vertical {{
-            background: {colors['border']};
-            min-height: 24px;
-            border-radius: 5px;
-        }}
-        QScrollBar::handle:vertical:hover {{
-            background: {colors['info']};
-        }}
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical,
-        QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{
-            background: transparent;
-            height: 0;
-        }}
-        QToolTip {{
-            background: {colors['panel_alt']};
-            color: {colors['text_primary']};
-            border: 1px solid {colors['border']};
-            padding: 6px 8px;
-            border-radius: 6px;
-        }}
+        }
         """
         return style if isinstance(style, str) else ""
     except Exception:

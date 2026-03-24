@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QLabel, QMainWindow, QMessageBox, QStatusBar, QTabWidget
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QMainWindow, QMessageBox, QStatusBar, QTabWidget
 
 from reco_trading.ui.components.dashboard_enhancer import enhance_dashboard_widget
 from reco_trading.ui.state_manager import StateManager
@@ -40,7 +40,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         tabs.setUsesScrollButtons(True)
-        tabs.setElideMode(Qt.TextElideMode.ElideRight)
+        tabs.setElideMode(0)
 
         self.dashboard_tab = DashboardTab(state_manager=state_manager)
         self.trades_tab = TradesTab()
@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.status_latency)
         self.status_bar.addPermanentWidget(self.status_render)
 
+        self.tab_fade = QPropertyAnimation(self, b"windowOpacity", self)
         self.tabs.currentChanged.connect(self._animate_current_tab)
 
         state_manager.state_changed.connect(self._on_state)
