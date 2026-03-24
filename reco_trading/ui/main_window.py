@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QMainWindow, QMessageBox, QStatusBar, QTabWidget
 
 from reco_trading.ui.components.dashboard_enhancer import enhance_dashboard_widget
@@ -40,7 +40,8 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         tabs.setUsesScrollButtons(True)
-        tabs.setElideMode(0)
+        # PySide6 requires a Qt.TextElideMode enum (raw ints can raise TypeError).
+        tabs.setElideMode(Qt.TextElideMode.ElideNone)
 
         self.dashboard_tab = DashboardTab(state_manager=state_manager)
         self.trades_tab = TradesTab()
