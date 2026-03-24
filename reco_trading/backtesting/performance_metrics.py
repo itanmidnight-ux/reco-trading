@@ -16,6 +16,10 @@ class PerformanceMetrics:
     profit_factor: float
     sharpe_ratio: float
     expectancy: float
+    total_commissions: float
+    total_spread_cost: float
+    total_slippage_cost: float
+    net_return_after_costs: float
 
 
 def compute_metrics(trades: list[SimulatedTrade], starting_equity: float, equity_curve: list[float]) -> PerformanceMetrics:
@@ -35,6 +39,10 @@ def compute_metrics(trades: list[SimulatedTrade], starting_equity: float, equity
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else float("inf") if gross_profit > 0 else 0.0
 
     expectancy = (sum(t.pnl for t in closed) / len(closed)) if closed else 0.0
+    commissions = sum(max(float(getattr(t, "commission_paid", 0.0)), 0.0) for t in closed)
+    spread_cost = sum(max(float(getattr(t, "spread_cost", 0.0)), 0.0) for t in closed)
+    slippage_cost = sum(max(float(getattr(t, "slippage_cost", 0.0)), 0.0) for t in closed)
+    net_return_after_costs = total_return - ((spread_cost + slippage_cost + commissions) / starting_equity)
 
     curve = pd.Series(equity_curve if equity_curve else [starting_equity], dtype=float)
     peaks = curve.cummax()
@@ -54,4 +62,8 @@ def compute_metrics(trades: list[SimulatedTrade], starting_equity: float, equity
         profit_factor=float(profit_factor),
         sharpe_ratio=float(sharpe),
         expectancy=float(expectancy),
+        total_commissions=float(commissions),
+        total_spread_cost=float(spread_cost),
+        total_slippage_cost=float(slippage_cost),
+        net_return_after_costs=float(net_return_after_costs),
     )
