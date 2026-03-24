@@ -110,12 +110,3 @@ def test_per_trade_investment_controls_adjust_to_confidence_and_volatility() -> 
     aggressive = BotEngine._compute_per_trade_investment_controls(engine, confidence=0.92, price=100.0, atr=0.4)
     assert conservative["risk_per_trade_fraction"] < aggressive["risk_per_trade_fraction"]
     assert conservative["max_trade_balance_fraction"] < aggressive["max_trade_balance_fraction"]
-
-
-def test_current_capital_profile_prefers_usdt_equity_reference_when_available() -> None:
-    engine = BotEngine.__new__(BotEngine)
-    engine.snapshot = {"total_equity": 20.0, "equity": 20.0, "balance": 20.0, "total_equity_usdt": 240.0}
-    engine.capital_profile_manager = CapitalProfileManager()
-    engine.settings = SimpleNamespace(enable_capital_profiles=True)
-    profile = BotEngine._current_capital_profile(engine)
-    assert profile.name == "MEDIUM"

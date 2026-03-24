@@ -1075,7 +1075,7 @@ class BotEngine:
         else:
             volatility_mult = 1.0
 
-        total_equity = self._equity_reference_usdt()
+        total_equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), 0.0))
         peak_equity = max(_as_float(getattr(self, "equity_peak", total_equity), total_equity), 1e-9)
         drawdown = max((peak_equity - total_equity) / peak_equity, 0.0)
         drawdown_mult = max(1.0 - drawdown * 1.8, 0.40)
@@ -1436,7 +1436,7 @@ class BotEngine:
         if normalized_mode not in {"auto", "auto-optimized", "auto_optimized"}:
             return {}
 
-        equity = self._equity_reference_usdt()
+        equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)))
         profile = self._current_capital_profile()
         volatility_ratio = _as_float(self.snapshot.get("atr"), 0.0) / max(_as_float(self.snapshot.get("price"), 0.0), 1e-9)
         peak = _as_float(getattr(self, "equity_peak", equity), equity)
