@@ -174,4 +174,4 @@ class AnalyticsTab(QWidget):
                 self.insights.addItem(f"{regime_name.title()} W/L: {ratio:.1%}")
         best_hours = sorted(((h, sum(v)) for h, v in hourly.items()), key=lambda x: x[1], reverse=True)[:3]
         if best_hours:
-            self.insights.addItem("Heatmap hora top: " + ", ".join(f\"{h:02d}h={p:+.2f}\" for h, p in best_hours))
+            self.insights.addItem("Heatmap hora top: " + ", ".join(f"{hour:02d}h={pnl:+.2f}" for hour, pnl in best_hours))
