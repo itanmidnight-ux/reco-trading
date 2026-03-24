@@ -33,6 +33,7 @@ class OrderManager:
         filters = {flt.get("filterType"): flt for flt in market.get("info", {}).get("filters", [])}
 
         lot_size = filters.get("LOT_SIZE", {})
+        notional_filter = filters.get("NOTIONAL", {})
         min_notional_filter = filters.get("MIN_NOTIONAL", {})
         price_filter = filters.get("PRICE_FILTER", {})
 
@@ -41,7 +42,12 @@ class OrderManager:
         self.rules = SymbolRules(
             min_qty=float(lot_size.get("minQty") or market.get("limits", {}).get("amount", {}).get("min") or step_size),
             step_size=step_size,
-            min_notional=float(min_notional_filter.get("minNotional") or market.get("limits", {}).get("cost", {}).get("min") or 10.0),
+            min_notional=float(
+                notional_filter.get("minNotional")
+                or min_notional_filter.get("minNotional")
+                or market.get("limits", {}).get("cost", {}).get("min")
+                or 10.0
+            ),
             tick_size=tick_size,
         )
         return self.rules

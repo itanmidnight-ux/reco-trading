@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from reco_trading.ui.chart_widget import CandlestickChartWidget
+from reco_trading.ui import theme as ui_theme
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.widgets.stat_card import StatCard
 
@@ -45,6 +46,31 @@ class AnimatedButton(QPushButton):
         self._hover_anim.setEndValue(target)
         self._hover_anim.start()
 
+def _theme_colors(theme: str) -> dict[str, str]:
+    if hasattr(ui_theme, "get_theme_colors"):
+        return dict(ui_theme.get_theme_colors(theme))  # type: ignore[attr-defined]
+    normalized = str(theme or "Dark").strip().lower()
+    if normalized in {"light", "white", "blanco"}:
+        return {
+            "panel": "#ffffff",
+            "panel_alt": "#f1f5fc",
+            "border": "#c7d3ea",
+            "text_primary": "#12213f",
+            "text_secondary": "#425a85",
+            "negative": "#d6405c",
+            "warning": "#b7791f",
+        }
+    return {
+        "panel": "#141d35",
+        "panel_alt": "#1a2643",
+        "border": "#273658",
+        "text_primary": "#edf2ff",
+        "text_secondary": "#9fb2d9",
+        "negative": "#ff5f7b",
+        "warning": "#ffcc66",
+    }
+
+
 class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
@@ -69,19 +95,13 @@ class DashboardTab(QWidget):
 
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
         self.top_bar.setObjectName("statusRibbon")
-        self.top_bar.setStyleSheet(
-            "padding:8px 12px; border-radius:12px; "
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1f2a44, stop:1 #111827);"
-            "color:#d9e6ff; border:1px solid #2f3b59;"
-        )
+        self.top_bar.setStyleSheet("padding:8px 12px; border-radius:12px;")
         root.addWidget(self.top_bar)
 
         self.capital_banner = QLabel("Profile UNKNOWN • Operable capital -- • Reserve --")
         self.capital_banner.setObjectName("smallMetricValue")
         self.capital_banner.setWordWrap(True)
-        self.capital_banner.setStyleSheet(
-            "padding:6px 10px; border-radius:10px; background:#111827; border:1px solid #243049; color:#b8c7e3;"
-        )
+        self.capital_banner.setStyleSheet("padding:6px 10px; border-radius:10px;")
         root.addWidget(self.capital_banner)
 
         self.hero_panel = self._panel()
@@ -208,6 +228,7 @@ class DashboardTab(QWidget):
         body.addWidget(self.account_panel, 0, 1)
         body.addWidget(self.activity_panel, 1, 0)
         body.addWidget(self.chart_panel, 1, 1)
+        self.apply_theme("Dark")
 
     def _build_controls(self) -> QFrame:
         panel = self._panel()
@@ -269,13 +290,28 @@ class DashboardTab(QWidget):
     def _panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("panelCard")
-        panel.setStyleSheet(
-            "QFrame#panelCard {"
-            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #131c2e, stop:1 #0f172a);"
-            "border:1px solid #243049; border-radius:14px;"
-            "}"
-        )
         return panel
+
+    def apply_theme(self, theme: str) -> None:
+        colors = _theme_colors(theme)
+        self._theme_colors = colors
+        self.top_bar.setStyleSheet(
+            "padding:8px 12px; border-radius:12px; "
+            f"background:{colors['panel_alt']};"
+            f"color:{colors['text_primary']}; border:1px solid {colors['border']};"
+        )
+        self.capital_banner.setStyleSheet(
+            "padding:6px 10px; border-radius:10px; "
+            f"background:{colors['panel']}; border:1px solid {colors['border']}; color:{colors['text_secondary']};"
+        )
+        self.emergency_btn.setStyleSheet(
+            f"QPushButton {{ background:{colors['negative']}; color:{colors['text_primary']}; }}"
+        )
+        self.close_active_trade_btn.setStyleSheet(
+            f"QPushButton {{ background:{colors['warning']}; color:{colors['text_primary']}; font-weight:700; }}"
+        )
+        if hasattr(self.chart, "set_theme"):
+            self.chart.set_theme(theme)
 
     def _title(self, title: str) -> QLabel:
         label = QLabel(title)
@@ -311,13 +347,14 @@ class DashboardTab(QWidget):
 
         signal = str(state.get("signal", "NEUTRAL")).upper()
         confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
+        colors = getattr(self, "_theme_colors", _theme_colors("Dark"))
         self.top_bar.setText(
             f"{pair}  •  Price {price}  •  {signal} {confidence}%  •  {status.replace('_', ' ').title()}"
         )
         self.top_bar.setStyleSheet(
             "padding:8px 12px; border-radius:12px; "
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1f2a44, stop:1 #111827); "
-            f"color: {status_color(status)}; border:1px solid #2f3b59;"
+            f"background:{colors['panel_alt']}; "
+            f"color: {status_color(status)}; border:1px solid {colors['border']};"
         )
         capital_profile = str(state.get("capital_profile") or risk_metrics.get("capital_profile") or "UNKNOWN")
         operable_capital = _as_float(state.get("operable_capital_usdt", risk_metrics.get("operable_capital_usdt")), 0.0)
@@ -327,9 +364,9 @@ class DashboardTab(QWidget):
             f"Profile {capital_profile} • Operable capital {_fmt_num(operable_capital, 2)} USDT • "
             f"Reserve {reserve_ratio * 100:.1f}% • Buffer {_fmt_num(cash_buffer, 2)} USDT"
         )
-        banner_tint = "#16324f" if operable_capital > 0 else "#4a2c2c"
+        banner_tint = colors["panel"] if operable_capital > 0 else "#4a2c2c"
         self.capital_banner.setStyleSheet(
-            f"padding:6px 10px; border-radius:10px; background:{banner_tint}; border:1px solid #2f3b59; color:#d6e4ff;"
+            f"padding:6px 10px; border-radius:10px; background:{banner_tint}; border:1px solid {colors['border']}; color:{colors['text_secondary']};"
         )
 
         exposure = _as_float(risk_metrics.get("current_exposure"), 0.0)
@@ -398,7 +435,7 @@ class DashboardTab(QWidget):
         self.account_cards["win_rate"].set_value(f"{float(state.get('win_rate', 0) or 0)*100:.1f}%")
 
         logs = state.get("logs", [])[-8:]
-        feed_lines = [_format_feed_entry(entry) for entry in logs] or ["<span style='color:#9fb2d9;'>[--:--] Waiting for events</span>"]
+        feed_lines = [_format_feed_entry(entry) for entry in logs] or ["<span style='color:#64748b;'>[--:--] Waiting for events</span>"]
         self.feed.setText("<br>".join(feed_lines))
         system = state.get("system", {}) or {}
         lag_text = "LAG" if system.get("ui_lag_detected") else "UI OK"
@@ -477,8 +514,8 @@ def _format_feed_entry(entry: dict[str, Any]) -> str:
     color = {"ERROR": "#ea3943", "WARNING": "#f0b90b", "INFO": "#5a8dff"}.get(level, "#9fb2d9")
     return (
         f"<span style='color:{color}; font-weight:700;'>●</span> "
-        f"<span style='color:#9fb2d9;'>[{entry.get('time', '--:--')}]</span> "
-        f"<span style='color:#edf2ff;'>{entry.get('message', '-')}</span>"
+        f"<span style='color:#64748b;'>[{entry.get('time', '--:--')}]</span> "
+        f"<span style='color:#0f172a;'>{entry.get('message', '-')}</span>"
     )
 
 

@@ -37,6 +37,8 @@ def test_settings_tab_emits_investment_payload() -> None:
     tab.settings_changed.connect(captured.append)
 
     tab.investment_mode.setCurrentText("Custom")
+    tab.language.setCurrentText("Español")
+    tab.theme.setCurrentText("Light")
     tab.capital_limit.setValue(250.0)
     tab.risk_per_trade.setValue(1.5)
     tab.max_allocation.setValue(30.0)
@@ -45,8 +47,38 @@ def test_settings_tab_emits_investment_payload() -> None:
     assert captured
     payload = captured[-1]
     assert payload["investment_mode"] == "Custom"
+    assert payload["language"] == "Español"
+    assert payload["theme"] == "Light"
     assert payload["capital_limit_usdt"] == 250.0
     assert payload["risk_per_trade_fraction"] == pytest.approx(0.015)
     assert payload["max_trade_balance_fraction"] == pytest.approx(0.30)
     assert "binance_api_key" not in payload
     assert "binance_api_secret" not in payload
+
+
+def test_settings_tab_restricts_language_and_theme_choices() -> None:
+    _app()
+    tab = SettingsTab()
+    languages = {tab.language.itemText(i) for i in range(tab.language.count())}
+    themes = {tab.theme.itemText(i) for i in range(tab.theme.count())}
+
+    assert languages == {"English", "Español"}
+    assert themes == {"Dark", "Light"}
+
+
+def test_settings_tab_language_change_updates_labels() -> None:
+    _app()
+    tab = SettingsTab()
+    tab.language.setCurrentText("Español")
+
+    assert tab.title_label.text() == "Estudio de Interfaz"
+    assert tab.apply_btn.text() == "Aplicar ahora"
+    assert "Orden máxima estimada" in tab.simulation_hint.text()
+
+
+def test_settings_tab_includes_liquid_usdt_pairs() -> None:
+    _app()
+    tab = SettingsTab()
+    pairs = {tab.default_pair.itemText(i) for i in range(tab.default_pair.count())}
+    expected = {"BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "DOGE/USDT", "ADA/USDT", "LINK/USDT"}
+    assert expected.issubset(pairs)
