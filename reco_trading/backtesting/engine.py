@@ -115,5 +115,19 @@ class BacktestEngine:
                 equity += closed.pnl
                 equity_curve.append(equity)
 
-        metrics = compute_metrics(simulator.trades, self.initial_equity, equity_curve)
+        benchmark_return = self._buy_hold_return(df5)
+        metrics = compute_metrics(
+            simulator.trades,
+            self.initial_equity,
+            equity_curve,
+            benchmark_buy_hold_return=benchmark_return,
+        )
         return BacktestResult(trades=simulator.trades, metrics=metrics, equity_curve=equity_curve)
+
+    @staticmethod
+    def _buy_hold_return(frame: pd.DataFrame) -> float:
+        if frame.empty:
+            return 0.0
+        first = float(frame.iloc[0]["close"])
+        last = float(frame.iloc[-1]["close"])
+        return (last - first) / max(first, 1e-9)

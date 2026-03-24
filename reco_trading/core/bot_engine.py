@@ -259,7 +259,9 @@ class BotEngine:
 
                         self._roll_day()
                         await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
+                        fetch_started = time.perf_counter()
                         market_data = await self.fetch_market_data()
+                        self.observability.record_stage_latency("fetch_market_data", (time.perf_counter() - fetch_started) * 1000.0)
                         await self._refresh_account_snapshot(current_price=market_data.get("price"))
                         if not self._is_market_data_fresh(market_data):
                             self.observability.record_loop(stale_market_data=True)
@@ -270,18 +272,24 @@ class BotEngine:
                             await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
                             continue
                         await self._set_state(BotState.ANALYZING_MARKET, "analyze_market")
+                        analyze_started = time.perf_counter()
                         analysis = await self.analyze_market(market_data)
+                        self.observability.record_stage_latency("analyze_market", (time.perf_counter() - analyze_started) * 1000.0)
                         self._update_snapshot(market_data, analysis)
 
                         if await self.validate_trade_conditions(analysis):
                             intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
                             self._apply_market_intelligence_snapshot(intelligence)
                             if intelligence.get("approved"):
+                                execute_started = time.perf_counter()
                                 await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                                self.observability.record_stage_latency("execute_trade", (time.perf_counter() - execute_started) * 1000.0)
                             else:
                                 await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
 
+                        manage_started = time.perf_counter()
                         await self.manage_open_position(market_data)
+                        self.observability.record_stage_latency("manage_open_position", (time.perf_counter() - manage_started) * 1000.0)
                         self.observability.record_loop(stale_market_data=False)
                         self.exchange_failure_count = 0
                         self.observability.update_health(exchange_healthy=True)
@@ -454,7 +462,12 @@ class BotEngine:
         confidence = float(analysis["confidence"])
         side = str(analysis.get("side", "HOLD")).upper()
         profile = self._current_capital_profile()
-        min_confidence = max(self.settings.confidence_threshold, self._effective_min_signal_confidence())
+        opportunity_score = self._opportunity_score(analysis)
+        min_confidence = self._dynamic_min_confidence_threshold(opportunity_score)
+        dynamic_max_trades = self._dynamic_max_trades_per_day(opportunity_score)
+        self.snapshot["opportunity_score"] = round(opportunity_score, 4)
+        self.snapshot["dynamic_confidence_threshold"] = round(min_confidence, 4)
+        self.snapshot["dynamic_max_trades_per_day"] = dynamic_max_trades
         if side == "HOLD":
             await self._set_state(BotState.WAITING_MARKET_DATA, "hold_signal")
             self.snapshot["cooldown"] = "HOLD_SIGNAL"
@@ -499,7 +512,7 @@ class BotEngine:
             self._set_decision_gating("cooldown_active", "HOLD")
             return False
 
-        self.risk_manager.max_trades_per_day = self._effective_max_trades_per_day()
+        self.risk_manager.max_trades_per_day = dynamic_max_trades
         risk = self.risk_manager.validate(
             balance=usdt_balance,
             daily_pnl=session_pnl,
@@ -1272,7 +1285,16 @@ class BotEngine:
         return 1.0
 
     async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
-        quote_balance, base_balance, quote_asset, _base_asset = await self._fetch_balances()
+        balances = await self._fetch_balances()
+        if len(balances) == 4:
+            quote_balance, base_balance, quote_asset, _base_asset = balances
+        elif len(balances) == 2:
+            quote_balance, base_balance = balances
+            quote_asset = str(self.snapshot.get("account_currency") or "USDT")
+            symbol = getattr(self, "symbol", "BTCUSDT")
+            _base_asset = split_symbol(symbol)[0]
+        else:
+            raise ValueError("_fetch_balances must return 2 or 4 elements")
         reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
         base_value_quote = float(base_balance * reference_price)
         total_equity_quote = float(quote_balance + base_value_quote)
@@ -1533,6 +1555,16 @@ class BotEngine:
     def _effective_max_trades_per_day(self) -> int:
         return min(int(self.settings.max_trades_per_day), int(self._current_capital_profile().max_trades_per_day))
 
+    def _dynamic_max_trades_per_day(self, opportunity_score: float) -> int:
+        profile = self._current_capital_profile()
+        confidence_bias, trade_scale, max_bonus = self._capital_filter_policy(profile)
+        del confidence_bias
+        base_limit = self._effective_max_trades_per_day()
+        scaled_base = max(int(round(base_limit * trade_scale)), 1)
+        bonus_trades = int(round(max(min(float(opportunity_score), 1.0), 0.0) * max_bonus))
+        hard_cap = max(min(int(getattr(self.settings, "max_trades_per_day", base_limit)), int(profile.max_trades_per_day) + max_bonus), 1)
+        return min(max(scaled_base + bonus_trades, 1), hard_cap)
+
     def _effective_cooldown_minutes(self) -> int:
         return max(int(self.settings.cooldown_minutes), int(self._current_capital_profile().cooldown_minutes))
 
@@ -1547,6 +1579,56 @@ class BotEngine:
 
     def _effective_entry_quality_floor(self) -> float:
         return float(self._current_capital_profile().entry_quality_floor)
+
+    def _dynamic_min_confidence_threshold(self, opportunity_score: float) -> float:
+        profile = self._current_capital_profile()
+        confidence_bias, _trade_scale, _max_bonus = self._capital_filter_policy(profile)
+        base_threshold = self._effective_min_signal_confidence()
+        score = max(min(float(opportunity_score), 1.0), 0.0)
+        adjusted = base_threshold + confidence_bias
+        relaxed = adjusted - (0.05 * score)
+        floor = max(float(profile.min_confidence) - 0.02, 0.55)
+        return min(max(relaxed, floor), 0.95)
+
+    def _opportunity_score(self, analysis: dict[str, Any]) -> float:
+        adx = _as_float(self.snapshot.get("adx"), 0.0)
+        price = max(_as_float(self.snapshot.get("price"), 0.0), 1e-9)
+        spread_ratio = _as_float(self.snapshot.get("spread"), 0.0) / price
+        setup_quality = _as_float(analysis.get("setup_quality"), _as_float(self.snapshot.get("signal_quality_score"), 0.0))
+        floor = self._effective_entry_quality_floor()
+        confluence_aligned = bool(self.snapshot.get("confluence_aligned"))
+
+        score = 0.0
+        if adx >= 25.0:
+            score += 0.30
+        elif adx >= 20.0:
+            score += 0.18
+
+        max_spread = max(self._effective_max_spread_ratio(), 1e-9)
+        if spread_ratio <= max_spread * 0.60:
+            score += 0.25
+        elif spread_ratio <= max_spread * 0.85:
+            score += 0.15
+
+        if setup_quality >= min(floor + 0.12, 1.0):
+            score += 0.30
+        elif setup_quality >= min(floor + 0.06, 1.0):
+            score += 0.18
+
+        if confluence_aligned:
+            score += 0.15
+
+        return max(min(score, 1.0), 0.0)
+
+    @staticmethod
+    def _capital_filter_policy(profile: CapitalProfile) -> tuple[float, float, int]:
+        if profile.name == "MICRO":
+            return 0.04, 0.75, 0
+        if profile.name == "SMALL":
+            return 0.02, 0.90, 1
+        if profile.name == "LARGE":
+            return -0.02, 1.15, 3
+        return 0.0, 1.0, 2
 
     def _build_setup_quality_score(self, *, bundle: SignalBundle, final_confidence: float, confluence_score: float) -> float:
         confidence_component = max(min(final_confidence, 1.0), 0.0) * 0.45
@@ -1832,10 +1914,16 @@ def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any
             if float_limit > 0:
                 symbol_limits[normalized_symbol] = float_limit
 
+    raw_theme = str(payload.get("theme", "Dark")).strip()
+    theme = raw_theme if raw_theme in {"Dark", "Light"} else "Dark"
+    raw_language = str(payload.get("language", "English")).strip()
+    language = raw_language if raw_language in {"English", "Español"} else "English"
+
     return {
         "refresh_rate_ms": max(int(payload.get("refresh_rate_ms", 1000) or 1000), 250),
         "chart_visible": bool(payload.get("chart_visible", True)),
-        "theme": str(payload.get("theme", "Dark")).strip() or "Dark",
+        "theme": theme,
+        "language": language,
         "log_verbosity": str(payload.get("log_verbosity", "INFO")).strip().upper() or "INFO",
         "default_pair": str(payload.get("default_pair", "")).strip(),
         "default_timeframe": str(payload.get("default_timeframe", "")).strip(),
