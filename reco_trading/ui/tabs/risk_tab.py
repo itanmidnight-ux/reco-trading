@@ -31,12 +31,16 @@ class RiskTab(QWidget):
             "risk_per_trade",
             "max_concurrent_trades",
             "daily_drawdown",
+            "intraday_drawdown",
             "current_exposure",
+            "effective_exposure",
+            "notional_used_vs_limit",
             "consecutive_losses",
             "capital_profile",
             "operable_capital_usdt",
             "setup_quality_score",
             "adaptive_size_multiplier",
+            "kill_switch_reason",
         ]
         for i, key in enumerate(keys):
             card = StatCard(key.replace("_", " ").title(), compact=True)
@@ -68,12 +72,16 @@ class RiskTab(QWidget):
             metrics.get("risk_per_trade", "-"),
             metrics.get("max_concurrent_trades", "-"),
             metrics.get("daily_drawdown", "-"),
+            metrics.get("intraday_drawdown", metrics.get("daily_drawdown", "-")),
             metrics.get("current_exposure", "-"),
+            metrics.get("effective_exposure", metrics.get("current_exposure", "-")),
+            metrics.get("notional_used_vs_limit", "-"),
             metrics.get("consecutive_losses", "-"),
             metrics.get("capital_profile", "-"),
             metrics.get("operable_capital_usdt", "-"),
             metrics.get("setup_quality_score", "-"),
             metrics.get("adaptive_size_multiplier", "-"),
+            metrics.get("kill_switch_reason", state.get("cooldown", "-")),
         )
         if signature == self._last_signature:
             return

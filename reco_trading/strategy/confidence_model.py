@@ -7,6 +7,10 @@ class ConfidenceModel:
     """Weighted voting and confidence scoring."""
 
     def evaluate(self, bundle: SignalBundle, trade_threshold: float = 0.0) -> tuple[str, float, str]:
+        explained = self.explain(bundle, trade_threshold=trade_threshold)
+        return explained["side"], explained["confidence"], explained["grade"]
+
+    def explain(self, bundle: SignalBundle, trade_threshold: float = 0.0) -> dict[str, object]:
         weighted_votes = {
             "trend": 0.30,
             "momentum": 0.20,
@@ -27,6 +31,11 @@ class ConfidenceModel:
         buy_score = sum(weight for name, weight in weighted_votes.items() if signal_map[name] == "BUY")
         sell_score = sum(weight for name, weight in weighted_votes.items() if signal_map[name] == "SELL")
 
+        factor_scores: dict[str, float] = {}
+        for name, weight in weighted_votes.items():
+            signal = signal_map[name]
+            factor_scores[name] = weight if signal == "BUY" else -weight if signal == "SELL" else 0.0
+
         if buy_score >= sell_score:
             side = "BUY"
             confidence = buy_score
@@ -46,4 +55,12 @@ class ConfidenceModel:
         else:
             grade = "WEAK"
 
-        return side, confidence, grade
+        return {
+            "side": side,
+            "confidence": confidence,
+            "grade": grade,
+            "buy_score": buy_score,
+            "sell_score": sell_score,
+            "factor_scores": factor_scores,
+            "threshold": max(trade_threshold, 0.0),
+        }

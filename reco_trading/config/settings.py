@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, ConfigDict, field_validator
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     max_spread_ratio: float = 0.004
     max_slippage_ratio: float = 0.003
     min_volume_ratio: float = 0.7
+    execution_model_enabled: bool = False
 
     # =========================
     # MARKET INTELLIGENCE
@@ -89,6 +90,16 @@ class Settings(BaseSettings):
     # REDIS
     # =========================
     redis_url: str = "redis://localhost:6379/0"
+    observability_enabled: bool = True
+    observability_bind_host: str = "0.0.0.0"
+    observability_port: int = 9108
+    api_latency_window_size: int = 200
+    stale_market_data_max_age_seconds: int = 180
+    feature_multi_symbol_enabled: bool = False
+    trading_symbols: list[str] = Field(default_factory=list, validation_alias=AliasChoices("TRADING_SYMBOLS", "SYMBOLS"))
+    max_global_exposure_fraction: float = 0.7
+    max_symbol_correlation: float = 0.85
+    symbol_capital_limits: dict[str, float] = Field(default_factory=dict, validation_alias=AliasChoices("SYMBOL_CAPITAL_LIMITS"))
 
     @property
     def symbol(self) -> str:
@@ -102,7 +113,64 @@ class Settings(BaseSettings):
     def confidence_threshold(self) -> float:
         return self.min_signal_confidence
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    @field_validator("trading_symbol")
+    @classmethod
+    def _normalize_symbol(cls, value: str) -> str:
+        return str(value or "BTCUSDT").replace("/", "").upper()
+
+    @field_validator("trading_symbols", mode="before")
+    @classmethod
+    def _parse_symbols(cls, value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw = [item.strip() for item in value.split(",")]
+        elif isinstance(value, list):
+            raw = [str(item).strip() for item in value]
+        else:
+            return []
+        return [item.replace("/", "").upper() for item in raw if item]
+
+    @field_validator("observability_port")
+    @classmethod
+    def _validate_observability_port(cls, value: int) -> int:
+        if value < 1 or value > 65535:
+            raise ValueError("observability_port must be in range [1, 65535]")
+        return value
+
+    @field_validator(
+        "risk_per_trade_fraction",
+        "max_global_exposure_fraction",
+        "max_symbol_correlation",
+        "capital_reserve_ratio",
+        "daily_loss_limit_fraction",
+        "max_drawdown_fraction",
+        "max_trade_balance_fraction",
+    )
+    @classmethod
+    def _validate_fraction(cls, value: float) -> float:
+        if value < 0 or value > 1:
+            raise ValueError("fraction-like values must be within [0, 1]")
+        return float(value)
+
+    @field_validator("symbol_capital_limits", mode="before")
+    @classmethod
+    def _validate_symbol_capital_limits(cls, value: object) -> dict[str, float]:
+        if not isinstance(value, dict):
+            return {}
+        normalized: dict[str, float] = {}
+        for symbol, cap in value.items():
+            try:
+                cap_f = float(cap)
+            except (TypeError, ValueError):
+                continue
+            if cap_f <= 0:
+                continue
+            normalized[str(symbol).replace("/", "").upper()] = cap_f
+        return normalized
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        populate_by_name=True,
+    )
