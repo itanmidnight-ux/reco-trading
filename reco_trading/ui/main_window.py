@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QLabel, QMainWindow, QMessageBox, QStatusBar, QTabWidget
 
+from reco_trading.ui.components.dashboard_enhancer import enhance_dashboard_widget
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.tabs.alerts_tab import AlertsTab
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
@@ -37,6 +38,10 @@ class MainWindow(QMainWindow):
             print(f"Theme loading failed: {exc}")
 
         tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        tabs.setUsesScrollButtons(True)
+        tabs.setElideMode(Qt.TextElideMode.ElideRight)
+
         self.dashboard_tab = DashboardTab(state_manager=state_manager)
         self.trades_tab = TradesTab()
         self.market_tab = MarketTab()
@@ -47,18 +52,29 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
 
-        tabs.addTab(self.dashboard_tab, tr("tab.dashboard", self._current_language))
-        tabs.addTab(self.trades_tab, tr("tab.trades", self._current_language))
-        tabs.addTab(self.market_tab, tr("tab.market", self._current_language))
-        tabs.addTab(self.analytics_tab, tr("tab.analytics", self._current_language))
-        tabs.addTab(self.strategy_tab, tr("tab.strategy", self._current_language))
-        tabs.addTab(self.logs_tab, tr("tab.logs", self._current_language))
-        tabs.addTab(self.risk_tab, tr("tab.risk", self._current_language))
-        tabs.addTab(self.settings_tab, tr("tab.settings", self._current_language))
-        tabs.addTab(self.system_tab, tr("tab.system", self._current_language))
+        tabs.addTab(self.dashboard_tab, _tab_label("dashboard", self._current_language))
+        tabs.addTab(self.trades_tab, _tab_label("trades", self._current_language))
+        tabs.addTab(self.market_tab, _tab_label("market", self._current_language))
+        tabs.addTab(self.analytics_tab, _tab_label("analytics", self._current_language))
+        tabs.addTab(self.strategy_tab, _tab_label("strategy", self._current_language))
+        tabs.addTab(self.logs_tab, _tab_label("logs", self._current_language))
+        tabs.addTab(self.risk_tab, _tab_label("risk", self._current_language))
+        tabs.addTab(self.settings_tab, _tab_label("settings", self._current_language))
+        tabs.addTab(self.system_tab, _tab_label("system", self._current_language))
         self.setCentralWidget(tabs)
         self.tabs = tabs
-        self.tab_fade = QPropertyAnimation(self, b"windowOpacity", self)
+
+        self.status_bar = QStatusBar(self)
+        self.setStatusBar(self.status_bar)
+        self.status_mode = QLabel("Mode: INITIALIZING")
+        self.status_pair = QLabel("Pair: -")
+        self.status_latency = QLabel("Latency: - ms")
+        self.status_render = QLabel("UI: - ms")
+        self.status_bar.addPermanentWidget(self.status_mode)
+        self.status_bar.addPermanentWidget(self.status_pair)
+        self.status_bar.addPermanentWidget(self.status_latency)
+        self.status_bar.addPermanentWidget(self.status_render)
+
         self.tabs.currentChanged.connect(self._animate_current_tab)
 
         state_manager.state_changed.connect(self._on_state)
@@ -74,6 +90,7 @@ class MainWindow(QMainWindow):
         self._last_ui_render_ms = 0.0
         self._ui_lag_detected = False
         self._apply_language(self._current_language)
+        enhance_dashboard_widget(self)
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
@@ -97,6 +114,11 @@ class MainWindow(QMainWindow):
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         self._last_ui_render_ms = elapsed_ms
         self._ui_lag_detected = elapsed_ms >= max(120.0, self.refresh_timer.interval() * 0.8)
+        self.status_mode.setText(f"Mode: {str(enriched_state.get('status', 'UNKNOWN')).upper()}")
+        self.status_pair.setText(f"Pair: {enriched_state.get('pair', '-')}")
+        latency = (enriched_state.get('system') or {}).get('api_latency_ms', '-')
+        self.status_latency.setText(f"Latency: {latency} ms")
+        self.status_render.setText(f"UI: {elapsed_ms:.1f} ms")
 
     def _refresh_from_snapshot(self) -> None:
         if (time.monotonic() - self._last_state_event_at) < 0.25:
@@ -130,15 +152,15 @@ class MainWindow(QMainWindow):
         self._current_language = normalized
         self.setWindowTitle(tr("window_title", normalized))
         labels = [
-            tr("tab.dashboard", normalized),
-            tr("tab.trades", normalized),
-            tr("tab.market", normalized),
-            tr("tab.analytics", normalized),
-            tr("tab.strategy", normalized),
-            tr("tab.logs", normalized),
-            tr("tab.risk", normalized),
-            tr("tab.settings", normalized),
-            tr("tab.system", normalized),
+            _tab_label("dashboard", normalized),
+            _tab_label("trades", normalized),
+            _tab_label("market", normalized),
+            _tab_label("analytics", normalized),
+            _tab_label("strategy", normalized),
+            _tab_label("logs", normalized),
+            _tab_label("risk", normalized),
+            _tab_label("settings", normalized),
+            _tab_label("system", normalized),
         ]
         for idx, label in enumerate(labels):
             self.tabs.setTabText(idx, label)
@@ -150,15 +172,8 @@ class MainWindow(QMainWindow):
         widget = self.tabs.widget(index)
         if not widget:
             return
-        effect = QGraphicsOpacityEffect(widget)
-        widget.setGraphicsEffect(effect)
-        animation = QPropertyAnimation(effect, b"opacity", widget)
-        animation.setDuration(260)
-        animation.setStartValue(0.45)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        animation.start()
-        self._current_animation = animation
+        # Keep tabs crisp/solid: avoid opacity animations that can look blurry.
+        widget.setGraphicsEffect(None)
 
     def _decorate_state(self, state: dict) -> dict:
         decorated = dict(state)
@@ -174,3 +189,18 @@ class MainWindow(QMainWindow):
         )
         decorated["system"] = system
         return decorated
+
+
+def _tab_label(tab_key: str, language: str) -> str:
+    base = {
+        "dashboard": "📊",
+        "trades": "💱",
+        "market": "📈",
+        "analytics": "🧠",
+        "strategy": "🧭",
+        "logs": "🧾",
+        "risk": "🛡️",
+        "settings": "⚙️",
+        "system": "🖥️",
+    }.get(tab_key, "•")
+    return f"{base} {tr('tab.{tab_key}', language)}"

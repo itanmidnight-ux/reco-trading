@@ -223,12 +223,16 @@ class DashboardTab(QWidget):
         chart_layout.setContentsMargins(10, 10, 10, 10)
         chart_layout.addWidget(self._title("Realtime Chart"))
         self.chart = CandlestickChartWidget()
-        chart_layout.addWidget(self.chart)
+        self.chart.setMinimumHeight(460)
+        chart_layout.addWidget(self.chart, 1)
 
         body.addWidget(self.market_panel, 0, 0)
         body.addWidget(self.account_panel, 0, 1)
         body.addWidget(self.activity_panel, 1, 0)
         body.addWidget(self.chart_panel, 1, 1)
+        body.setColumnStretch(0, 1)
+        body.setColumnStretch(1, 2)
+        body.setRowStretch(1, 2)
         self.apply_theme("Dark")
 
     def _build_controls(self) -> QFrame:
@@ -515,7 +519,7 @@ def _format_feed_entry(entry: dict[str, Any]) -> str:
     return (
         f"<span style='color:{color}; font-weight:700;'>●</span> "
         f"<span style='color:#64748b;'>[{entry.get('time', '--:--')}]</span> "
-        f"<span style='color:#0f172a;'>{entry.get('message', '-')}</span>"
+        f"<span style='color:#e2e8f0;'>{entry.get('message', '-')}</span>"
     )
 
 
