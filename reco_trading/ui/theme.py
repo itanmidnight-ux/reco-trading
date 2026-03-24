@@ -33,14 +33,10 @@ _LIGHT_COLORS = {
 }
 
 
-def get_theme_colors(theme: str = "Dark") -> dict[str, str]:
-    normalized = str(theme or "Dark").strip().lower()
-    return dict(_LIGHT_COLORS if normalized in {"light", "white", "blanco"} else _DARK_COLORS)
-
-
 def app_stylesheet(theme: str = "Dark") -> str:
     try:
-        colors = get_theme_colors(theme)
+        normalized = str(theme or "Dark").strip().lower()
+        colors = _LIGHT_COLORS if normalized in {"light", "white", "blanco"} else _DARK_COLORS
         style = f"""
         QWidget {{
             background-color: {colors['background']};
@@ -144,7 +140,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
             border-radius: 6px;
         }}
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-            background: {"#ffffff" if colors.get("background") == _LIGHT_COLORS["background"] else "#101933"};
+            background: {"#ffffff" if colors is _LIGHT_COLORS else "#101933"};
             border: 1px solid {colors['border']};
             border-radius: 8px;
             padding: 7px;
@@ -169,7 +165,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
             background: {colors['panel_alt']};
         }}
         QPushButton:disabled {{
-            background: {colors['panel_alt']};
+            background: #2a3557;
             color: {colors['neutral']};
         }}
         """

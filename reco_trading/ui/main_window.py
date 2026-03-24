@@ -74,7 +74,6 @@ class MainWindow(QMainWindow):
         self._last_ui_render_ms = 0.0
         self._ui_lag_detected = False
         self._apply_language(self._current_language)
-        self._apply_theme(self._current_theme)
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
@@ -121,7 +120,6 @@ class MainWindow(QMainWindow):
             from reco_trading.ui.theme import app_stylesheet
 
             self.setStyleSheet(app_stylesheet(theme=normalized))
-            self.dashboard_tab.apply_theme(normalized)
         except Exception:
             return
 

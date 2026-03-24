@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 from reco_trading.ui.chart_widget import CandlestickChartWidget
 from reco_trading.ui import theme as ui_theme
 from reco_trading.ui.state_manager import StateManager
+from reco_trading.ui.theme import get_theme_colors
 from reco_trading.ui.widgets.stat_card import StatCard
 
 
@@ -293,7 +294,7 @@ class DashboardTab(QWidget):
         return panel
 
     def apply_theme(self, theme: str) -> None:
-        colors = _theme_colors(theme)
+        colors = get_theme_colors(theme)
         self._theme_colors = colors
         self.top_bar.setStyleSheet(
             "padding:8px 12px; border-radius:12px; "
@@ -310,8 +311,7 @@ class DashboardTab(QWidget):
         self.close_active_trade_btn.setStyleSheet(
             f"QPushButton {{ background:{colors['warning']}; color:{colors['text_primary']}; font-weight:700; }}"
         )
-        if hasattr(self.chart, "set_theme"):
-            self.chart.set_theme(theme)
+        self.chart.set_theme(theme)
 
     def _title(self, title: str) -> QLabel:
         label = QLabel(title)
@@ -347,7 +347,7 @@ class DashboardTab(QWidget):
 
         signal = str(state.get("signal", "NEUTRAL")).upper()
         confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
-        colors = getattr(self, "_theme_colors", _theme_colors("Dark"))
+        colors = getattr(self, "_theme_colors", get_theme_colors("Dark"))
         self.top_bar.setText(
             f"{pair}  •  Price {price}  •  {signal} {confidence}%  •  {status.replace('_', ' ').title()}"
         )

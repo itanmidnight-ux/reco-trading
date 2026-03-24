@@ -8,7 +8,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QBrush, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
-from reco_trading.ui import theme as ui_theme
+from reco_trading.ui.theme import get_theme_colors
 
 BG_COLOR = "#131722"
 GRID_COLOR = "#2a2f3a"
@@ -110,37 +110,6 @@ def _resolve_theme_colors(theme: str) -> dict[str, str]:
     return dict(_FALLBACK_LIGHT if normalized in {"light", "white", "blanco"} else _FALLBACK_DARK)
 
 
-def _apply_theme_to_chart(widget: "CandlestickChartWidget", theme: str) -> None:
-    widget._theme_name = str(theme or "Dark")
-    colors = _resolve_theme_colors(widget._theme_name)
-    bg = colors["background"]
-    text = colors["text_primary"]
-    grid = colors["border"]
-    info = colors["info"]
-    warning = colors["warning"]
-    neutral = colors["text_secondary"]
-
-    widget._graphics.setBackground(bg)
-    for plot in (widget._price_plot, widget._rsi_plot, widget._macd_plot):
-        plot.getViewBox().setBackgroundColor(bg)
-        plot.getAxis("left").setTextPen(pg.mkColor(text))
-        plot.getAxis("bottom").setTextPen(pg.mkColor(text))
-        plot.getAxis("left").setPen(pg.mkColor(grid))
-        plot.getAxis("bottom").setPen(pg.mkColor(grid))
-
-    widget._ema9_line.setPen(pg.mkPen(info, width=1.5))
-    widget._ema21_line.setPen(pg.mkPen(warning, width=1.4))
-    widget._ema50_line.setPen(pg.mkPen(colors["accent"], width=1.2))
-    widget._last_price_line.setPen(pg.mkPen(info, width=1, style=pg.QtCore.Qt.PenStyle.DashLine))
-    widget._last_price_label.setColor(pg.mkColor(text))
-    widget._rsi_line.setPen(pg.mkPen(text, width=1.2))
-    widget._macd_line.setPen(pg.mkPen(info, width=1.0))
-    widget._signal_line.setPen(pg.mkPen(warning, width=1.0))
-    widget._crosshair_v.setPen(pg.mkPen(neutral, width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
-    widget._crosshair_h.setPen(pg.mkPen(neutral, width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
-    widget._ema_spread_fill.setBrush(pg.mkBrush(pg.mkColor(info + "55")))
-
-
 class CandlestickChartWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
@@ -225,7 +194,7 @@ class CandlestickChartWidget(QWidget):
         self._graphics.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._rsi_plot.setXLink(self._price_plot)
         self._macd_plot.setXLink(self._price_plot)
-        _apply_theme_to_chart(self, "Dark")
+        self.set_theme("Dark")
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
@@ -293,9 +262,6 @@ class CandlestickChartWidget(QWidget):
         self._macd_hist.setOpts(x=x, height=hist_vals, width=0.6, brushes=brushes)
         view_start = max(0, n - 120)
         self._price_plot.setXRange(view_start, n, padding=0)
-
-    def set_theme(self, theme: str) -> None:
-        _apply_theme_to_chart(self, theme)
 
     def _on_mouse_moved(self, pos: object) -> None:
         if not self._price_plot.sceneBoundingRect().contains(pos):
