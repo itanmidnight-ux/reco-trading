@@ -22,6 +22,8 @@ def test_runtime_observability_tracks_p95_and_stale_ratio() -> None:
     obs.record_loop(stale_market_data=True)
     obs.record_loop(stale_market_data=False)
     obs.record_error("exchange")
+    obs.record_stage_latency("fetch_market_data", 12.0)
+    obs.record_stage_latency("fetch_market_data", 18.0)
     obs.record_reconnection()
     obs.record_circuit_breaker_trip()
     obs.update_health(db_healthy=True, exchange_healthy=False)
@@ -29,6 +31,9 @@ def test_runtime_observability_tracks_p95_and_stale_ratio() -> None:
     snapshot = obs.snapshot()
     assert snapshot["api_latency_p95_ms"] >= 40
     assert 0.49 <= snapshot["stale_market_data_ratio"] <= 0.51
+    assert snapshot["stage_latency_last_ms"]["fetch_market_data"] == 18.0
+    assert snapshot["stage_latency_p95_ms"]["fetch_market_data"] >= 12.0
     text = obs.to_prometheus_text()
     assert "reco_api_latency_p95_ms" in text
     assert 'reco_component_errors_total{component="exchange"} 1' in text
+    assert 'reco_stage_latency_p95_ms{stage="fetch_market_data"}' in text
