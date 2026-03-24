@@ -16,6 +16,8 @@ from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
 from reco_trading.ui.tabs.strategy_tab import StrategyTab
 from reco_trading.ui.tabs.trades_tab import TradesTab
+from reco_trading.ui.i18n import tr, normalize_language
+from reco_trading.ui.preferences import load_ui_preferences, save_ui_preferences
 
 
 class MainWindow(QMainWindow):
@@ -24,10 +26,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Reco Trading Professional Terminal")
         self.resize(1520, 940)
         self.state_manager = state_manager
+        prefs = load_ui_preferences()
+        self._current_theme = str(prefs.get("theme", "Dark"))
+        self._current_language = normalize_language(str(prefs.get("language", "English")))
         try:
             from reco_trading.ui.theme import app_stylesheet
 
-            self.setStyleSheet(app_stylesheet())
+            self.setStyleSheet(app_stylesheet(theme=self._current_theme))
         except Exception as exc:  # noqa: BLE001
             print(f"Theme loading failed: {exc}")
 
@@ -42,15 +47,15 @@ class MainWindow(QMainWindow):
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
 
-        tabs.addTab(self.dashboard_tab, "Dashboard")
-        tabs.addTab(self.trades_tab, "Trades")
-        tabs.addTab(self.market_tab, "Market")
-        tabs.addTab(self.analytics_tab, "Analytics")
-        tabs.addTab(self.strategy_tab, "Strategy")
-        tabs.addTab(self.logs_tab, "Logs")
-        tabs.addTab(self.risk_tab, "Risk")
-        tabs.addTab(self.settings_tab, "Settings")
-        tabs.addTab(self.system_tab, "System")
+        tabs.addTab(self.dashboard_tab, tr("tab.dashboard", self._current_language))
+        tabs.addTab(self.trades_tab, tr("tab.trades", self._current_language))
+        tabs.addTab(self.market_tab, tr("tab.market", self._current_language))
+        tabs.addTab(self.analytics_tab, tr("tab.analytics", self._current_language))
+        tabs.addTab(self.strategy_tab, tr("tab.strategy", self._current_language))
+        tabs.addTab(self.logs_tab, tr("tab.logs", self._current_language))
+        tabs.addTab(self.risk_tab, tr("tab.risk", self._current_language))
+        tabs.addTab(self.settings_tab, tr("tab.settings", self._current_language))
+        tabs.addTab(self.system_tab, tr("tab.system", self._current_language))
         self.setCentralWidget(tabs)
         self.tabs = tabs
         self.tab_fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -68,6 +73,8 @@ class MainWindow(QMainWindow):
         self._last_state_event_at = 0.0
         self._last_ui_render_ms = 0.0
         self._ui_lag_detected = False
+        self._apply_language(self._current_language)
+        self._apply_theme(self._current_theme)
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
@@ -100,7 +107,43 @@ class MainWindow(QMainWindow):
     def _on_ui_settings(self, settings: dict) -> None:
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
         self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
+        self._apply_theme(str(settings.get("theme", self._current_theme)))
+        self._apply_language(str(settings.get("language", self._current_language)))
+        save_ui_preferences(theme=self._current_theme, language=self._current_language)
         self.state_manager.push_runtime_settings(settings)
+
+    def _apply_theme(self, theme: str) -> None:
+        normalized = str(theme or "Dark").strip()
+        if normalized == self._current_theme:
+            return
+        self._current_theme = normalized
+        try:
+            from reco_trading.ui.theme import app_stylesheet
+
+            self.setStyleSheet(app_stylesheet(theme=normalized))
+            self.dashboard_tab.apply_theme(normalized)
+        except Exception:
+            return
+
+    def _apply_language(self, language: str) -> None:
+        normalized = normalize_language(language)
+        if normalized == self._current_language and self.tabs.count() > 0:
+            return
+        self._current_language = normalized
+        self.setWindowTitle(tr("window_title", normalized))
+        labels = [
+            tr("tab.dashboard", normalized),
+            tr("tab.trades", normalized),
+            tr("tab.market", normalized),
+            tr("tab.analytics", normalized),
+            tr("tab.strategy", normalized),
+            tr("tab.logs", normalized),
+            tr("tab.risk", normalized),
+            tr("tab.settings", normalized),
+            tr("tab.system", normalized),
+        ]
+        for idx, label in enumerate(labels):
+            self.tabs.setTabText(idx, label)
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)
