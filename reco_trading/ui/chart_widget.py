@@ -82,6 +82,34 @@ class CandlestickItem(pg.GraphicsObject):
         return QRectF(self._picture.boundingRect())
 
 
+_FALLBACK_DARK = {
+    "background": "#0b1020",
+    "border": "#273658",
+    "text_primary": "#edf2ff",
+    "text_secondary": "#9fb2d9",
+    "info": "#5a8dff",
+    "warning": "#ffcc66",
+    "accent": "#7b61ff",
+}
+
+_FALLBACK_LIGHT = {
+    "background": "#f5f7fb",
+    "border": "#c7d3ea",
+    "text_primary": "#12213f",
+    "text_secondary": "#425a85",
+    "info": "#2c5bd8",
+    "warning": "#b7791f",
+    "accent": "#4b54e6",
+}
+
+
+def _resolve_theme_colors(theme: str) -> dict[str, str]:
+    if hasattr(ui_theme, "get_theme_colors"):
+        return dict(ui_theme.get_theme_colors(theme))  # type: ignore[attr-defined]
+    normalized = str(theme or "Dark").strip().lower()
+    return dict(_FALLBACK_LIGHT if normalized in {"light", "white", "blanco"} else _FALLBACK_DARK)
+
+
 class CandlestickChartWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()

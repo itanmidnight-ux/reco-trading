@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from reco_trading.ui.chart_widget import CandlestickChartWidget
+from reco_trading.ui import theme as ui_theme
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.theme import get_theme_colors
 from reco_trading.ui.widgets.stat_card import StatCard
@@ -45,6 +46,31 @@ class AnimatedButton(QPushButton):
         self._hover_anim.setStartValue(self.minimumWidth())
         self._hover_anim.setEndValue(target)
         self._hover_anim.start()
+
+def _theme_colors(theme: str) -> dict[str, str]:
+    if hasattr(ui_theme, "get_theme_colors"):
+        return dict(ui_theme.get_theme_colors(theme))  # type: ignore[attr-defined]
+    normalized = str(theme or "Dark").strip().lower()
+    if normalized in {"light", "white", "blanco"}:
+        return {
+            "panel": "#ffffff",
+            "panel_alt": "#f1f5fc",
+            "border": "#c7d3ea",
+            "text_primary": "#12213f",
+            "text_secondary": "#425a85",
+            "negative": "#d6405c",
+            "warning": "#b7791f",
+        }
+    return {
+        "panel": "#141d35",
+        "panel_alt": "#1a2643",
+        "border": "#273658",
+        "text_primary": "#edf2ff",
+        "text_secondary": "#9fb2d9",
+        "negative": "#ff5f7b",
+        "warning": "#ffcc66",
+    }
+
 
 class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
