@@ -103,7 +103,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
             border-radius: 14px;
             border: 1px solid rgba(122, 97, 255, 0.35);
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 rgba(22, 31, 56, 0.95), stop:1 rgba(31, 50, 89, 0.95));
+                stop:0 {colors['panel']}, stop:1 {colors['panel_alt']});
         }}
         QLabel#smallMetricValue {{
             color: {colors['text_primary']};
@@ -132,7 +132,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
             border: 1px solid {colors['border']};
             border-radius: 6px;
             text-align: center;
-            background: rgba(20, 29, 53, 0.8);
+            background: {colors['panel']};
             min-height: 12px;
         }}
         QProgressBar::chunk {{
@@ -151,7 +151,7 @@ def app_stylesheet(theme: str = "Dark") -> str:
             border: 1px solid {colors['border']};
             border-radius: 8px;
             padding: 8px 12px;
-            color: white;
+            color: {colors['text_primary']};
             font-weight: 600;
         }}
         QPushButton:hover {{

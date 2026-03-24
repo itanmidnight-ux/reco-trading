@@ -8,6 +8,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QBrush, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from reco_trading.ui.theme import get_theme_colors
 
 BG_COLOR = "#131722"
 GRID_COLOR = "#2a2f3a"
@@ -86,6 +87,7 @@ class CandlestickChartWidget(QWidget):
         super().__init__()
         self._candles: list[Candle] = []
         self._last_signature: tuple[tuple[float, float, float, float, float], ...] = tuple()
+        self._theme_name = "Dark"
 
         layout = QVBoxLayout(self)
         self._status = QLabel("Waiting for engine candle stream…")
@@ -164,6 +166,7 @@ class CandlestickChartWidget(QWidget):
         self._graphics.scene().sigMouseMoved.connect(self._on_mouse_moved)
         self._rsi_plot.setXLink(self._price_plot)
         self._macd_plot.setXLink(self._price_plot)
+        self.set_theme("Dark")
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
