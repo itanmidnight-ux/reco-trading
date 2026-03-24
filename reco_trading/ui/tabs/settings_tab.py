@@ -61,7 +61,7 @@ class SettingsTab(QWidget):
         self.default_tf = QComboBox()
         self.default_tf.addItems(["1m / 5m", "5m / 15m", "15m / 1h"])
         self.investment_mode = QComboBox()
-        self.investment_mode.addItems(["Conservative", "Balanced", "Aggressive", "Custom"])
+        self.investment_mode.addItems(["Conservative", "Balanced", "Aggressive", "Auto-Optimized", "Custom"])
         self.capital_limit = QDoubleSpinBox()
         self.capital_limit.setRange(0.0, 10_000_000.0)
         self.capital_limit.setDecimals(2)
@@ -111,6 +111,9 @@ class SettingsTab(QWidget):
         self.simulation_hint = QLabel("Estimated max order: 0.00 USDT")
         self.simulation_hint.setObjectName("metricLabel")
         visual_layout.addWidget(self.simulation_hint)
+        self.optimization_hint = QLabel("Optimizer: waiting for account snapshot")
+        self.optimization_hint.setObjectName("metricLabel")
+        visual_layout.addWidget(self.optimization_hint)
 
         creds_panel = QFrame()
         creds_panel.setObjectName("metricCard")
@@ -231,6 +234,11 @@ class SettingsTab(QWidget):
             self.max_allocation.setValue(35.0)
             self.reserve_ratio.setValue(8.0)
             self.cash_buffer.setValue(5.0)
+        elif normalized == "auto-optimized":
+            self.risk_per_trade.setValue(0.8)
+            self.max_allocation.setValue(18.0)
+            self.reserve_ratio.setValue(18.0)
+            self.cash_buffer.setValue(12.0)
         self._emit()
 
     def _on_default_pair_changed(self, pair: str) -> None:
@@ -265,6 +273,7 @@ class SettingsTab(QWidget):
                 "default_pair": self.default_pair.currentText(),
                 "default_timeframe": self.default_tf.currentText(),
                 "investment_mode": self.investment_mode.currentText(),
+                "dynamic_exit_enabled": self.investment_mode.currentText().strip().lower() == "auto-optimized",
                 "capital_limit_usdt": self.capital_limit.value(),
                 "symbol_capital_limits": dict(self._symbol_capital_limits),
                 "risk_per_trade_fraction": self.risk_per_trade.value() / 100.0,
@@ -297,6 +306,16 @@ class SettingsTab(QWidget):
             if isinstance(symbol_limits, dict):
                 self._symbol_capital_limits = {str(k): float(v) for k, v in symbol_limits.items() if float(v) > 0}
                 self._on_default_pair_changed(self.default_pair.currentText())
+            optimized_risk = runtime.get("risk_per_trade_fraction")
+            optimized_alloc = runtime.get("max_trade_balance_fraction")
+            optimized_capital = runtime.get("capital_limit_usdt")
+            if optimized_risk is not None and optimized_alloc is not None:
+                self.optimization_hint.setText(
+                    "Optimizer: "
+                    f"risk {float(optimized_risk)*100:.2f}% | "
+                    f"allocation {float(optimized_alloc)*100:.2f}% | "
+                    f"capital {float(optimized_capital or 0.0):.2f} USDT"
+                )
         except Exception:
             pass
         finally:
