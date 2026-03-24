@@ -3,8 +3,9 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QLabel, QMainWindow, QMessageBox, QStatusBar, QTabWidget
 
+from reco_trading.ui.components.dashboard_enhancer import enhance_dashboard_widget
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.tabs.alerts_tab import AlertsTab
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
@@ -58,6 +59,18 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.system_tab, tr("tab.system", self._current_language))
         self.setCentralWidget(tabs)
         self.tabs = tabs
+
+        self.status_bar = QStatusBar(self)
+        self.setStatusBar(self.status_bar)
+        self.status_mode = QLabel("Mode: INITIALIZING")
+        self.status_pair = QLabel("Pair: -")
+        self.status_latency = QLabel("Latency: - ms")
+        self.status_render = QLabel("UI: - ms")
+        self.status_bar.addPermanentWidget(self.status_mode)
+        self.status_bar.addPermanentWidget(self.status_pair)
+        self.status_bar.addPermanentWidget(self.status_latency)
+        self.status_bar.addPermanentWidget(self.status_render)
+
         self.tab_fade = QPropertyAnimation(self, b"windowOpacity", self)
         self.tabs.currentChanged.connect(self._animate_current_tab)
 
@@ -74,6 +87,7 @@ class MainWindow(QMainWindow):
         self._last_ui_render_ms = 0.0
         self._ui_lag_detected = False
         self._apply_language(self._current_language)
+        enhance_dashboard_widget(self)
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
@@ -97,6 +111,11 @@ class MainWindow(QMainWindow):
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         self._last_ui_render_ms = elapsed_ms
         self._ui_lag_detected = elapsed_ms >= max(120.0, self.refresh_timer.interval() * 0.8)
+        self.status_mode.setText(f"Mode: {str(enriched_state.get('status', 'UNKNOWN')).upper()}")
+        self.status_pair.setText(f"Pair: {enriched_state.get('pair', '-')}")
+        latency = (enriched_state.get('system') or {}).get('api_latency_ms', '-')
+        self.status_latency.setText(f"Latency: {latency} ms")
+        self.status_render.setText(f"UI: {elapsed_ms:.1f} ms")
 
     def _refresh_from_snapshot(self) -> None:
         if (time.monotonic() - self._last_state_event_at) < 0.25:

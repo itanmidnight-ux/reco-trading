@@ -116,11 +116,23 @@ def app_stylesheet(theme: str = "Dark") -> str:
             font-weight: 700;
             letter-spacing: 0.6px;
         }}
-        QTableWidget, QTextEdit {{
+        QTableWidget, QTextEdit, QListWidget {{
             background: {colors['panel']};
             border: 1px solid {colors['border']};
             border-radius: 10px;
             gridline-color: {colors['border']};
+            alternate-background-color: {colors['panel_alt']};
+        }}
+        QTableWidget::item, QListWidget::item {{
+            padding: 6px 8px;
+            border-bottom: 1px solid rgba(127, 147, 191, 0.16);
+        }}
+        QTableWidget::item:selected, QListWidget::item:selected {{
+            background: rgba(90, 141, 255, 0.28);
+            color: {colors['text_primary']};
+        }}
+        QTableWidget::item:hover, QListWidget::item:hover {{
+            background: rgba(90, 141, 255, 0.16);
         }}
         QHeaderView::section {{
             background: {colors['panel_alt']};
@@ -168,6 +180,23 @@ def app_stylesheet(theme: str = "Dark") -> str:
             background: #2a3557;
             color: {colors['neutral']};
         }}
+
+        QStatusBar {
+            background: {colors['panel']};
+            color: {colors['text_secondary']};
+            border-top: 1px solid {colors['border']};
+            padding: 4px;
+        }
+        QStatusBar QLabel {
+            color: {colors['text_secondary']};
+            border: 1px solid {colors['border']};
+            border-radius: 8px;
+            padding: 4px 8px;
+            margin-left: 4px;
+            background: {colors['panel_alt']};
+            font-size: 11px;
+            font-weight: 600;
+        }
         """
         return style if isinstance(style, str) else ""
     except Exception:
