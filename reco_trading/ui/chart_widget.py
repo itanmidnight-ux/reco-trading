@@ -8,7 +8,6 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRectF
 from PySide6.QtGui import QBrush, QPainter, QPen, QPicture
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
-from reco_trading.ui.theme import get_theme_colors
 
 BG_COLOR = "#131722"
 GRID_COLOR = "#2a2f3a"
@@ -104,8 +103,6 @@ _FALLBACK_LIGHT = {
 
 
 def _resolve_theme_colors(theme: str) -> dict[str, str]:
-    if hasattr(ui_theme, "get_theme_colors"):
-        return dict(ui_theme.get_theme_colors(theme))  # type: ignore[attr-defined]
     normalized = str(theme or "Dark").strip().lower()
     return dict(_FALLBACK_LIGHT if normalized in {"light", "white", "blanco"} else _FALLBACK_DARK)
 
@@ -195,6 +192,40 @@ class CandlestickChartWidget(QWidget):
         self._rsi_plot.setXLink(self._price_plot)
         self._macd_plot.setXLink(self._price_plot)
         self.set_theme("Dark")
+
+
+    def set_theme(self, theme: str = "Dark") -> None:
+        self._theme_name = theme or "Dark"
+        colors = _resolve_theme_colors(self._theme_name)
+        background = colors.get("background", BG_COLOR)
+        border = colors.get("border", GRID_COLOR)
+        text_primary = colors.get("text_primary", TEXT_COLOR)
+        text_secondary = colors.get("text_secondary", TEXT_COLOR)
+        info = colors.get("info", ACCENT_COLOR)
+        warning = colors.get("warning", EMA_MID_COLOR)
+        accent = colors.get("accent", EMA_SLOW_COLOR)
+
+        pg.setConfigOptions(antialias=True, background=background, foreground=text_primary)
+        self._graphics.setBackground(background)
+
+        for plot in (self._price_plot, self._rsi_plot, self._macd_plot):
+            plot.getViewBox().setBackgroundColor(background)
+            plot.showGrid(x=True, y=True, alpha=0.22)
+            plot.getAxis("left").setTextPen(pg.mkColor(text_primary))
+            plot.getAxis("bottom").setTextPen(pg.mkColor(text_primary))
+            plot.getAxis("left").setPen(pg.mkColor(border))
+            plot.getAxis("bottom").setPen(pg.mkColor(border))
+
+        self._ema9_line.setPen(pg.mkPen(info, width=1.5))
+        self._ema21_line.setPen(pg.mkPen(warning, width=1.4))
+        self._ema50_line.setPen(pg.mkPen(accent, width=1.2))
+        self._last_price_line.setPen(pg.mkPen(info, width=1, style=pg.QtCore.Qt.PenStyle.DashLine))
+        self._last_price_label.setColor(pg.mkColor(text_primary))
+        self._rsi_line.setPen(pg.mkPen(text_primary, width=1.2))
+        self._macd_line.setPen(pg.mkPen(info, width=1.0))
+        self._signal_line.setPen(pg.mkPen(warning, width=1.0))
+        self._crosshair_v.setPen(pg.mkPen(text_secondary, width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
+        self._crosshair_h.setPen(pg.mkPen(text_secondary, width=0.8, style=pg.QtCore.Qt.PenStyle.DotLine))
 
     def update_from_snapshot(self, snapshot: dict[str, Any]) -> None:
         raw_candles = snapshot.get("candles_5m", [])
