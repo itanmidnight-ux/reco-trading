@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QProgressBar,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -47,7 +49,17 @@ class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
         self.state_manager = state_manager
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(self.scroll)
+
+        content = QWidget()
+        self.scroll.setWidget(content)
+        root = QVBoxLayout(content)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(10)
 
@@ -57,7 +69,20 @@ class DashboardTab(QWidget):
 
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
         self.top_bar.setObjectName("statusRibbon")
+        self.top_bar.setStyleSheet(
+            "padding:8px 12px; border-radius:12px; "
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1f2a44, stop:1 #111827);"
+            "color:#d9e6ff; border:1px solid #2f3b59;"
+        )
         root.addWidget(self.top_bar)
+
+        self.capital_banner = QLabel("Profile UNKNOWN • Operable capital -- • Reserve --")
+        self.capital_banner.setObjectName("smallMetricValue")
+        self.capital_banner.setWordWrap(True)
+        self.capital_banner.setStyleSheet(
+            "padding:6px 10px; border-radius:10px; background:#111827; border:1px solid #243049; color:#b8c7e3;"
+        )
+        root.addWidget(self.capital_banner)
 
         self.hero_panel = self._panel()
         hero_layout = QGridLayout(self.hero_panel)
@@ -68,9 +93,11 @@ class DashboardTab(QWidget):
             "signal": StatCard("Signal Quality"),
             "daily_pnl": StatCard("Session PnL"),
             "exposure": StatCard("Current Exposure"),
+            "capital": StatCard("Capital Profile"),
+            "operable": StatCard("Operable Capital"),
         }
         for i, card in enumerate(self.hero_cards.values()):
-            hero_layout.addWidget(card, 0, i)
+            hero_layout.addWidget(card, i // 3, i % 3)
         root.addWidget(self.hero_panel)
 
         self.position_panel = self._panel()
@@ -89,11 +116,6 @@ class DashboardTab(QWidget):
         }
         for i, card in enumerate(self.pos_cards.values()):
             position_layout.addWidget(card, 1 + i // 4, i % 4)
-        self.pnl_bar = QProgressBar()
-        self.pnl_bar.setRange(-100, 100)
-        self.pnl_bar.setValue(0)
-        self.pnl_bar.setTextVisible(False)
-        position_layout.addWidget(self.pnl_bar, 2, 0, 1, 4)
         root.addWidget(self.position_panel)
         self.position_panel.setVisible(False)
 
@@ -138,6 +160,8 @@ class DashboardTab(QWidget):
             "btc_balance": StatCard("BTC Balance", compact=True),
             "btc_value": StatCard("BTC Value", compact=True),
             "total_equity": StatCard("Total Equity", compact=True),
+            "operable_capital": StatCard("Operable Capital", compact=True),
+            "capital_profile": StatCard("Capital Profile", compact=True),
             "daily_pnl": StatCard("Daily PnL", compact=True),
             "trades_today": StatCard("Trades Today", compact=True),
             "win_rate": StatCard("Win Rate", compact=True),
@@ -159,8 +183,21 @@ class DashboardTab(QWidget):
         self.feed_meta = QLabel("No alerts yet")
         self.feed_meta.setObjectName("metricLabel")
         activity_layout.addWidget(self.feed_meta)
+        self.execution_insight = QLabel("No execution insights yet")
+        self.execution_insight.setWordWrap(True)
+        self.execution_insight.setObjectName("metricLabel")
+        activity_layout.addWidget(self.execution_insight)
+        self.health_label = QLabel("Health: waiting metrics")
+        self.health_label.setWordWrap(True)
+        self.health_label.setObjectName("metricLabel")
+        activity_layout.addWidget(self.health_label)
+        self.decision_trace_label = QLabel("Decision trace unavailable")
+        self.decision_trace_label.setWordWrap(True)
+        self.decision_trace_label.setObjectName("metricLabel")
+        activity_layout.addWidget(self.decision_trace_label)
 
         self.chart_panel = self._panel()
+        self.chart_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         chart_layout = QVBoxLayout(self.chart_panel)
         chart_layout.setContentsMargins(10, 10, 10, 10)
         chart_layout.addWidget(self._title("Realtime Chart"))
@@ -232,6 +269,12 @@ class DashboardTab(QWidget):
     def _panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("panelCard")
+        panel.setStyleSheet(
+            "QFrame#panelCard {"
+            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #131c2e, stop:1 #0f172a);"
+            "border:1px solid #243049; border-radius:14px;"
+            "}"
+        )
         return panel
 
     def _title(self, title: str) -> QLabel:
@@ -244,6 +287,7 @@ class DashboardTab(QWidget):
         price = _fmt_num(state.get("current_price", state.get("price")), 2)
         trend = str(state.get("trend", "NEUTRAL"))
         status = str(state.get("status", "-"))
+        risk_metrics = state.get("risk_metrics", {}) or {}
         self._sync_control_buttons(status)
         self.close_active_trade_btn.setVisible(bool(state.get("has_open_position", False)))
         has_position = bool(state.get("has_open_position", False))
@@ -264,25 +308,31 @@ class DashboardTab(QWidget):
             self.pos_cards["sl"].set_value(_fmt_num(sl, 2), tone="negative")
             self.pos_cards["tp"].set_value(_fmt_num(tp, 2), tone="positive")
             self.pos_cards["size"].set_value(_fmt_num(qty, 6))
-            if tp != sl:
-                pct = int(((price_value - sl) / (tp - sl)) * 100)
-                pct = max(-100, min(100, pct))
-                self.pnl_bar.setValue(pct)
-                color = "#16c784" if pct > 50 else "#f0b90b" if pct > 0 else "#ea3943"
-                self.pnl_bar.setStyleSheet(f"QProgressBar::chunk {{ background: {color}; }}")
-            else:
-                self.pnl_bar.setValue(0)
-        else:
-            self.pnl_bar.setValue(0)
 
         signal = str(state.get("signal", "NEUTRAL")).upper()
         confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
         self.top_bar.setText(
             f"{pair}  •  Price {price}  •  {signal} {confidence}%  •  {status.replace('_', ' ').title()}"
         )
-        self.top_bar.setStyleSheet(f"color: {status_color(status)};")
+        self.top_bar.setStyleSheet(
+            "padding:8px 12px; border-radius:12px; "
+            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1f2a44, stop:1 #111827); "
+            f"color: {status_color(status)}; border:1px solid #2f3b59;"
+        )
+        capital_profile = str(state.get("capital_profile") or risk_metrics.get("capital_profile") or "UNKNOWN")
+        operable_capital = _as_float(state.get("operable_capital_usdt", risk_metrics.get("operable_capital_usdt")), 0.0)
+        reserve_ratio = _as_float(state.get("capital_reserve_ratio", risk_metrics.get("capital_reserve_ratio")), 0.0)
+        cash_buffer = _as_float(state.get("min_cash_buffer_usdt", risk_metrics.get("min_cash_buffer_usdt")), 0.0)
+        self.capital_banner.setText(
+            f"Profile {capital_profile} • Operable capital {_fmt_num(operable_capital, 2)} USDT • "
+            f"Reserve {reserve_ratio * 100:.1f}% • Buffer {_fmt_num(cash_buffer, 2)} USDT"
+        )
+        banner_tint = "#16324f" if operable_capital > 0 else "#4a2c2c"
+        self.capital_banner.setStyleSheet(
+            f"padding:6px 10px; border-radius:10px; background:{banner_tint}; border:1px solid #2f3b59; color:#d6e4ff;"
+        )
 
-        exposure = _as_float(state.get("risk_metrics", {}).get("current_exposure"), 0.0)
+        exposure = _as_float(risk_metrics.get("current_exposure"), 0.0)
         self.hero_cards["price"].set_value(f"{price} USDT", tone="info", badge=pair)
         self.hero_cards["signal"].set_value(
             f"{signal} • {confidence}%",
@@ -299,6 +349,12 @@ class DashboardTab(QWidget):
             f"{exposure * 100:.1f}%",
             tone="warning" if exposure >= 0.6 else "neutral",
             badge=str(state.get("cooldown", "READY")),
+        )
+        self.hero_cards["capital"].set_value(capital_profile, tone=_profile_tone(capital_profile), badge=f"Reserve {reserve_ratio * 100:.1f}%")
+        self.hero_cards["operable"].set_value(
+            f"{operable_capital:.2f} USDT",
+            tone="info" if operable_capital > 0 else "warning",
+            badge=f"Buffer {_fmt_num(cash_buffer, 2)}",
         )
 
         self.market_cards["spread"].set_value(_fmt_num(state.get("spread"), 6))
@@ -331,6 +387,8 @@ class DashboardTab(QWidget):
         self.account_cards["btc_balance"].set_value(f"{_fmt_num(state.get('btc_balance'), 6)} BTC")
         self.account_cards["btc_value"].set_value(f"{_fmt_num(state.get('btc_value'), 2)} USDT")
         self.account_cards["total_equity"].set_value(f"{_fmt_num(state.get('total_equity'), 2)} USDT")
+        self.account_cards["operable_capital"].set_value(f"{_fmt_num(operable_capital, 2)} USDT")
+        self.account_cards["capital_profile"].set_value(capital_profile, tone=_profile_tone(capital_profile))
         daily_pnl = float(state.get("daily_pnl", 0) or 0)
         self.account_cards["daily_pnl"].set_value(f"{daily_pnl:.2f} USDT")
         self.account_cards["daily_pnl"].value.setStyleSheet(
@@ -350,8 +408,39 @@ class DashboardTab(QWidget):
             f"Stale {_fmt_num(system.get('ui_staleness_ms'), 0)} ms • "
             f"{lag_text} • "
             f"Mode {state.get('runtime_settings', {}).get('investment_mode', 'Balanced')} • "
-            f"Cap {_fmt_num(state.get('runtime_settings', {}).get('capital_limit_usdt'), 2)} USDT"
+            f"Cap {_fmt_num(state.get('runtime_settings', {}).get('capital_limit_usdt'), 2)} USDT • "
+            f"Profile {capital_profile}"
         )
+        setup_quality = _as_float(state.get("signal_quality_score", risk_metrics.get("setup_quality_score")), 0.0)
+        adaptive_mult = _as_float(risk_metrics.get("adaptive_size_multiplier"), 1.0)
+        advanced_mult = _as_float(risk_metrics.get("advanced_size_multiplier"), 1.0)
+        advanced_reason = str(risk_metrics.get("advanced_risk_reason", "OK"))
+        raw_signal = str(state.get("raw_signal", signal)).upper()
+        self.execution_insight.setText(
+            " • ".join(
+                [
+                    f"Raw {raw_signal}",
+                    f"Quality {setup_quality * 100:.0f}%",
+                    f"Adaptive x{adaptive_mult:.2f}",
+                    f"Advanced x{advanced_mult:.2f}",
+                    f"Risk {advanced_reason}",
+                ]
+            )
+        )
+        latency_p95 = _as_float(state.get("api_latency_p95_ms"), 0.0)
+        stale_ratio = _as_float(state.get("stale_market_data_ratio"), 0.0)
+        reconnects = int(state.get("exchange_reconnections", 0) or 0)
+        breaker = int(state.get("circuit_breaker_trips", 0) or 0)
+        db_status = str(state.get("database_status", "UNKNOWN"))
+        ex_status = str(state.get("exchange_status", "UNKNOWN"))
+        self.health_label.setText(
+            f"Health p95={latency_p95:.1f}ms • stale={stale_ratio:.1%} • reconnect={reconnects} • CB={breaker} • DB={db_status} • EX={ex_status}"
+        )
+        trace = state.get("decision_trace", {}) or {}
+        factor_scores = trace.get("factor_scores", {}) if isinstance(trace, dict) else {}
+        compact_scores = ", ".join(f"{k}:{float(v):+.2f}" for k, v in list(factor_scores.items())[:4]) or "n/a"
+        decision_reason = str(state.get("decision_reason", "-"))
+        self.decision_trace_label.setText(f"Decision trace: {compact_scores} • reason={decision_reason}")
         self.chart.update_from_snapshot(state)
 
 
@@ -368,6 +457,19 @@ def signal_color(signal: str) -> str:
 
 def _signal_tone(signal: str) -> str:
     return {"BUY": "positive", "SELL": "negative"}.get(signal, "neutral")
+
+
+def _profile_tone(profile: str) -> str:
+    normalized = str(profile).upper()
+    if normalized == "MICRO":
+        return "warning"
+    if normalized == "SMALL":
+        return "info"
+    if normalized == "MEDIUM":
+        return "neutral"
+    if normalized == "LARGE":
+        return "positive"
+    return "neutral"
 
 
 def _format_feed_entry(entry: dict[str, Any]) -> str:

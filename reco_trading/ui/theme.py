@@ -26,11 +26,14 @@ def app_stylesheet() -> str:
             font-family: Inter, Segoe UI, Arial;
             selection-background-color: rgba(122, 97, 255, 0.4);
         }}
-        QMainWindow, QTabWidget::pane {{
+        QMainWindow, QTabWidget::pane, QScrollArea {{
             border: 1px solid {COLORS['border']};
             border-radius: 12px;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                 stop:0 {COLORS['background']}, stop:1 {COLORS['background_alt']});
+        }}
+        QScrollArea > QWidget > QWidget {{
+            background: transparent;
         }}
         QTabBar::tab {{
             background: {COLORS['panel']};
@@ -118,7 +121,7 @@ def app_stylesheet() -> str:
             background-color: {COLORS['info']};
             border-radius: 6px;
         }}
-        QLineEdit, QComboBox, QSpinBox {{
+        QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
             background: #101933;
             border: 1px solid {COLORS['border']};
             border-radius: 8px;

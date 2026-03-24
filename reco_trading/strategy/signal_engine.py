@@ -37,11 +37,34 @@ class SignalEngine:
         self.order_flow_analyzer = OrderFlowAnalyzer()
 
     def generate(self, df5m: pd.DataFrame, df15m: pd.DataFrame) -> SignalBundle:
+        if len(df5m) < 2 or len(df15m) < 2:
+            return SignalBundle(
+                trend="NEUTRAL",
+                momentum="NEUTRAL",
+                volume="NEUTRAL",
+                volatility="NEUTRAL",
+                structure="NEUTRAL",
+                order_flow="NEUTRAL",
+                regime="INSUFFICIENT_DATA",
+                regime_trade_allowed=False,
+                size_multiplier=0.0,
+                atr_ratio=0.0,
+            )
+
         row = df5m.iloc[-1]
         prev = df5m.iloc[-2]
         confirm = df15m.iloc[-1]
 
-        trend = "BUY" if row["ema20"] > row["ema50"] and confirm["ema20"] > confirm["ema50"] else "SELL"
+        primary_bull = row["ema20"] > row["ema50"]
+        confirm_bull = confirm["ema20"] > confirm["ema50"]
+        primary_bear = row["ema20"] < row["ema50"]
+        confirm_bear = confirm["ema20"] < confirm["ema50"]
+        if primary_bull and confirm_bull:
+            trend = "BUY"
+        elif primary_bear and confirm_bear:
+            trend = "SELL"
+        else:
+            trend = "NEUTRAL"
         if row["rsi"] > 52:
             momentum = "BUY"
         elif row["rsi"] < 48:

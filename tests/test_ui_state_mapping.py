@@ -35,12 +35,18 @@ def test_tabs_accept_full_snapshot_without_errors() -> None:
         "volatility_regime": "NORMAL_VOLATILITY",
         "order_flow": "BUY",
         "signal": "HOLD",
+        "raw_signal": "BUY",
         "confidence": 0.65,
+        "signal_quality_score": 0.82,
         "balance": 1000.0,
         "equity": 1020.0,
         "btc_balance": 0.01,
         "btc_value": 500.0,
         "total_equity": 1500.0,
+        "capital_profile": "MEDIUM",
+        "operable_capital_usdt": 1200.0,
+        "capital_reserve_ratio": 0.15,
+        "min_cash_buffer_usdt": 10.0,
         "daily_pnl": -12.5,
         "position_side": "BUY",
         "entry_price": 49800.0,
@@ -58,6 +64,10 @@ def test_tabs_accept_full_snapshot_without_errors() -> None:
             "max_concurrent_trades": 1,
             "daily_drawdown": -0.02,
             "current_exposure": 0.35,
+            "capital_profile": "MEDIUM",
+            "operable_capital_usdt": 1200.0,
+            "setup_quality_score": 0.82,
+            "adaptive_size_multiplier": 0.95,
         },
         "system": {
             "exchange_status": "CONNECTED",
@@ -117,12 +127,28 @@ def test_dashboard_highlight_cards_and_feed_render_rich_snapshot() -> None:
             "system": {"api_latency_ms": 28, "ui_render_ms": 14, "ui_staleness_ms": 32, "ui_lag_detected": False},
             "runtime_settings": {"investment_mode": "Balanced", "capital_limit_usdt": 300.0},
             "logs": [{"time": "12:00:00", "level": "INFO", "message": "signal generated"}],
+            "capital_profile": "SMALL",
+            "operable_capital_usdt": 180.0,
+            "capital_reserve_ratio": 0.25,
+            "min_cash_buffer_usdt": 7.5,
+            "raw_signal": "BUY",
+            "signal_quality_score": 0.91,
+            "risk_metrics": {
+                "current_exposure": 0.35,
+                "adaptive_size_multiplier": 0.85,
+                "advanced_size_multiplier": 0.90,
+                "advanced_risk_reason": "OK",
+            },
         }
     )
 
     assert "BUY • 87%" in tab.hero_cards["signal"].value.text()
     assert "UI 14" in tab.feed_meta.text()
     assert "Balanced" in tab.feed_meta.text()
+    assert "Profile SMALL" in tab.feed_meta.text()
+    assert "SMALL" in tab.hero_cards["capital"].value.text()
+    assert "180.00 USDT" in tab.hero_cards["operable"].value.text()
+    assert "Quality 91%" in tab.execution_insight.text()
     assert "signal generated" in tab.feed.text()
 
 

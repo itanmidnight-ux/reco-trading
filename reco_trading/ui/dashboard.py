@@ -25,11 +25,22 @@ class DashboardSnapshot:
     balance: float | None = None
     equity: float | None = None
     daily_pnl: float | None = None
+    operable_capital_usdt: float | None = None
+    capital_profile: str | None = None
     trades_today: int = 0
     win_rate: float | None = None
     last_trade: str | None = None
     cooldown: str | None = None
     signals: dict[str, str] = field(default_factory=dict)
+    decision_trace: dict[str, Any] = field(default_factory=dict)
+    decision_gating: dict[str, Any] = field(default_factory=dict)
+    decision_reason: str | None = None
+    api_latency_p95_ms: float | None = None
+    stale_market_data_ratio: float | None = None
+    exchange_reconnections: int = 0
+    circuit_breaker_trips: int = 0
+    database_status: str | None = None
+    exchange_status: str | None = None
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DashboardSnapshot":
@@ -48,11 +59,22 @@ class DashboardSnapshot:
             balance=_to_float(data.get("balance")),
             equity=_to_float(data.get("equity")),
             daily_pnl=_to_float(data.get("daily_pnl")),
+            operable_capital_usdt=_to_float(data.get("operable_capital_usdt")),
+            capital_profile=_to_text(data.get("capital_profile")),
             trades_today=int(data.get("trades_today", 0) or 0),
             win_rate=_to_float(data.get("win_rate")),
             last_trade=_to_text(data.get("last_trade")),
             cooldown=_to_text(data.get("cooldown")),
             signals=dict(data.get("signals", {}) or {}),
+            decision_trace=dict(data.get("decision_trace", {}) or {}),
+            decision_gating=dict(data.get("decision_gating", {}) or {}),
+            decision_reason=_to_text(data.get("decision_reason")),
+            api_latency_p95_ms=_to_float(data.get("api_latency_p95_ms")),
+            stale_market_data_ratio=_to_float(data.get("stale_market_data_ratio")),
+            exchange_reconnections=int(data.get("exchange_reconnections", 0) or 0),
+            circuit_breaker_trips=int(data.get("circuit_breaker_trips", 0) or 0),
+            database_status=_to_text(data.get("database_status")),
+            exchange_status=_to_text(data.get("exchange_status")),
         )
 
 
@@ -98,6 +120,8 @@ class TerminalDashboard:
             portfolio.add_column()
             portfolio.add_row("Balance", f"{_fmt_num(snap.balance, 4)} USDT")
             portfolio.add_row("Equity", f"{_fmt_num(snap.equity, 4)} USDT")
+            portfolio.add_row("Operable Capital", f"{_fmt_num(snap.operable_capital_usdt, 4)} USDT")
+            portfolio.add_row("Capital Profile", snap.capital_profile or "-")
             portfolio.add_row("Daily PnL", f"{_fmt_num(snap.daily_pnl, 4)} USDT")
             portfolio.add_row("Trades Today", str(snap.trades_today))
             portfolio.add_row("Win Rate", _fmt_pct(snap.win_rate))
@@ -110,12 +134,33 @@ class TerminalDashboard:
             for key in ["trend", "momentum", "volume", "volatility", "structure", "order_flow"]:
                 signal_table.add_row(key, str(snap.signals.get(key, "-")))
 
+            health = Table(title="System Health", expand=True)
+            health.add_column("Metric")
+            health.add_column("Value")
+            health.add_row("API latency p95", f"{_fmt_num(snap.api_latency_p95_ms, 2)} ms")
+            health.add_row("Stale market data", _fmt_pct(snap.stale_market_data_ratio))
+            health.add_row("Reconnections", str(snap.exchange_reconnections))
+            health.add_row("Circuit breaker trips", str(snap.circuit_breaker_trips))
+            health.add_row("DB", snap.database_status or "-")
+            health.add_row("Exchange", snap.exchange_status or "-")
+
+            decision = Table(title="Decision Trace", expand=True)
+            decision.add_column("Field")
+            decision.add_column("Value")
+            for factor, score in (snap.decision_trace.get("factor_scores") or {}).items():
+                decision.add_row(f"factor:{factor}", f"{float(score):+.3f}")
+            for gate, value in snap.decision_gating.items():
+                decision.add_row(f"gate:{gate}", str(value))
+            decision.add_row("reason", snap.decision_reason or "-")
+
             layout = Layout()
             layout.split_column(
                 Layout(Panel(headline, title="Executive Snapshot", border_style="bright_blue"), ratio=1),
                 Layout(Panel(status, title="Reco Trading Bot", border_style="cyan"), ratio=2),
                 Layout(Panel(portfolio, title="Portfolio & Risk"), ratio=2),
                 Layout(Panel(signal_table, border_style="magenta"), ratio=3),
+                Layout(Panel(health, border_style="green"), ratio=2),
+                Layout(Panel(decision, border_style="yellow"), ratio=3),
             )
             return Group(layout)
         except Exception as exc:  # noqa: BLE001

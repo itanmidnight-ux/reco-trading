@@ -124,6 +124,8 @@ class AnalyticsTab(QWidget):
         if slippage_values:
             avg_slippage = sum(slippage_values) / len(slippage_values)
             metric_rows.append(("Avg Slippage", f"{avg_slippage:.4%}"))
+        expectancy_rolling = sum(closed_pnls[-20:]) / max(len(closed_pnls[-20:]), 1) if closed_pnls else 0.0
+        metric_rows.append(("Expectancy Rolling(20)", f"{expectancy_rolling:.4f}"))
         self.analysis_table.setRowCount(0)
         for row, (name, value) in enumerate(metric_rows):
             self.analysis_table.insertRow(row)
@@ -155,3 +157,21 @@ class AnalyticsTab(QWidget):
             self.insights.addItem(f"Recommendation: {rec}")
             self.insights.addItem(f"Session PF: {pf_sess:.2f}")
             self.insights.addItem(f"Sharpe est.: {sharpe:.2f}")
+        regimes = {"trending": [], "ranging": []}
+        hourly: dict[int, list[float]] = {}
+        for trade in trade_history:
+            pnl = float(trade.get("pnl", 0) or 0)
+            regime = str(trade.get("regime", "ranging")).lower()
+            bucket = "trending" if "trend" in regime else "ranging"
+            regimes[bucket].append(pnl)
+            ts = str(trade.get("timestamp", ""))
+            hour = int(ts[11:13]) if len(ts) >= 13 and ts[11:13].isdigit() else 0
+            hourly.setdefault(hour, []).append(pnl)
+        for regime_name, pnls in regimes.items():
+            if pnls:
+                wins_reg = len([p for p in pnls if p > 0])
+                ratio = wins_reg / len(pnls)
+                self.insights.addItem(f"{regime_name.title()} W/L: {ratio:.1%}")
+        best_hours = sorted(((h, sum(v)) for h, v in hourly.items()), key=lambda x: x[1], reverse=True)[:3]
+        if best_hours:
+            self.insights.addItem("Heatmap hora top: " + ", ".join(f"{hour:02d}h={pnl:+.2f}" for hour, pnl in best_hours))
