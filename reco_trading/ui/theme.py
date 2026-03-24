@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-COLORS = {
+_DARK_COLORS = {
     "background": "#0b1020",
     "background_alt": "#111933",
     "panel": "#141d35",
@@ -16,29 +16,47 @@ COLORS = {
     "accent": "#7b61ff",
 }
 
+_LIGHT_COLORS = {
+    "background": "#f5f7fb",
+    "background_alt": "#e8edf7",
+    "panel": "#ffffff",
+    "panel_alt": "#f1f5fc",
+    "border": "#c7d3ea",
+    "text_primary": "#12213f",
+    "text_secondary": "#425a85",
+    "positive": "#0f9f6e",
+    "negative": "#d6405c",
+    "warning": "#b7791f",
+    "info": "#2c5bd8",
+    "neutral": "#6f84b0",
+    "accent": "#4b54e6",
+}
 
-def app_stylesheet() -> str:
+
+def app_stylesheet(theme: str = "Dark") -> str:
     try:
+        normalized = str(theme or "Dark").strip().lower()
+        colors = _LIGHT_COLORS if normalized in {"light", "white", "blanco"} else _DARK_COLORS
         style = f"""
         QWidget {{
-            background-color: {COLORS['background']};
-            color: {COLORS['text_primary']};
+            background-color: {colors['background']};
+            color: {colors['text_primary']};
             font-family: Inter, Segoe UI, Arial;
             selection-background-color: rgba(122, 97, 255, 0.4);
         }}
         QMainWindow, QTabWidget::pane, QScrollArea {{
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {colors['border']};
             border-radius: 12px;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {COLORS['background']}, stop:1 {COLORS['background_alt']});
+                stop:0 {colors['background']}, stop:1 {colors['background_alt']});
         }}
         QScrollArea > QWidget > QWidget {{
             background: transparent;
         }}
         QTabBar::tab {{
-            background: {COLORS['panel']};
-            color: {COLORS['text_secondary']};
-            border: 1px solid {COLORS['border']};
+            background: {colors['panel']};
+            color: {colors['text_secondary']};
+            border: 1px solid {colors['border']};
             border-bottom: none;
             padding: 11px 18px;
             margin-right: 6px;
@@ -47,38 +65,38 @@ def app_stylesheet() -> str:
             font-weight: 600;
         }}
         QTabBar::tab:hover {{
-            color: {COLORS['text_primary']};
-            background: {COLORS['panel_alt']};
+            color: {colors['text_primary']};
+            background: {colors['panel_alt']};
         }}
         QTabBar::tab:selected {{
             color: white;
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {COLORS['accent']}, stop:1 {COLORS['info']});
+                stop:0 {colors['accent']}, stop:1 {colors['info']});
         }}
         QFrame#metricCard, QFrame#panelCard {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                stop:0 {COLORS['panel']}, stop:1 {COLORS['panel_alt']});
-            border: 1px solid {COLORS['border']};
+                stop:0 {colors['panel']}, stop:1 {colors['panel_alt']});
+            border: 1px solid {colors['border']};
             border-radius: 12px;
         }}
         QLabel#sectionTitle {{
-            color: {COLORS['text_primary']};
+            color: {colors['text_primary']};
             font-size: 17px;
             font-weight: 700;
             letter-spacing: 0.4px;
         }}
         QLabel#metricLabel {{
-            color: {COLORS['text_secondary']};
+            color: {colors['text_secondary']};
             font-size: 11px;
             text-transform: uppercase;
         }}
         QLabel#metricValue {{
-            color: {COLORS['text_primary']};
+            color: {colors['text_primary']};
             font-size: 19px;
             font-weight: 700;
         }}
         QLabel#statusRibbon {{
-            color: {COLORS['text_primary']};
+            color: {colors['text_primary']};
             font-size: 15px;
             font-weight: 700;
             padding: 12px 16px;
@@ -88,49 +106,49 @@ def app_stylesheet() -> str:
                 stop:0 rgba(22, 31, 56, 0.95), stop:1 rgba(31, 50, 89, 0.95));
         }}
         QLabel#smallMetricValue {{
-            color: {COLORS['text_primary']};
+            color: {colors['text_primary']};
             font-size: 14px;
             font-weight: 600;
         }}
         QLabel#metricBadge {{
-            color: {COLORS['text_secondary']};
+            color: {colors['text_secondary']};
             font-size: 10px;
             font-weight: 700;
             letter-spacing: 0.6px;
         }}
         QTableWidget, QTextEdit {{
-            background: {COLORS['panel']};
-            border: 1px solid {COLORS['border']};
+            background: {colors['panel']};
+            border: 1px solid {colors['border']};
             border-radius: 10px;
-            gridline-color: {COLORS['border']};
+            gridline-color: {colors['border']};
         }}
         QHeaderView::section {{
-            background: {COLORS['panel_alt']};
-            color: {COLORS['text_secondary']};
+            background: {colors['panel_alt']};
+            color: {colors['text_secondary']};
             border: none;
             padding: 7px;
         }}
         QProgressBar {{
-            border: 1px solid {COLORS['border']};
+            border: 1px solid {colors['border']};
             border-radius: 6px;
             text-align: center;
             background: rgba(20, 29, 53, 0.8);
             min-height: 12px;
         }}
         QProgressBar::chunk {{
-            background-color: {COLORS['info']};
+            background-color: {colors['info']};
             border-radius: 6px;
         }}
         QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-            background: #101933;
-            border: 1px solid {COLORS['border']};
+            background: {"#ffffff" if colors is _LIGHT_COLORS else "#101933"};
+            border: 1px solid {colors['border']};
             border-radius: 8px;
             padding: 7px;
         }}
         QPushButton {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {COLORS['accent']}, stop:1 {COLORS['info']});
-            border: 1px solid {COLORS['border']};
+                stop:0 {colors['accent']}, stop:1 {colors['info']});
+            border: 1px solid {colors['border']};
             border-radius: 8px;
             padding: 8px 12px;
             color: white;
@@ -138,17 +156,17 @@ def app_stylesheet() -> str:
         }}
         QPushButton:hover {{
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                stop:0 {COLORS['info']}, stop:1 {COLORS['accent']});
-            border: 1px solid {COLORS['info']};
+                stop:0 {colors['info']}, stop:1 {colors['accent']});
+            border: 1px solid {colors['info']};
         }}
         QPushButton:pressed {{
             padding-top: 9px;
             padding-left: 13px;
-            background: {COLORS['panel_alt']};
+            background: {colors['panel_alt']};
         }}
         QPushButton:disabled {{
             background: #2a3557;
-            color: {COLORS['neutral']};
+            color: {colors['neutral']};
         }}
         """
         return style if isinstance(style, str) else ""
@@ -156,6 +174,6 @@ def app_stylesheet() -> str:
         return ""
 
 
-def dashboard_stylesheet() -> str:
+def dashboard_stylesheet(theme: str = "Dark") -> str:
     """Backward-compatible alias for the global application stylesheet."""
-    return app_stylesheet()
+    return app_stylesheet(theme=theme)

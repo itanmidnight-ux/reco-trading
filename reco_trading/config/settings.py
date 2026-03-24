@@ -35,14 +35,14 @@ class Settings(BaseSettings):
     # =========================
     # SIGNAL THRESHOLDS
     # =========================
-    min_signal_confidence: float = Field(default=0.55, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
+    min_signal_confidence: float = Field(default=0.62, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
     strong_signal_confidence: float = 0.85
     exceptional_signal_confidence: float = 0.90
     confidence_hold_threshold: float = 0.55
-    adx_min_threshold: float = 15.0
-    max_spread_ratio: float = 0.004
+    adx_min_threshold: float = 20.0
+    max_spread_ratio: float = 0.0025
     max_slippage_ratio: float = 0.003
-    min_volume_ratio: float = 0.7
+    min_volume_ratio: float = 0.9
     execution_model_enabled: bool = False
 
     # =========================
@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     enable_capital_profiles: bool = True
     enforce_fee_floor: bool = True
     estimated_fee_rate: float = 0.001
-    min_expected_reward_risk: float = 1.8
+    min_expected_reward_risk: float = 2.0
 
     # =========================
     # COOLDOWNS
