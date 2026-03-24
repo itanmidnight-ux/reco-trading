@@ -127,6 +127,7 @@ class BotEngine:
         self.observability = RuntimeObservability()
         self.investment_optimizer = InvestmentOptimizer()
         self._metrics_server_started = False
+        self._quote_to_usdt_cache: dict[str, tuple[float, datetime]] = {}
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -152,6 +153,8 @@ class BotEngine:
             "btc_balance": 0.0,
             "btc_value": 0.0,
             "total_equity": None,
+            "total_equity_usdt": None,
+            "account_currency": "USDT",
             "daily_pnl": None,
             "session_pnl": None,
             "trades_today": 0,
@@ -1229,7 +1232,7 @@ class BotEngine:
         self.snapshot["distance_to_support"] = intelligence.get("distance_to_support")
         self.snapshot["distance_to_resistance"] = intelligence.get("distance_to_resistance")
 
-    async def _fetch_balances(self) -> tuple[float, float]:
+    async def _fetch_balances(self) -> tuple[float, float, str, str]:
         payload = await self.client.fetch_balance()
         base_asset, quote_asset = split_symbol(self.symbol)
         quote_asset = quote_asset or "USDT"
@@ -1238,40 +1241,66 @@ class BotEngine:
         if isinstance(total_balances, dict):
             quote_balance = _as_float(total_balances.get(quote_asset), 0.0)
             base_balance = _as_float(total_balances.get(base_asset), 0.0)
-            return quote_balance, base_balance
+            return quote_balance, base_balance, quote_asset, base_asset
 
         quote = payload.get(quote_asset) if isinstance(payload, dict) else {}
         base = payload.get(base_asset) if isinstance(payload, dict) else {}
         quote_balance = _as_float((quote or {}).get("free"), 0.0)
         base_balance = _as_float((base or {}).get("free"), 0.0)
-        return quote_balance, base_balance
+        return quote_balance, base_balance, quote_asset, base_asset
+
+    async def _quote_to_usdt_rate(self, quote_asset: str) -> float:
+        normalized = str(quote_asset or "USDT").upper()
+        if normalized == "USDT":
+            return 1.0
+        now = datetime.now(timezone.utc)
+        cached = self._quote_to_usdt_cache.get(normalized)
+        if cached and (now - cached[1]).total_seconds() < 300:
+            return cached[0]
+        conversion_pairs = [f"{normalized}/USDT", f"USDT/{normalized}"]
+        for pair in conversion_pairs:
+            try:
+                ticker = await self.client.fetch_ticker(pair)
+            except Exception:  # noqa: BLE001
+                continue
+            last_price = _as_float((ticker or {}).get("last"), 0.0)
+            if last_price <= 0:
+                continue
+            rate = last_price if pair.startswith(normalized) else (1.0 / last_price)
+            self._quote_to_usdt_cache[normalized] = (rate, now)
+            return rate
+        return 1.0
 
     async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
-        usdt_balance, btc_balance = await self._fetch_balances()
+        quote_balance, base_balance, quote_asset, _base_asset = await self._fetch_balances()
         reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
-        btc_value = float(btc_balance * reference_price)
-        total_equity = float(usdt_balance + btc_value)
+        base_value_quote = float(base_balance * reference_price)
+        total_equity_quote = float(quote_balance + base_value_quote)
+        quote_to_usdt_rate = await self._quote_to_usdt_rate(quote_asset)
+        total_equity_usdt = float(total_equity_quote * quote_to_usdt_rate)
         session_pnl = float(await self.repository.get_session_pnl() or 0.0)
 
-        self.snapshot["balance"] = float(usdt_balance)
-        self.snapshot["btc_balance"] = float(btc_balance)
-        self.snapshot["btc_value"] = btc_value
-        self.snapshot["total_equity"] = total_equity
-        self.snapshot["equity"] = total_equity
+        self.snapshot["balance"] = float(quote_balance)
+        self.snapshot["btc_balance"] = float(base_balance)
+        self.snapshot["btc_value"] = base_value_quote
+        self.snapshot["total_equity"] = total_equity_quote
+        self.snapshot["total_equity_usdt"] = total_equity_usdt
+        self.snapshot["equity"] = total_equity_quote
+        self.snapshot["account_currency"] = quote_asset
         self.snapshot["daily_pnl"] = session_pnl
         self.snapshot["session_pnl"] = session_pnl
         self.snapshot["trades_today"] = self.trades_today
         self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else 0.0
 
         profile = self._current_capital_profile()
-        operable_capital = self._operable_equity_for_trading(total_equity, profile)
+        operable_capital = self._operable_equity_for_trading(total_equity_usdt, profile)
         self.snapshot["capital_profile"] = profile.name
         self.snapshot["operable_capital_usdt"] = operable_capital
 
         if self.starting_equity is None:
-            self.starting_equity = max(total_equity, 1.0)
-        self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
-        self._append_equity_point(total_equity)
+            self.starting_equity = max(total_equity_usdt, 1.0)
+        self.equity_peak = max(_as_float(self.equity_peak, total_equity_usdt), total_equity_usdt)
+        self._append_equity_point(total_equity_usdt)
 
     def _append_equity_point(self, equity: float) -> None:
         normalized = round(float(max(equity, 0.0)), 8)
@@ -1284,9 +1313,10 @@ class BotEngine:
         open_trades = await self.repository.get_open_trades(self.symbol)
         if not open_trades:
             return
-        usdt_balance, base_balance = await self._fetch_balances()
-        self.snapshot["balance"] = usdt_balance
+        quote_balance, base_balance, quote_asset, _base_asset = await self._fetch_balances()
+        self.snapshot["balance"] = quote_balance
         self.snapshot["btc_balance"] = base_balance
+        self.snapshot["account_currency"] = quote_asset
         latest = open_trades[0]
         if base_balance <= 0:
             await self._log("WARNING", "open_trade_found_without_base_balance")
@@ -1448,13 +1478,19 @@ class BotEngine:
         return max(min(equity, limit), 0.0)
 
     def _current_capital_profile(self) -> CapitalProfile:
-        equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)))
+        equity = self._equity_reference_usdt()
         if not hasattr(self, "capital_profile_manager") or self.capital_profile_manager is None:
             self.capital_profile_manager = CapitalProfileManager()
         settings = getattr(self, "settings", None)
         if not getattr(settings, "enable_capital_profiles", True):
             equity = max(equity, 1000.0)
         return self.capital_profile_manager.select(equity)
+
+    def _equity_reference_usdt(self) -> float:
+        return _as_float(
+            self.snapshot.get("total_equity_usdt"),
+            _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0))),
+        )
 
     def _operable_equity_for_trading(self, equity: float, profile: CapitalProfile | None = None) -> float:
         active_profile = profile or self._current_capital_profile()
