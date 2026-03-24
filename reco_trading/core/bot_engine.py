@@ -16,6 +16,7 @@ from reco_trading.analytics.session_tracker import SessionTracker
 from reco_trading.config.settings import Settings
 from reco_trading.config.symbols import normalize_symbol, split_symbol
 from reco_trading.core.state_machine import BotState
+from reco_trading.core.observability import RuntimeObservability, start_metrics_server
 from reco_trading.data.market_stream import MarketStream
 from reco_trading.database.repository import Repository
 from reco_trading.exchange.binance_client import BinanceClient
@@ -25,6 +26,7 @@ from reco_trading.risk.advanced_risk_manager import AdvancedRiskManager
 from reco_trading.risk.adaptive_sizer import AdaptiveSizer
 from reco_trading.risk.capital_profile import CapitalProfile, CapitalProfileManager
 from reco_trading.risk.risk_manager import RiskManager
+from reco_trading.risk.portfolio_risk import PortfolioRiskController
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
 from reco_trading.strategy.confluence import TimeframeConfluence
@@ -65,6 +67,7 @@ class BotEngine:
 
         self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
         self.symbol = normalize_symbol(settings.trading_symbol)
+        self.symbols = [normalize_symbol(sym) for sym in (settings.trading_symbols or [])] or [self.symbol]
         self.order_manager = OrderManager(self.client, self.symbol)
         self.market_stream = MarketStream(self.client, self.symbol, settings.history_limit)
         self.repository = Repository(settings.postgres_dsn)
@@ -113,6 +116,13 @@ class BotEngine:
         self.equity_curve_history: list[float] = []
         self._recent_pnls: list[float] = []
         self.session_tracker = SessionTracker()
+        self.portfolio_risk = PortfolioRiskController(
+            max_global_exposure_fraction=float(getattr(self.settings, "max_global_exposure_fraction", 0.7)),
+            max_symbol_correlation=float(getattr(self.settings, "max_symbol_correlation", 0.85)),
+            symbol_caps=dict(getattr(self.settings, "symbol_capital_limits", {}) or {}),
+        )
+        self.observability = RuntimeObservability()
+        self._metrics_server_started = False
 
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -149,6 +159,10 @@ class BotEngine:
             "volume": None,
             "atr": None,
             "api_latency_ms": None,
+            "api_latency_p95_ms": None,
+            "stale_market_data_ratio": 0.0,
+            "exchange_reconnections": 0,
+            "circuit_breaker_trips": 0,
             "candles_5m": [],
             "started_at": time.time(),
             "market_regime": None,
@@ -181,6 +195,10 @@ class BotEngine:
             await self._set_state(BotState.INITIALIZING, "initialize_settings")
             await self.repository.setup()
             self.snapshot["database_status"] = "CONNECTED"
+            self.observability.update_health(db_healthy=True)
+            if self.settings.observability_enabled and not self._metrics_server_started:
+                start_metrics_server(self.observability, self.settings.observability_bind_host, self.settings.observability_port)
+                self._metrics_server_started = True
             runtime_bundle = await self.repository.get_runtime_settings()
             runtime_settings = runtime_bundle.get("ui_runtime_settings", {}) if isinstance(runtime_bundle, dict) else {}
             if isinstance(runtime_settings, dict) and runtime_settings:
@@ -191,6 +209,7 @@ class BotEngine:
             await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
             await self.order_manager.sync_rules()
             self.snapshot["exchange_status"] = "CONNECTED"
+            self.observability.update_health(exchange_healthy=True)
             await self._reconcile_open_positions()
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -229,6 +248,7 @@ class BotEngine:
                         market_data = await self.fetch_market_data()
                         await self._refresh_account_snapshot(current_price=market_data.get("price"))
                         if not self._is_market_data_fresh(market_data):
+                            self.observability.record_loop(stale_market_data=True)
                             await self._set_state(BotState.WAITING_MARKET_DATA, "stale_market_data")
                             self.snapshot["cooldown"] = "STALE_MARKET_DATA"
                             self._sync_ui_state()
@@ -248,7 +268,10 @@ class BotEngine:
                                 await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
 
                         await self.manage_open_position(market_data)
+                        self.observability.record_loop(stale_market_data=False)
                         self.exchange_failure_count = 0
+                        self.observability.update_health(exchange_healthy=True)
+                        self._refresh_observability_snapshot()
                         self._sync_ui_state()
                         self._safe_live_update(live)
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
@@ -258,6 +281,8 @@ class BotEngine:
                     except ccxt.BaseError as exc:
                         await self._set_state(BotState.ERROR, "exchange_error")
                         self.snapshot["exchange_status"] = "ERROR"
+                        self.observability.record_error("exchange")
+                        self.observability.update_health(exchange_healthy=False)
                         self._register_exchange_failure()
                         await self._log("ERROR", f"exchange_error={exc}")
                         await self.repository.record_error(self.state.value, "exchange", str(exc))
@@ -267,6 +292,7 @@ class BotEngine:
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
                     except Exception as exc:  # noqa: BLE001
                         await self._set_state(BotState.ERROR, "runtime_error")
+                        self.observability.record_error("runtime")
                         await self._log("ERROR", f"runtime_error={exc}")
                         await self.repository.record_error(self.state.value, "runtime", str(exc))
                         self.snapshot["status"] = BotState.ERROR.value
@@ -316,6 +342,7 @@ class BotEngine:
             self.client.fetch_order_book(self.symbol),
         )
         self.snapshot["api_latency_ms"] = (time.perf_counter() - tick_start) * 1000
+        self.observability.record_api_latency(self.snapshot["api_latency_ms"])
         price = _as_float(ticker.get("last"), _as_float(candle.get("close"), 0.0))
         bid = _book_price(order_book, "bids", price)
         ask = _book_price(order_book, "asks", price)
@@ -361,7 +388,10 @@ class BotEngine:
 
     async def analyze_market(self, market_data: dict[str, Any]) -> dict[str, Any]:
         bundle: SignalBundle = self.signal_engine.generate(market_data["frame5"], market_data["frame15"])
-        side, confidence, grade = self.confidence_model.evaluate(bundle)
+        explained = self.confidence_model.explain(bundle)
+        side = str(explained["side"])
+        confidence = float(explained["confidence"])
+        grade = str(explained["grade"])
         raw_side = side
         conf_result = self.confluence.evaluate(market_data["frame5"], market_data["frame15"])
         if conf_result.aligned:
@@ -382,7 +412,14 @@ class BotEngine:
         self.snapshot["confluence_score"] = conf_result.score
         self.snapshot["confluence_aligned"] = conf_result.aligned
         await self._set_state(BotState.SIGNAL_GENERATED)
-        await self._persist_signal(bundle, side, final_confidence)
+        decision_trace = {
+            "factor_scores": dict(explained.get("factor_scores", {})),
+            "threshold": float(explained.get("threshold", 0.0)),
+            "buy_score": float(explained.get("buy_score", 0.0)),
+            "sell_score": float(explained.get("sell_score", 0.0)),
+        }
+        self.snapshot["decision_trace"] = decision_trace
+        await self._persist_signal(bundle, side, final_confidence, decision_trace=decision_trace)
         await self._set_state(BotState.SIGNAL_GENERATED, "analysis_complete")
         return {
             "bundle": bundle,
@@ -392,6 +429,7 @@ class BotEngine:
             "grade": grade,
             "confluence": conf_result,
             "setup_quality": setup_quality,
+            "decision_trace": decision_trace,
         }
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
@@ -402,11 +440,13 @@ class BotEngine:
         if side == "HOLD":
             await self._set_state(BotState.WAITING_MARKET_DATA, "hold_signal")
             self.snapshot["cooldown"] = "HOLD_SIGNAL"
+            self._set_decision_gating("hold_signal", "HOLD")
             return False
 
         if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell():
             await self._set_state(BotState.WAITING_MARKET_DATA, "spot_short_blocked")
             self.snapshot["cooldown"] = "SPOT_SHORT_BLOCKED"
+            self._set_decision_gating("spot_short_blocked", "HOLD")
             return False
 
         usdt_balance = _as_float(self.snapshot.get("balance"), 0.0)
@@ -426,16 +466,19 @@ class BotEngine:
         if self.trading_paused_by_drawdown:
             await self._set_state(BotState.PAUSED, "max_drawdown")
             self.snapshot["cooldown"] = "MAX_DRAWDOWN"
+            self._set_decision_gating("max_drawdown", "HOLD")
             return False
 
         if self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until:
             await self._set_state(BotState.PAUSED, "loss_protection_pause")
             self.snapshot["cooldown"] = f"PAUSED until {self.pause_trading_until.isoformat(timespec='seconds')}"
+            self._set_decision_gating("loss_protection_pause", "HOLD")
             return False
 
         if not self._is_cooldown_complete():
             await self._set_state(BotState.COOLDOWN, "cooldown_active")
             self.snapshot["cooldown"] = "ACTIVE"
+            self._set_decision_gating("cooldown_active", "HOLD")
             return False
 
         self.risk_manager.max_trades_per_day = self._effective_max_trades_per_day()
@@ -449,6 +492,7 @@ class BotEngine:
         if not risk.approved:
             await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_MARKET_DATA, risk.reason)
             self.snapshot["cooldown"] = risk.reason
+            self._set_decision_gating(risk.reason, "HOLD")
             return False
 
         volatility_ratio = _as_float(self.snapshot.get("atr"), 0.0) / max(current_price, 1e-9)
@@ -465,6 +509,7 @@ class BotEngine:
             self.snapshot["cooldown"] = advanced.reason
             if advanced.pause_trading:
                 self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self._effective_loss_pause_minutes())
+            self._set_decision_gating(advanced.reason, "HOLD")
             return False
 
         self.snapshot["advanced_risk_reason"] = advanced.reason
@@ -474,6 +519,7 @@ class BotEngine:
         if session_stats.recommendation == "PAUSE":
             await self._set_state(BotState.PAUSED, "session_tracker_pause")
             self.snapshot["cooldown"] = "SESSION_TRACKER_PAUSE"
+            self._set_decision_gating("session_tracker_pause", "HOLD")
             return False
         self.snapshot["session_streak"] = session_stats.current_streak
         self.snapshot["session_recommendation"] = session_stats.recommendation
@@ -482,16 +528,44 @@ class BotEngine:
         if setup_quality < self._effective_entry_quality_floor():
             await self._set_state(BotState.WAITING_MARKET_DATA, "setup_quality_too_low")
             self.snapshot["cooldown"] = "SETUP_QUALITY_TOO_LOW"
+            self._set_decision_gating("setup_quality_too_low", "HOLD")
             return False
 
         if not self._trade_costs_are_acceptable(side):
             await self._set_state(BotState.WAITING_MARKET_DATA, "trade_costs_too_high")
             self.snapshot["cooldown"] = "TRADE_COSTS_TOO_HIGH"
+            self._set_decision_gating("trade_costs_too_high", "HOLD")
             return False
+
+        if bool(getattr(self.settings, "feature_multi_symbol_enabled", False)):
+            requested_notional = _as_float(self.snapshot.get("equity"), 0.0) * _as_float(
+                getattr(self.settings, "risk_per_trade_fraction", 0.01), 0.01
+            )
+            mark_price = _as_float(self.snapshot.get("price"), 0.0)
+            current_symbol_notional = sum(
+                _as_float(p.quantity, 0.0) * mark_price for p in self.position_manager.positions if getattr(p, "symbol", self.symbol) == self.symbol
+            )
+            total_open_notional = sum(_as_float(p.quantity, 0.0) * mark_price for p in self.position_manager.positions)
+            correlation_seen = _as_float(self.snapshot.get("max_symbol_correlation_observed"), 0.0)
+            portfolio_check = self.portfolio_risk.validate(
+                symbol=self.symbol,
+                requested_notional=requested_notional,
+                current_symbol_notional=current_symbol_notional,
+                total_open_notional=total_open_notional,
+                equity=max(_as_float(self.snapshot.get("equity"), 0.0), 1.0),
+                max_correlation_observed=correlation_seen,
+            )
+            self.snapshot["portfolio_risk_reason"] = portfolio_check.reason
+            if not portfolio_check.approved:
+                await self._set_state(BotState.PAUSED, portfolio_check.reason)
+                self.snapshot["cooldown"] = portfolio_check.reason.upper()
+                self._set_decision_gating(portfolio_check.reason, "HOLD")
+                return False
 
         self.snapshot["capital_profile"] = profile.name
 
         self.snapshot["cooldown"] = "READY"
+        self._set_decision_gating("ready", side)
         return True
 
     async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any], intelligence_size_multiplier: float = 1.0) -> None:
@@ -931,7 +1005,14 @@ class BotEngine:
             return True
         return False
 
-    async def _persist_signal(self, bundle: SignalBundle, side: str, confidence: float) -> None:
+    async def _persist_signal(
+        self,
+        bundle: SignalBundle,
+        side: str,
+        confidence: float,
+        *,
+        decision_trace: dict[str, Any] | None = None,
+    ) -> None:
         await self.repository.record_signal(
             self.symbol,
             {
@@ -945,6 +1026,9 @@ class BotEngine:
             },
             confidence,
             side,
+            factor_scores=(decision_trace or {}).get("factor_scores"),
+            gating=self.snapshot.get("decision_gating", {}),
+            decision_reason=str(self.snapshot.get("decision_reason", "ANALYSIS")),
         )
 
     def _update_snapshot(self, market_data: dict[str, Any], analysis: dict[str, Any]) -> None:
@@ -978,8 +1062,20 @@ class BotEngine:
                     "structure": bundle.structure,
                     "order_flow": bundle.order_flow,
                 },
+                "decision_trace": analysis.get("decision_trace", self.snapshot.get("decision_trace", {})),
+                "decision_gating": self.snapshot.get("decision_gating", {}),
+                "decision_reason": self.snapshot.get("decision_reason", "ANALYSIS"),
             }
         )
+
+    def _set_decision_gating(self, reason: str, final_action: str) -> None:
+        self.snapshot["decision_reason"] = reason
+        self.snapshot["decision_gating"] = {
+            "spread_gate": bool(_as_float(self.snapshot.get("spread"), 0.0) <= _as_float(self.snapshot.get("price"), 1.0) * self.settings.max_spread_ratio),
+            "daily_loss_gate": bool(_as_float(self.snapshot.get("session_pnl"), 0.0) > -abs(_as_float(self.settings.daily_loss_limit_fraction, 0.03) * max(_as_float(self.snapshot.get("equity"), 0.0), 1.0))),
+            "cooldown_gate": self._is_cooldown_complete(),
+            "final_action": final_action,
+        }
 
 
     def _apply_market_intelligence_snapshot(self, intelligence: dict[str, Any]) -> None:
@@ -1389,15 +1485,24 @@ class BotEngine:
 
     def _register_exchange_failure(self) -> None:
         self.exchange_failure_count += 1
+        self.observability.record_reconnection()
         if self.exchange_failure_count < self.exchange_failure_max:
             return
         self.exchange_failure_paused_until = datetime.now(timezone.utc) + timedelta(seconds=self.exchange_failure_cooldown_seconds)
         self.exchange_failure_count = 0
         self.snapshot["cooldown"] = "EXCHANGE_CIRCUIT_BREAKER"
+        self.observability.record_circuit_breaker_trip()
         self.logger.critical(
             "exchange_circuit_breaker_triggered pause_until=%s",
             self.exchange_failure_paused_until.isoformat(timespec="seconds"),
         )
+
+    def _refresh_observability_snapshot(self) -> None:
+        metrics = self.observability.snapshot()
+        self.snapshot["api_latency_p95_ms"] = metrics["api_latency_p95_ms"]
+        self.snapshot["stale_market_data_ratio"] = metrics["stale_market_data_ratio"]
+        self.snapshot["exchange_reconnections"] = metrics["reconnections"]
+        self.snapshot["circuit_breaker_trips"] = metrics["circuit_breaker_trips"]
 
     def _frame_to_candles(self, frame: Any) -> list[dict[str, float]]:
         candles: list[dict[str, float]] = []

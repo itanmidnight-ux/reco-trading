@@ -54,6 +54,9 @@ class Signal(Base):
     regime: Mapped[str] = mapped_column(String(24), default="NORMAL_VOLATILITY")
     confidence: Mapped[float] = mapped_column(Float)
     action: Mapped[str] = mapped_column(String(10))
+    factor_scores_json: Mapped[str] = mapped_column(Text, default="{}")
+    gating_json: Mapped[str] = mapped_column(Text, default="{}")
+    decision_reason: Mapped[str] = mapped_column(String(160), default="UNKNOWN")
 
 
 class MarketData(Base):
