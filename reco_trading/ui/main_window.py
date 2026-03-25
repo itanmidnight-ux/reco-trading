@@ -98,9 +98,28 @@ class MainWindow(QMainWindow):
         self._on_state(self.state_manager.snapshot())
 
     def _on_ui_settings(self, settings: dict) -> None:
+        runtime_state = self.state_manager.snapshot()
+        current_pair = str(runtime_state.get("pair", "")).strip()
+        requested_pair = str(settings.get("default_pair", "")).strip()
+        has_active_trade = bool(runtime_state.get("has_open_position", False))
+        if requested_pair and current_pair and requested_pair != current_pair and has_active_trade:
+            self._show_symbol_change_blocked_modal()
+            self.settings_tab.set_default_pair(current_pair)
+            return
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
         self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
         self.state_manager.push_runtime_settings(settings)
+
+    def _show_symbol_change_blocked_modal(self) -> None:
+        modal = QMessageBox(self)
+        modal.setWindowTitle("Cambio de moneda bloqueado")
+        modal.setIcon(QMessageBox.Icon.Warning)
+        modal.setText(
+            "Hay una operación en ejecución, por favor espera que termine esta para poder cambiar de moneda o termina la operación que se está ejecutando."
+        )
+        modal.setStandardButtons(QMessageBox.StandardButton.Close)
+        modal.setModal(True)
+        modal.exec()
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)
