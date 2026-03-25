@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QProgressBar,
-    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -25,7 +24,7 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class AnimatedButton(QPushButton):
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(label, parent)
-        self._base_min_width = 118
+        self._base_min_width = 96
         self.setMinimumWidth(self._base_min_width)
         self._hover_anim = QPropertyAnimation(self, b"minimumWidth", self)
         self._hover_anim.setDuration(140)
@@ -50,18 +49,9 @@ class DashboardTab(QWidget):
         super().__init__()
         self.state_manager = state_manager
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        outer.addWidget(self.scroll)
-
-        content = QWidget()
-        self.scroll.setWidget(content)
-        root = QVBoxLayout(content)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(8)
+        root = outer
 
         title = QLabel("Executive Dashboard")
         title.setObjectName("sectionTitle")
@@ -86,8 +76,8 @@ class DashboardTab(QWidget):
 
         self.hero_panel = self._panel()
         hero_layout = QGridLayout(self.hero_panel)
-        hero_layout.setContentsMargins(10, 10, 10, 10)
-        hero_layout.setSpacing(10)
+        hero_layout.setContentsMargins(8, 8, 8, 8)
+        hero_layout.setSpacing(8)
         self.hero_layout = hero_layout
         self.hero_cards = {
             "price": StatCard("Market Price"),
@@ -103,8 +93,8 @@ class DashboardTab(QWidget):
 
         self.position_panel = self._panel()
         position_layout = QGridLayout(self.position_panel)
-        position_layout.setContentsMargins(10, 10, 10, 10)
-        position_layout.setSpacing(8)
+        position_layout.setContentsMargins(8, 8, 8, 8)
+        position_layout.setSpacing(6)
         self.position_layout = position_layout
         self.position_title = self._title("Open Position")
         position_layout.addWidget(self.position_title, 0, 0, 1, 4)
@@ -126,9 +116,11 @@ class DashboardTab(QWidget):
         root.addWidget(controls)
 
         body = QGridLayout()
-        body.setSpacing(10)
+        body.setSpacing(8)
         body.setColumnStretch(0, 1)
         body.setColumnStretch(1, 1)
+        body.setRowStretch(0, 1)
+        body.setRowStretch(1, 1)
         self.body_layout = body
         root.addLayout(body)
 
@@ -140,7 +132,7 @@ class DashboardTab(QWidget):
             "order_flow": StatCard("Order Flow", compact=True),
         }
         market_layout = QGridLayout(self.market_panel)
-        market_layout.setContentsMargins(10, 10, 10, 10)
+        market_layout.setContentsMargins(8, 8, 8, 8)
         market_layout.addWidget(self._title("Market Information"), 0, 0, 1, 2)
         for i, card in enumerate(self.market_cards.values()):
             market_layout.addWidget(card, (i // 2) + 1, i % 2)
@@ -173,14 +165,15 @@ class DashboardTab(QWidget):
             "win_rate": StatCard("Win Rate", compact=True),
         }
         account_layout = QGridLayout(self.account_panel)
-        account_layout.setContentsMargins(10, 10, 10, 10)
+        account_layout.setContentsMargins(8, 8, 8, 8)
         account_layout.addWidget(self._title("Account Performance"), 0, 0, 1, 2)
         for i, card in enumerate(self.account_cards.values()):
             account_layout.addWidget(card, (i // 2) + 1, i % 2)
 
         self.activity_panel = self._panel()
         activity_layout = QVBoxLayout(self.activity_panel)
-        activity_layout.setContentsMargins(10, 10, 10, 10)
+        activity_layout.setContentsMargins(8, 8, 8, 8)
+        activity_layout.setSpacing(6)
         activity_layout.addWidget(self._title("Bot Activity"))
         self.feed = QLabel("[--:--] Waiting for events")
         self.feed.setWordWrap(True)
@@ -205,15 +198,17 @@ class DashboardTab(QWidget):
         self.chart_panel = self._panel()
         self.chart_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         chart_layout = QVBoxLayout(self.chart_panel)
-        chart_layout.setContentsMargins(10, 10, 10, 10)
+        chart_layout.setContentsMargins(8, 8, 8, 8)
         chart_layout.addWidget(self._title("Realtime Chart"))
         self.chart = CandlestickChartWidget()
+        self.chart.setMinimumHeight(190)
         chart_layout.addWidget(self.chart)
 
         body.addWidget(self.market_panel, 0, 0)
         body.addWidget(self.account_panel, 0, 1)
         body.addWidget(self.activity_panel, 1, 0)
         body.addWidget(self.chart_panel, 1, 1)
+        root.addStretch(1)
         self._apply_responsive_layout(self.width())
 
     def _build_controls(self) -> QFrame:
@@ -325,7 +320,7 @@ class DashboardTab(QWidget):
 
     def _set_uniform_card_presentation(self, cards: Any) -> None:
         for card in cards:
-            card.setMinimumHeight(88)
+            card.setMinimumHeight(68)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def _reflow_grid(self, layout: QGridLayout, widgets: list[QWidget], *, columns: int, start_row: int = 0) -> None:
