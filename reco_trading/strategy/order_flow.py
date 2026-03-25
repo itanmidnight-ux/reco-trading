@@ -75,10 +75,10 @@ class OrderFlowAnalyzer:
         buy_pressure = max(0.0, min(1.0, buy_pressure))
         sell_pressure = 1.0 - buy_pressure
 
-        # Threshold más conservador: requiere 65% para signal fuerte (antes era 60%)
-        if buy_pressure > 0.65:
+        # Threshold balanceado: requiere 60% para signal fuerte.
+        if buy_pressure > 0.60:
             signal = "BUY"
-        elif buy_pressure < 0.35:
+        elif buy_pressure < 0.40:
             signal = "SELL"
         else:
             signal = "NEUTRAL"

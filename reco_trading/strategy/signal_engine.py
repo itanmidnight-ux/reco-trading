@@ -65,17 +65,17 @@ class SignalEngine:
             trend = "SELL"
         else:
             trend = "NEUTRAL"
-        if row["rsi"] > 52:
+        if row["rsi"] > 51:
             momentum = "BUY"
-        elif row["rsi"] < 48:
+        elif row["rsi"] < 49:
             momentum = "SELL"
         else:
             momentum = "NEUTRAL"
 
         vol_ratio = row["volume"] / max(row["vol_ma20"], 1e-9)
-        if vol_ratio > 1.05:
+        if vol_ratio > 1.02:
             volume = "BUY"
-        elif vol_ratio < 0.60:
+        elif vol_ratio < 0.70:
             volume = "SELL"
         else:
             volume = "NEUTRAL"

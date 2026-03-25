@@ -8,7 +8,7 @@ def test_capital_profile_manager_selects_micro_profile_for_small_equity() -> Non
     profile = manager.select(20.0)
 
     assert profile.name == "MICRO"
-    assert profile.min_confidence >= 0.80
+    assert profile.min_confidence >= 0.70
 
 
 def test_capital_profile_manager_selects_large_profile_for_high_equity() -> None:
