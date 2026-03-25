@@ -32,6 +32,7 @@ from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
 from reco_trading.strategy.confluence import TimeframeConfluence
 from reco_trading.strategy.market_intelligence import MarketIntelligence
+from reco_trading.strategy.exit_intelligence import ExitIntelligence
 from reco_trading.strategy.signal_engine import SignalBundle, SignalEngine
 from reco_trading.ui.dashboard import TerminalDashboard
 
@@ -88,6 +89,7 @@ class BotEngine:
             confidence_boost_above=0.80,
         )
         self.market_intelligence = MarketIntelligence(settings)
+        self.exit_intelligence = ExitIntelligence()
         self.confluence = TimeframeConfluence()
 
         self.state_manager = state_manager
@@ -202,6 +204,13 @@ class BotEngine:
             "open_position_tp": None,
             "session_streak": 0,
             "session_recommendation": "NORMAL",
+            "exit_intelligence_score": 0.0,
+            "exit_intelligence_threshold": 0.0,
+            "exit_intelligence_reason": "INIT",
+            "exit_intelligence_codes": [],
+            "exit_intelligence_details": {},
+            "exit_intelligence_log": [],
+            "exit_intelligence_trace_log": [],
         }
 
     async def run(self) -> None:
@@ -956,6 +965,7 @@ class BotEngine:
         await self._set_state(BotState.POSITION_OPEN)
 
         for position in list(self.position_manager.positions):
+            new_candle = self._advance_position_bar_count(position, market_data)
             if position.atr > 0:
                 used_atr = position.atr
             else:
@@ -996,6 +1006,22 @@ class BotEngine:
 
             structure_exit_reason = self._detect_structure_exit(position, market_data, price, used_atr)
             exit_reason = self._resolve_structure_exit_signal(position, structure_exit_reason)
+            if exit_reason is None and bool(position.dynamic_exit_enabled):
+                intelligence = self.exit_intelligence.evaluate(
+                    position=position,
+                    market_data=market_data,
+                    current_price=price,
+                    atr=used_atr,
+                )
+                self.snapshot["exit_intelligence_score"] = intelligence.score
+                self.snapshot["exit_intelligence_threshold"] = intelligence.threshold
+                self.snapshot["exit_intelligence_reason"] = intelligence.reason
+                self.snapshot["exit_intelligence_codes"] = list(intelligence.reason_codes)
+                self.snapshot["exit_intelligence_details"] = dict(intelligence.details)
+                self._record_exit_intelligence_trace(position, intelligence, sampled=bool(new_candle) or intelligence.exit_now)
+                if intelligence.exit_now:
+                    exit_reason = intelligence.reason
+                    await self._record_exit_intelligence_event(position, intelligence)
             if exit_reason is None:
                 exit_reason = self.position_manager.check_exit(position, price)
             if not exit_reason:
@@ -1020,6 +1046,63 @@ class BotEngine:
             self.snapshot["open_position_qty"] = None
             self.snapshot["open_position_sl"] = None
             self.snapshot["open_position_tp"] = None
+            self.snapshot["exit_intelligence_score"] = 0.0
+            self.snapshot["exit_intelligence_threshold"] = 0.0
+            self.snapshot["exit_intelligence_reason"] = "NO_OPEN_POSITION"
+            self.snapshot["exit_intelligence_codes"] = []
+            self.snapshot["exit_intelligence_details"] = {}
+
+    def _advance_position_bar_count(self, position: Position, market_data: dict[str, Any]) -> bool:
+        candle = market_data.get("candle") or {}
+        ts_ms = candle.get("timestamp")
+        try:
+            normalized_ts = int(float(ts_ms))
+        except (TypeError, ValueError):
+            position.bars_held = max(int(getattr(position, "bars_held", 0)), 1)
+            return False
+        if position.last_candle_ts_ms is None:
+            position.last_candle_ts_ms = normalized_ts
+            position.bars_held = max(int(getattr(position, "bars_held", 0)), 1)
+            return True
+        if normalized_ts > position.last_candle_ts_ms:
+            position.bars_held = max(int(getattr(position, "bars_held", 0)) + 1, 1)
+            position.last_candle_ts_ms = normalized_ts
+            return True
+        return False
+
+    def _record_exit_intelligence_trace(self, position: Position, decision: Any, *, sampled: bool) -> None:
+        if not sampled:
+            return
+        entry = {
+            "time": datetime.utcnow().strftime("%H:%M:%S"),
+            "trade_id": int(position.trade_id),
+            "bars_held": int(getattr(position, "bars_held", 0)),
+            "score": _as_float(decision.score, 0.0),
+            "threshold": _as_float(decision.threshold, 0.0),
+            "reason": str(decision.reason),
+            "codes": list(decision.reason_codes or ()),
+        }
+        traces = list(self.snapshot.get("exit_intelligence_trace_log") or [])
+        traces.append(entry)
+        self.snapshot["exit_intelligence_trace_log"] = traces[-240:]
+
+    async def _record_exit_intelligence_event(self, position: Position, decision: Any) -> None:
+        event = {
+            "trade_id": int(position.trade_id),
+            "score": _as_float(decision.score, 0.0),
+            "threshold": _as_float(decision.threshold, 0.0),
+            "reason": str(decision.reason),
+            "codes": ",".join(decision.reason_codes or ()),
+        }
+        events = list(self.snapshot.get("exit_intelligence_log") or [])
+        events.append(event)
+        self.snapshot["exit_intelligence_log"] = events[-12:]
+        await self._log(
+            "INFO",
+            "exit_intelligence_signal "
+            f"trade_id={event['trade_id']} score={event['score']:.4f} "
+            f"threshold={event['threshold']:.4f} reason={event['reason']} codes={event['codes'] or 'NONE'}",
+        )
 
     def _detect_structure_exit(
         self,
@@ -2030,6 +2113,15 @@ class BotEngine:
                     },
                 },
                 runtime_settings=self.snapshot.get("runtime_settings", {}),
+                exit_intelligence={
+                    "score": self.snapshot.get("exit_intelligence_score", 0.0),
+                    "threshold": self.snapshot.get("exit_intelligence_threshold", 0.0),
+                    "reason": self.snapshot.get("exit_intelligence_reason", "UNKNOWN"),
+                    "codes": list(self.snapshot.get("exit_intelligence_codes", []) or []),
+                    "details": dict(self.snapshot.get("exit_intelligence_details", {}) or {}),
+                    "events": list(self.snapshot.get("exit_intelligence_log", []) or []),
+                    "logs": list(self.snapshot.get("exit_intelligence_trace_log", []) or []),
+                },
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)

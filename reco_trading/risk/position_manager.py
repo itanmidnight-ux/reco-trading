@@ -18,6 +18,8 @@ class Position:
     peak_price: float | None = None
     peak_retrace_atr: float = 0.85
     structure_exit_votes: int = 0
+    bars_held: int = 0
+    last_candle_ts_ms: int | None = None
 
 
 class PositionManager:

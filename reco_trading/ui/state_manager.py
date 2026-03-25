@@ -71,6 +71,7 @@ class StateManager(QObject):
             "analytics": {},
             "session_stats": {},
             "runtime_settings": {},
+            "exit_intelligence": {},
         }
 
     def snapshot(self) -> dict[str, Any]:

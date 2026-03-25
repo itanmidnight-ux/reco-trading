@@ -10,6 +10,7 @@ from reco_trading.ui.tabs.alerts_tab import AlertsTab
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
 from reco_trading.ui.tabs.dashboard_tab import DashboardTab
 from reco_trading.ui.tabs.logs_tab import LogsTab
+from reco_trading.ui.tabs.intel_log_tab import IntelLogTab
 from reco_trading.ui.tabs.market_tab import MarketTab
 from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.settings_tab import SettingsTab
@@ -38,6 +39,7 @@ class MainWindow(QMainWindow):
         self.analytics_tab = AnalyticsTab()
         self.strategy_tab = StrategyTab()
         self.logs_tab = LogsTab(state_manager=state_manager)
+        self.intel_log_tab = IntelLogTab()
         self.risk_tab = RiskTab()
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
@@ -48,6 +50,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.analytics_tab, "Analytics")
         tabs.addTab(self.strategy_tab, "Strategy")
         tabs.addTab(self.logs_tab, "Logs")
+        tabs.addTab(self.intel_log_tab, "Intel Log")
         tabs.addTab(self.risk_tab, "Risk")
         tabs.addTab(self.settings_tab, "Settings")
         tabs.addTab(self.system_tab, "System")
@@ -80,6 +83,7 @@ class MainWindow(QMainWindow):
             self.analytics_tab,
             self.strategy_tab,
             self.logs_tab,
+            self.intel_log_tab,
             self.risk_tab,
             self.settings_tab,
             self.system_tab,

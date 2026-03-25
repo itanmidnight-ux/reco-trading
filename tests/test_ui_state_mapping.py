@@ -16,6 +16,7 @@ from reco_trading.ui.tabs.dashboard_tab import DashboardTab
 from reco_trading.ui.tabs.market_tab import MarketTab
 from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.system_tab import SystemTab
+from reco_trading.ui.tabs.intel_log_tab import IntelLogTab
 
 
 def _app() -> QApplication:
@@ -87,6 +88,7 @@ def test_tabs_accept_full_snapshot_without_errors() -> None:
 
     DashboardTab().update_state(snapshot)
     MarketTab().update_state(snapshot)
+    IntelLogTab().update_state(snapshot)
     RiskTab().update_state(snapshot)
     SystemTab().update_state(snapshot)
     AnalyticsTab().update_state(snapshot)
@@ -150,6 +152,30 @@ def test_dashboard_highlight_cards_and_feed_render_rich_snapshot() -> None:
     assert "180.00 USDT" in tab.hero_cards["operable"].value.text()
     assert "Quality 91%" in tab.execution_insight.text()
     assert "signal generated" in tab.feed.text()
+
+
+def test_intel_log_tab_renders_exit_intelligence_log_entries() -> None:
+    _app()
+    tab = IntelLogTab()
+    tab.update_state(
+        {
+            "exit_intelligence": {
+                "logs": [
+                    {
+                        "time": "12:00:00",
+                        "trade_id": 7,
+                        "bars_held": 12,
+                        "score": 0.71,
+                        "threshold": 0.65,
+                        "reason": "EXIT_INTELLIGENCE_GIVEBACK",
+                        "codes": ["GIVEBACK"],
+                    }
+                ]
+            }
+        }
+    )
+    assert "trade=7" in tab.text.toPlainText()
+    assert "EXIT_INTELLIGENCE_GIVEBACK" in tab.text.toPlainText()
 
 
 def test_analytics_tab_derives_kpis_from_trade_history_when_payload_is_partial() -> None:
