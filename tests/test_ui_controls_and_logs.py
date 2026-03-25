@@ -48,3 +48,15 @@ def test_logs_clear_button_clears_widget_and_shared_state() -> None:
 
     assert tab.text.toPlainText() == ""
     assert manager.snapshot().get("logs") == []
+
+
+def test_noisy_trade_validation_logs_are_hidden_from_ui_state() -> None:
+    manager = StateManager()
+    manager.add_log("INFO", "market_data_snapshot symbol=BTCUSDT")
+    manager.add_log("INFO", "trade_cycle_summary SYMBOL=BTCUSDT")
+    manager.add_log("INFO", "[TRADE VALIDATION]\nlinea")
+    manager.add_log("INFO", "STATE=WAITING_MARKET_DATA REASON=COOLDOWN")
+    manager.add_log("INFO", "trade_executed_ok")
+
+    messages = [entry["message"] for entry in manager.snapshot().get("logs", [])]
+    assert messages == ["trade_executed_ok"]

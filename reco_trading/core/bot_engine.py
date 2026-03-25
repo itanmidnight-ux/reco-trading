@@ -415,13 +415,14 @@ class BotEngine:
                     await self._log("WARNING", f"market_circuit_breaker swing={swing_pct:.2%} pausing_10min")
 
         primary_age_seconds = (datetime.now(timezone.utc) - latest_primary_ts).total_seconds() if latest_primary_ts else -1.0
-        await self._log(
-            "INFO",
-            "market_data_snapshot "
-            f"symbol={self.symbol} candles_primary={len(frame5)} candles_confirmation={len(frame15)} "
-            f"latest_candle_ts={latest_primary_ts.isoformat() if latest_primary_ts else 'NONE'} "
-            f"candle_age_seconds={primary_age_seconds:.2f}",
-        )
+        if bool(getattr(self.settings, "verbose_trade_decision_logs", False)):
+            await self._log(
+                "INFO",
+                "market_data_snapshot "
+                f"symbol={self.symbol} candles_primary={len(frame5)} candles_confirmation={len(frame15)} "
+                f"latest_candle_ts={latest_primary_ts.isoformat() if latest_primary_ts else 'NONE'} "
+                f"candle_age_seconds={primary_age_seconds:.2f}",
+            )
 
         return {
             "frame5": frame5,
@@ -1843,6 +1844,8 @@ class BotEngine:
         filter_checks: list[dict[str, Any]],
         reason: str,
     ) -> None:
+        if not bool(getattr(self.settings, "verbose_trade_decision_logs", False)):
+            return
         lines = ["[TRADE VALIDATION]"]
         signal = str(analysis.get("side") or self.snapshot.get("signal") or "HOLD")
         confidence = _as_float(analysis.get("confidence"), _as_float(self.snapshot.get("confidence"), 0.0))
@@ -1880,6 +1883,8 @@ class BotEngine:
         reason: str,
         filter_checks: list[dict[str, Any]],
     ) -> None:
+        if not bool(getattr(self.settings, "verbose_trade_decision_logs", False)):
+            return
         signal = str((analysis or {}).get("side") or self.snapshot.get("signal") or "HOLD")
         confidence = _as_float((analysis or {}).get("confidence"), _as_float(self.snapshot.get("confidence"), 0.0))
         setup_quality = _as_float((analysis or {}).get("setup_quality"), _as_float(self.snapshot.get("signal_quality_score"), 0.0))
@@ -1898,6 +1903,8 @@ class BotEngine:
         )
 
     async def _log_waiting_state_reason(self, reason: str) -> None:
+        if not bool(getattr(self.settings, "verbose_trade_decision_logs", False)):
+            return
         await self._log("INFO", f"STATE=WAITING_MARKET_DATA REASON={str(reason).upper()}")
 
     async def _set_state(self, new_state: BotState, context: str = "") -> None:
