@@ -3,12 +3,14 @@ from __future__ import annotations
 
 def normalize_symbol(symbol: str) -> str:
     """Normalize exchange symbols to CCXT's pair format when possible."""
-    if "/" in symbol:
-        return symbol
-    if symbol.endswith("USDT"):
-        base = symbol[:-4]
+    cleaned = str(symbol).strip().upper()
+    if "/" in cleaned:
+        base, quote = cleaned.split("/", 1)
+        return f"{base}/{quote}"
+    if cleaned.endswith("USDT"):
+        base = cleaned[:-4]
         return f"{base}/USDT"
-    return symbol
+    return cleaned
 
 
 def split_symbol(symbol: str) -> tuple[str, str | None]:

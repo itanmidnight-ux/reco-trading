@@ -354,6 +354,19 @@ class SettingsTab(QWidget):
             self._applying_state = False
         self._emit()
 
+    def set_default_pair(self, pair: str) -> None:
+        normalized = pair.strip()
+        if not normalized:
+            return
+        if self.default_pair.findText(normalized) < 0:
+            self.default_pair.addItem(normalized)
+        self._applying_state = True
+        try:
+            self.default_pair.setCurrentText(normalized)
+            self._on_default_pair_changed(normalized)
+        finally:
+            self._applying_state = False
+
 
 def _masked_secret_hint(label: str, value: str) -> str:
     if not value:

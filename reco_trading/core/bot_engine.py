@@ -1380,6 +1380,16 @@ class BotEngine:
 
     async def _apply_runtime_settings(self, settings_payload: dict[str, Any], *, persist: bool = True) -> None:
         sanitized = _sanitize_runtime_settings_payload(settings_payload)
+        requested_symbol = normalize_symbol(str(sanitized.get("default_pair", "")).strip())
+        symbol_switched = False
+        if requested_symbol and requested_symbol != self.symbol:
+            if await self._has_active_trade_for_symbol_switch():
+                await self._log("WARNING", f"symbol_switch_blocked active_trade symbol={self.symbol} requested={requested_symbol}")
+                sanitized["default_pair"] = self.symbol
+            else:
+                await self._switch_symbol(requested_symbol)
+                symbol_switched = True
+                sanitized["default_pair"] = requested_symbol
 
         mode = str(sanitized.get("investment_mode", self.runtime_investment_mode)).strip()
         self.runtime_investment_mode = mode or self.runtime_investment_mode
@@ -1433,8 +1443,49 @@ class BotEngine:
         self.snapshot["optimized_capital_limit_usdt"] = auto_profile.get("capital_limit_usdt")
         self.snapshot["optimization_reason"] = auto_profile.get("optimization_reason")
         self.snapshot["runtime_settings"] = {**sanitized, **auto_profile}
+        if symbol_switched:
+            self.snapshot["pair"] = self.symbol
         if persist:
             await self.repository.set_runtime_setting("ui_runtime_settings", {**sanitized, **auto_profile})
+
+    async def _has_active_trade_for_symbol_switch(self) -> bool:
+        if self.position_manager.positions:
+            return True
+        try:
+            open_trades = await self.repository.get_open_trades(self.symbol)
+        except Exception:
+            return bool(self.position_manager.positions)
+        return bool(open_trades)
+
+    async def _switch_symbol(self, new_symbol: str) -> None:
+        normalized_symbol = normalize_symbol(new_symbol)
+        if not normalized_symbol or normalized_symbol == self.symbol:
+            return
+        previous_symbol = self.symbol
+        await self._set_state(BotState.SYNCING_SYMBOL, f"runtime_symbol_switch {previous_symbol}->{normalized_symbol}")
+        self.symbol = normalized_symbol
+        self.market_stream.symbol = normalized_symbol
+        self.order_manager.symbol = normalized_symbol
+        self.order_manager.rules = None
+        self._cached_frame5 = None
+        self._cached_frame15 = None
+        self._last_primary_indicator_ts = None
+        self._last_confirmation_indicator_ts = None
+        self._quote_to_usdt_cache.clear()
+        self.snapshot.update(
+            {
+                "pair": normalized_symbol,
+                "signal": None,
+                "raw_signal": None,
+                "confidence": None,
+                "signals": {},
+                "candles_5m": [],
+                "change_24h": None,
+            }
+        )
+        await self.order_manager.sync_rules()
+        await self._set_state(BotState.WAITING_MARKET_DATA, "runtime_symbol_switch_complete")
+        await self._log("INFO", f"runtime_symbol_switched from={previous_symbol} to={normalized_symbol}")
 
     def _auto_investment_controls(self, mode: str, sanitized_payload: dict[str, Any] | None = None) -> dict[str, float | bool | str]:
         normalized_mode = str(mode).strip().lower()
@@ -1847,7 +1898,7 @@ def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any
         "theme": str(payload.get("theme", "Dark")).strip() or "Dark",
         "log_verbosity": str(payload.get("log_verbosity", "INFO")).strip().upper() or "INFO",
         "account_currency": account_currency,
-        "default_pair": str(payload.get("default_pair", "")).strip(),
+        "default_pair": normalize_symbol(str(payload.get("default_pair", "")).strip()),
         "default_timeframe": str(payload.get("default_timeframe", "")).strip(),
         "investment_mode": str(payload.get("investment_mode", "Balanced")).strip() or "Balanced",
         "dynamic_exit_enabled": bool(payload.get("dynamic_exit_enabled", False)),
