@@ -41,6 +41,11 @@ class DashboardSnapshot:
     circuit_breaker_trips: int = 0
     database_status: str | None = None
     exchange_status: str | None = None
+    exit_intelligence_score: float | None = None
+    exit_intelligence_threshold: float | None = None
+    exit_intelligence_reason: str | None = None
+    exit_intelligence_codes: list[str] = field(default_factory=list)
+    exit_intelligence_events: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DashboardSnapshot":
@@ -75,6 +80,11 @@ class DashboardSnapshot:
             circuit_breaker_trips=int(data.get("circuit_breaker_trips", 0) or 0),
             database_status=_to_text(data.get("database_status")),
             exchange_status=_to_text(data.get("exchange_status")),
+            exit_intelligence_score=_to_float(data.get("exit_intelligence_score")),
+            exit_intelligence_threshold=_to_float(data.get("exit_intelligence_threshold")),
+            exit_intelligence_reason=_to_text(data.get("exit_intelligence_reason")),
+            exit_intelligence_codes=[str(item) for item in (data.get("exit_intelligence_codes") or [])],
+            exit_intelligence_events=[dict(item) for item in (data.get("exit_intelligence_log") or []) if isinstance(item, Mapping)],
         )
 
 
@@ -153,12 +163,30 @@ class TerminalDashboard:
                 decision.add_row(f"gate:{gate}", str(value))
             decision.add_row("reason", snap.decision_reason or "-")
 
+            exit_intel = Table(title="Exit Intelligence", expand=True)
+            exit_intel.add_column("Field")
+            exit_intel.add_column("Value")
+            exit_intel.add_row("score", _fmt_num(snap.exit_intelligence_score, 4))
+            exit_intel.add_row("threshold", _fmt_num(snap.exit_intelligence_threshold, 4))
+            exit_intel.add_row("reason", snap.exit_intelligence_reason or "-")
+            exit_intel.add_row("codes", ",".join(snap.exit_intelligence_codes) if snap.exit_intelligence_codes else "-")
+            latest_event = snap.exit_intelligence_events[-1] if snap.exit_intelligence_events else {}
+            latest_event_text = (
+                f"trade={latest_event.get('trade_id', '-')} "
+                f"score={_fmt_num(_to_float(latest_event.get('score')), 4)} "
+                f"reason={latest_event.get('reason', '-')}"
+                if latest_event
+                else "-"
+            )
+            exit_intel.add_row("latest_event", latest_event_text)
+
             layout = Layout()
             layout.split_column(
                 Layout(Panel(headline, title="Executive Snapshot", border_style="bright_blue"), ratio=1),
                 Layout(Panel(status, title="Reco Trading Bot", border_style="cyan"), ratio=2),
                 Layout(Panel(portfolio, title="Portfolio & Risk"), ratio=2),
                 Layout(Panel(signal_table, border_style="magenta"), ratio=3),
+                Layout(Panel(exit_intel, border_style="bright_magenta"), ratio=2),
                 Layout(Panel(health, border_style="green"), ratio=2),
                 Layout(Panel(decision, border_style="yellow"), ratio=3),
             )
