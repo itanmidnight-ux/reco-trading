@@ -48,6 +48,7 @@ class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
         self.state_manager = state_manager
+        self.setObjectName("dashboardTab")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
         outer.setSpacing(8)
@@ -122,7 +123,7 @@ class DashboardTab(QWidget):
         body.setRowStretch(0, 1)
         body.setRowStretch(1, 1)
         self.body_layout = body
-        root.addLayout(body)
+        root.addLayout(body, 1)
 
         self.market_panel = self._panel()
         self.market_cards = {
@@ -140,6 +141,7 @@ class DashboardTab(QWidget):
         self.confidence_label = QLabel("Confidence")
         self.confidence_bar = QProgressBar()
         self.confidence_bar.setRange(0, 100)
+        self.confidence_bar.setFixedHeight(14)
         self.confidence_anim = QPropertyAnimation(self.confidence_bar, b"value", self)
         self.confidence_anim.setDuration(300)
         self.confidence_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -211,11 +213,54 @@ class DashboardTab(QWidget):
         root.addStretch(1)
         self._apply_responsive_layout(self.width())
 
+    def _apply_dashboard_styles(self) -> None:
+        self.setStyleSheet(
+            """
+            QWidget#dashboardTab QFrame#panelCard {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #141f36, stop:1 #0f172a);
+                border: 1px solid #2d3b5a;
+                border-radius: 14px;
+            }
+            QWidget#dashboardTab QLabel#sectionTitle {
+                font-size: 18px;
+                font-weight: 700;
+                color: #f2f6ff;
+            }
+            QWidget#dashboardTab QLabel#metricLabel {
+                font-size: 10px;
+                letter-spacing: 0.7px;
+                text-transform: uppercase;
+                color: #99abd2;
+            }
+            QWidget#dashboardTab QLabel#metricValue {
+                font-size: 17px;
+                font-weight: 700;
+                color: #eaf0ff;
+            }
+            QWidget#dashboardTab QLabel#smallMetricValue {
+                font-size: 13px;
+                font-weight: 600;
+                color: #d9e4ff;
+            }
+            QWidget#dashboardTab QProgressBar {
+                border: 1px solid #2e3f62;
+                border-radius: 7px;
+                background: #0e1629;
+                color: #cfdcff;
+                text-align: center;
+            }
+            QWidget#dashboardTab QProgressBar::chunk {
+                border-radius: 6px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4d7cff, stop:1 #7b61ff);
+            }
+            """
+        )
+
     def _build_controls(self) -> QFrame:
         panel = self._panel()
         layout = QHBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
 
         title = self._title("Bot Controls")
         layout.addWidget(title)
@@ -271,12 +316,6 @@ class DashboardTab(QWidget):
     def _panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("panelCard")
-        panel.setStyleSheet(
-            "QFrame#panelCard {"
-            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #131c2e, stop:1 #0f172a);"
-            "border:1px solid #243049; border-radius:14px;"
-            "}"
-        )
         return panel
 
     def _title(self, title: str) -> QLabel:
@@ -311,12 +350,20 @@ class DashboardTab(QWidget):
         self.body_layout.addWidget(self.account_panel, 1, 0, 1, 2)
         self.body_layout.addWidget(self.activity_panel, 2, 0, 1, 2)
         self.body_layout.addWidget(self.chart_panel, 3, 0, 1, 2)
+        self.body_layout.setRowStretch(0, 1)
+        self.body_layout.setRowStretch(1, 1)
+        self.body_layout.setRowStretch(2, 1)
+        self.body_layout.setRowStretch(3, 2)
 
     def _place_main_panels_two_columns(self) -> None:
         self.body_layout.addWidget(self.market_panel, 0, 0)
         self.body_layout.addWidget(self.account_panel, 0, 1)
         self.body_layout.addWidget(self.activity_panel, 1, 0)
         self.body_layout.addWidget(self.chart_panel, 1, 1)
+        self.body_layout.setRowStretch(0, 1)
+        self.body_layout.setRowStretch(1, 1)
+        self.body_layout.setRowStretch(2, 0)
+        self.body_layout.setRowStretch(3, 0)
 
     def _set_uniform_card_presentation(self, cards: Any) -> None:
         for card in cards:
