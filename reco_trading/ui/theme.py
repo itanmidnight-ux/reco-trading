@@ -40,7 +40,7 @@ def app_stylesheet() -> str:
             color: {COLORS['text_secondary']};
             border: 1px solid {COLORS['border']};
             border-bottom: none;
-            padding: 11px 18px;
+            padding: 9px 14px;
             margin-right: 6px;
             border-top-left-radius: 10px;
             border-top-right-radius: 10px;
@@ -63,23 +63,23 @@ def app_stylesheet() -> str:
         }}
         QLabel#sectionTitle {{
             color: {COLORS['text_primary']};
-            font-size: 17px;
+            font-size: 16px;
             font-weight: 700;
             letter-spacing: 0.4px;
         }}
         QLabel#metricLabel {{
             color: {COLORS['text_secondary']};
-            font-size: 11px;
+            font-size: 10px;
             text-transform: uppercase;
         }}
         QLabel#metricValue {{
             color: {COLORS['text_primary']};
-            font-size: 19px;
+            font-size: 16px;
             font-weight: 700;
         }}
         QLabel#statusRibbon {{
             color: {COLORS['text_primary']};
-            font-size: 15px;
+            font-size: 13px;
             font-weight: 700;
             padding: 12px 16px;
             border-radius: 14px;
@@ -89,7 +89,7 @@ def app_stylesheet() -> str:
         }}
         QLabel#smallMetricValue {{
             color: {COLORS['text_primary']};
-            font-size: 14px;
+            font-size: 12px;
             font-weight: 600;
         }}
         QLabel#metricBadge {{
