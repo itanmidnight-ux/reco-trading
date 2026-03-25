@@ -7,6 +7,13 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+_NOISY_LOG_PREFIXES = (
+    "market_data_snapshot ",
+    "trade_cycle_summary ",
+    "[TRADE VALIDATION]",
+    "STATE=WAITING_MARKET_DATA",
+)
+
 
 class StateManager(QObject):
     """Thread-safe shared state store for bot -> UI updates."""
@@ -71,6 +78,8 @@ class StateManager(QObject):
             return deepcopy(self._state)
 
     def update(self, **values: Any) -> None:
+        if "logs" in values:
+            values["logs"] = [deepcopy(entry) for entry in values["logs"] if self._is_visible_log_entry(entry)]
         with self._lock:
             self._state.update(values)
             payload = deepcopy(self._state)
@@ -90,6 +99,8 @@ class StateManager(QObject):
 
     def add_log(self, level: str, message: str) -> None:
         entry = {"time": datetime.utcnow().strftime("%H:%M:%S"), "level": level.upper(), "message": message}
+        if not self._is_visible_log_entry(entry):
+            return
         with self._lock:
             logs = self._state.setdefault("logs", [])
             logs.append(entry)
@@ -147,3 +158,10 @@ class StateManager(QObject):
             self._state["logs"] = []
             state_copy = deepcopy(self._state)
         self.state_changed.emit(state_copy)
+
+    @staticmethod
+    def _is_visible_log_entry(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return True
+        message = str(entry.get("message", ""))
+        return not message.startswith(_NOISY_LOG_PREFIXES)

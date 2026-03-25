@@ -91,6 +91,7 @@ class Settings(BaseSettings):
     # =========================
     redis_url: str = "redis://localhost:6379/0"
     observability_enabled: bool = True
+    verbose_trade_decision_logs: bool = False
     observability_bind_host: str = "0.0.0.0"
     observability_port: int = 9108
     api_latency_window_size: int = 200
