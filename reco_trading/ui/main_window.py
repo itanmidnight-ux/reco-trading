@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
-from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
+from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
 
 from reco_trading.ui.state_manager import StateManager
 from reco_trading.ui.tabs.alerts_tab import AlertsTab
@@ -22,7 +22,7 @@ class MainWindow(QMainWindow):
     def __init__(self, state_manager: StateManager) -> None:
         super().__init__()
         self.setWindowTitle("Reco Trading Professional Terminal")
-        self.resize(1520, 940)
+        self._configure_adaptive_window_geometry()
         self.state_manager = state_manager
         try:
             from reco_trading.ui.theme import app_stylesheet
@@ -68,6 +68,23 @@ class MainWindow(QMainWindow):
         self._last_state_event_at = 0.0
         self._last_ui_render_ms = 0.0
         self._ui_lag_detected = False
+
+    def _configure_adaptive_window_geometry(self) -> None:
+        app = QApplication.instance()
+        screen = app.primaryScreen() if app else None
+        if screen is None:
+            self.setMinimumSize(960, 640)
+            self.resize(1360, 860)
+            return
+
+        available = screen.availableGeometry()
+        safe_min_width = min(max(int(available.width() * 0.70), 960), available.width())
+        safe_min_height = min(max(int(available.height() * 0.70), 640), available.height())
+        target_width = min(max(int(available.width() * 0.92), 1100), available.width())
+        target_height = min(max(int(available.height() * 0.92), 760), available.height())
+
+        self.setMinimumSize(safe_min_width, safe_min_height)
+        self.resize(target_width, target_height)
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
