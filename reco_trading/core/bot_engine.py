@@ -210,7 +210,6 @@ class BotEngine:
             "exit_intelligence_codes": [],
             "exit_intelligence_details": {},
             "exit_intelligence_log": [],
-            "exit_intelligence_trace_log": [],
         }
 
     async def run(self) -> None:
@@ -965,7 +964,7 @@ class BotEngine:
         await self._set_state(BotState.POSITION_OPEN)
 
         for position in list(self.position_manager.positions):
-            new_candle = self._advance_position_bar_count(position, market_data)
+            self._advance_position_bar_count(position, market_data)
             if position.atr > 0:
                 used_atr = position.atr
             else:
@@ -1018,7 +1017,6 @@ class BotEngine:
                 self.snapshot["exit_intelligence_reason"] = intelligence.reason
                 self.snapshot["exit_intelligence_codes"] = list(intelligence.reason_codes)
                 self.snapshot["exit_intelligence_details"] = dict(intelligence.details)
-                self._record_exit_intelligence_trace(position, intelligence, sampled=bool(new_candle) or intelligence.exit_now)
                 if intelligence.exit_now:
                     exit_reason = intelligence.reason
                     await self._record_exit_intelligence_event(position, intelligence)
@@ -1052,39 +1050,21 @@ class BotEngine:
             self.snapshot["exit_intelligence_codes"] = []
             self.snapshot["exit_intelligence_details"] = {}
 
-    def _advance_position_bar_count(self, position: Position, market_data: dict[str, Any]) -> bool:
+    def _advance_position_bar_count(self, position: Position, market_data: dict[str, Any]) -> None:
         candle = market_data.get("candle") or {}
         ts_ms = candle.get("timestamp")
         try:
             normalized_ts = int(float(ts_ms))
         except (TypeError, ValueError):
             position.bars_held = max(int(getattr(position, "bars_held", 0)), 1)
-            return False
+            return
         if position.last_candle_ts_ms is None:
             position.last_candle_ts_ms = normalized_ts
             position.bars_held = max(int(getattr(position, "bars_held", 0)), 1)
-            return True
+            return
         if normalized_ts > position.last_candle_ts_ms:
             position.bars_held = max(int(getattr(position, "bars_held", 0)) + 1, 1)
             position.last_candle_ts_ms = normalized_ts
-            return True
-        return False
-
-    def _record_exit_intelligence_trace(self, position: Position, decision: Any, *, sampled: bool) -> None:
-        if not sampled:
-            return
-        entry = {
-            "time": datetime.utcnow().strftime("%H:%M:%S"),
-            "trade_id": int(position.trade_id),
-            "bars_held": int(getattr(position, "bars_held", 0)),
-            "score": _as_float(decision.score, 0.0),
-            "threshold": _as_float(decision.threshold, 0.0),
-            "reason": str(decision.reason),
-            "codes": list(decision.reason_codes or ()),
-        }
-        traces = list(self.snapshot.get("exit_intelligence_trace_log") or [])
-        traces.append(entry)
-        self.snapshot["exit_intelligence_trace_log"] = traces[-240:]
 
     async def _record_exit_intelligence_event(self, position: Position, decision: Any) -> None:
         event = {
@@ -2120,7 +2100,6 @@ class BotEngine:
                     "codes": list(self.snapshot.get("exit_intelligence_codes", []) or []),
                     "details": dict(self.snapshot.get("exit_intelligence_details", {}) or {}),
                     "events": list(self.snapshot.get("exit_intelligence_log", []) or []),
-                    "logs": list(self.snapshot.get("exit_intelligence_trace_log", []) or []),
                 },
             )
         except Exception as exc:  # noqa: BLE001
