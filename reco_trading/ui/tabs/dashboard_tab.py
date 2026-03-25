@@ -10,7 +10,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QProgressBar,
-    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -25,7 +24,7 @@ from reco_trading.ui.widgets.stat_card import StatCard
 class AnimatedButton(QPushButton):
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(label, parent)
-        self._base_min_width = 118
+        self._base_min_width = 96
         self.setMinimumWidth(self._base_min_width)
         self._hover_anim = QPropertyAnimation(self, b"minimumWidth", self)
         self._hover_anim.setDuration(140)
@@ -49,19 +48,12 @@ class DashboardTab(QWidget):
     def __init__(self, state_manager: StateManager | None = None) -> None:
         super().__init__()
         self.state_manager = state_manager
+        self.setObjectName("dashboardTab")
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
-        outer.addWidget(self.scroll)
-
-        content = QWidget()
-        self.scroll.setWidget(content)
-        root = QVBoxLayout(content)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(10)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(10)
+        root = outer
+        self._apply_dashboard_styles()
 
         title = QLabel("Executive Dashboard")
         title.setObjectName("sectionTitle")
@@ -129,8 +121,10 @@ class DashboardTab(QWidget):
         body.setSpacing(10)
         body.setColumnStretch(0, 1)
         body.setColumnStretch(1, 1)
+        body.setRowStretch(0, 1)
+        body.setRowStretch(1, 1)
         self.body_layout = body
-        root.addLayout(body)
+        root.addLayout(body, 1)
 
         self.market_panel = self._panel()
         self.market_cards = {
@@ -141,6 +135,7 @@ class DashboardTab(QWidget):
         }
         market_layout = QGridLayout(self.market_panel)
         market_layout.setContentsMargins(10, 10, 10, 10)
+        market_layout.setVerticalSpacing(8)
         market_layout.addWidget(self._title("Market Information"), 0, 0, 1, 2)
         for i, card in enumerate(self.market_cards.values()):
             market_layout.addWidget(card, (i // 2) + 1, i % 2)
@@ -148,6 +143,7 @@ class DashboardTab(QWidget):
         self.confidence_label = QLabel("Confidence")
         self.confidence_bar = QProgressBar()
         self.confidence_bar.setRange(0, 100)
+        self.confidence_bar.setFixedHeight(14)
         self.confidence_anim = QPropertyAnimation(self.confidence_bar, b"value", self)
         self.confidence_anim.setDuration(300)
         self.confidence_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
@@ -174,6 +170,7 @@ class DashboardTab(QWidget):
         }
         account_layout = QGridLayout(self.account_panel)
         account_layout.setContentsMargins(10, 10, 10, 10)
+        account_layout.setVerticalSpacing(8)
         account_layout.addWidget(self._title("Account Performance"), 0, 0, 1, 2)
         for i, card in enumerate(self.account_cards.values()):
             account_layout.addWidget(card, (i // 2) + 1, i % 2)
@@ -181,6 +178,7 @@ class DashboardTab(QWidget):
         self.activity_panel = self._panel()
         activity_layout = QVBoxLayout(self.activity_panel)
         activity_layout.setContentsMargins(10, 10, 10, 10)
+        activity_layout.setSpacing(6)
         activity_layout.addWidget(self._title("Bot Activity"))
         self.feed = QLabel("[--:--] Waiting for events")
         self.feed.setWordWrap(True)
@@ -208,6 +206,7 @@ class DashboardTab(QWidget):
         chart_layout.setContentsMargins(10, 10, 10, 10)
         chart_layout.addWidget(self._title("Realtime Chart"))
         self.chart = CandlestickChartWidget()
+        self.chart.setMinimumHeight(210)
         chart_layout.addWidget(self.chart)
 
         body.addWidget(self.market_panel, 0, 0)
@@ -216,11 +215,54 @@ class DashboardTab(QWidget):
         body.addWidget(self.chart_panel, 1, 1)
         self._apply_responsive_layout(self.width())
 
+    def _apply_dashboard_styles(self) -> None:
+        self.setStyleSheet(
+            """
+            QWidget#dashboardTab QFrame#panelCard {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #141f36, stop:1 #0f172a);
+                border: 1px solid #2d3b5a;
+                border-radius: 14px;
+            }
+            QWidget#dashboardTab QLabel#sectionTitle {
+                font-size: 18px;
+                font-weight: 700;
+                color: #f2f6ff;
+            }
+            QWidget#dashboardTab QLabel#metricLabel {
+                font-size: 10px;
+                letter-spacing: 0.7px;
+                text-transform: uppercase;
+                color: #99abd2;
+            }
+            QWidget#dashboardTab QLabel#metricValue {
+                font-size: 17px;
+                font-weight: 700;
+                color: #eaf0ff;
+            }
+            QWidget#dashboardTab QLabel#smallMetricValue {
+                font-size: 13px;
+                font-weight: 600;
+                color: #d9e4ff;
+            }
+            QWidget#dashboardTab QProgressBar {
+                border: 1px solid #2e3f62;
+                border-radius: 7px;
+                background: #0e1629;
+                color: #cfdcff;
+                text-align: center;
+            }
+            QWidget#dashboardTab QProgressBar::chunk {
+                border-radius: 6px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4d7cff, stop:1 #7b61ff);
+            }
+            """
+        )
+
     def _build_controls(self) -> QFrame:
         panel = self._panel()
         layout = QHBoxLayout(panel)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(8)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
 
         title = self._title("Bot Controls")
         layout.addWidget(title)
@@ -276,12 +318,6 @@ class DashboardTab(QWidget):
     def _panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("panelCard")
-        panel.setStyleSheet(
-            "QFrame#panelCard {"
-            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #131c2e, stop:1 #0f172a);"
-            "border:1px solid #243049; border-radius:14px;"
-            "}"
-        )
         return panel
 
     def _title(self, title: str) -> QLabel:
@@ -316,16 +352,24 @@ class DashboardTab(QWidget):
         self.body_layout.addWidget(self.account_panel, 1, 0, 1, 2)
         self.body_layout.addWidget(self.activity_panel, 2, 0, 1, 2)
         self.body_layout.addWidget(self.chart_panel, 3, 0, 1, 2)
+        self.body_layout.setRowStretch(0, 1)
+        self.body_layout.setRowStretch(1, 1)
+        self.body_layout.setRowStretch(2, 1)
+        self.body_layout.setRowStretch(3, 2)
 
     def _place_main_panels_two_columns(self) -> None:
         self.body_layout.addWidget(self.market_panel, 0, 0)
         self.body_layout.addWidget(self.account_panel, 0, 1)
         self.body_layout.addWidget(self.activity_panel, 1, 0)
         self.body_layout.addWidget(self.chart_panel, 1, 1)
+        self.body_layout.setRowStretch(0, 1)
+        self.body_layout.setRowStretch(1, 1)
+        self.body_layout.setRowStretch(2, 0)
+        self.body_layout.setRowStretch(3, 0)
 
     def _set_uniform_card_presentation(self, cards: Any) -> None:
         for card in cards:
-            card.setMinimumHeight(88)
+            card.setMinimumHeight(72)
             card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def _reflow_grid(self, layout: QGridLayout, widgets: list[QWidget], *, columns: int, start_row: int = 0) -> None:
