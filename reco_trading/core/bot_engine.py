@@ -1272,7 +1272,12 @@ class BotEngine:
         return 1.0
 
     async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
-        quote_balance, base_balance, quote_asset, _base_asset = await self._fetch_balances()
+        balances = await self._fetch_balances()
+        if len(balances) == 4:
+            quote_balance, base_balance, quote_asset, _base_asset = balances
+        else:
+            quote_balance, base_balance = balances  # type: ignore[misc]
+            quote_asset = "USDT"
         reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
         base_value_quote = float(base_balance * reference_price)
         total_equity_quote = float(quote_balance + base_value_quote)
@@ -1821,6 +1826,10 @@ def _timestamp_to_datetime(value: Any) -> datetime | None:
 
 
 def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    account_currency = str(payload.get("account_currency", "USDT")).strip().upper() or "USDT"
+    allowed_currencies = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "EUR", "BTC", "ETH", "BNB"}
+    if account_currency not in allowed_currencies:
+        account_currency = "USDT"
     raw_symbol_limits = payload.get("symbol_capital_limits", {})
     symbol_limits: dict[str, float] = {}
     if isinstance(raw_symbol_limits, dict):
@@ -1837,6 +1846,7 @@ def _sanitize_runtime_settings_payload(payload: dict[str, Any]) -> dict[str, Any
         "chart_visible": bool(payload.get("chart_visible", True)),
         "theme": str(payload.get("theme", "Dark")).strip() or "Dark",
         "log_verbosity": str(payload.get("log_verbosity", "INFO")).strip().upper() or "INFO",
+        "account_currency": account_currency,
         "default_pair": str(payload.get("default_pair", "")).strip(),
         "default_timeframe": str(payload.get("default_timeframe", "")).strip(),
         "investment_mode": str(payload.get("investment_mode", "Balanced")).strip() or "Balanced",

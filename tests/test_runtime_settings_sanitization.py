@@ -7,6 +7,7 @@ def test_runtime_settings_sanitization_normalizes_symbol_limits_and_strips_unkno
     payload = _sanitize_runtime_settings_payload(
         {
             "investment_mode": "Custom",
+            "account_currency": "usdc",
             "capital_limit_usdt": 500,
             "capital_reserve_ratio": 1.5,
             "min_cash_buffer_usdt": -10,
@@ -19,6 +20,7 @@ def test_runtime_settings_sanitization_normalizes_symbol_limits_and_strips_unkno
     )
 
     assert payload["investment_mode"] == "Custom"
+    assert payload["account_currency"] == "USDC"
     assert payload["capital_limit_usdt"] == 500.0
     assert payload["capital_reserve_ratio"] == 0.90
     assert payload["min_cash_buffer_usdt"] == 0.0

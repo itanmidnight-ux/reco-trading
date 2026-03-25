@@ -28,6 +28,7 @@ class SettingsTab(QWidget):
         super().__init__()
         self._applying_state = False
         self._symbol_capital_limits: dict[str, float] = {}
+        self._base_assets = ["BTC", "ETH", "SOL", "BNB", "XRP"]
         layout = QVBoxLayout(self)
         title = QLabel("Interface Studio")
         title.setObjectName("sectionTitle")
@@ -57,7 +58,9 @@ class SettingsTab(QWidget):
         self.log_verbosity = QComboBox()
         self.log_verbosity.addItems(["INFO", "WARNING", "ERROR"])
         self.default_pair = QComboBox()
-        self.default_pair.addItems(["BTC/USDT", "ETH/USDT", "SOL/USDT"])
+        self.quote_currency = QComboBox()
+        self.quote_currency.addItems(["USDT", "USDC", "FDUSD", "BUSD", "TUSD", "DAI", "EUR", "BTC", "ETH", "BNB"])
+        self.default_pair.addItems([f"{asset}/USDT" for asset in self._base_assets[:3]])
         self.default_tf = QComboBox()
         self.default_tf.addItems(["1m / 5m", "5m / 15m", "15m / 1h"])
         self.investment_mode = QComboBox()
@@ -97,6 +100,7 @@ class SettingsTab(QWidget):
         form.addRow("Chart visibility", self.chart_visible)
         form.addRow("Theme", self.theme)
         form.addRow("Log verbosity", self.log_verbosity)
+        form.addRow("Account currency", self.quote_currency)
         form.addRow("Default pair", self.default_pair)
         form.addRow("Default timeframe", self.default_tf)
         form.addRow("Investment mode", self.investment_mode)
@@ -165,6 +169,7 @@ class SettingsTab(QWidget):
         self.chart_visible.stateChanged.connect(self._emit)
         self.theme.currentTextChanged.connect(self._emit)
         self.log_verbosity.currentTextChanged.connect(self._emit)
+        self.quote_currency.currentTextChanged.connect(self._on_quote_currency_changed)
         self.default_pair.currentTextChanged.connect(self._on_default_pair_changed)
         self.default_tf.currentTextChanged.connect(self._emit)
         self.investment_mode.currentTextChanged.connect(self._apply_investment_preset)
@@ -179,6 +184,7 @@ class SettingsTab(QWidget):
         self.save_keys_btn.clicked.connect(self._save_keys_to_env)
 
         self._load_keys_from_env()
+        self._on_quote_currency_changed(self.quote_currency.currentText())
         self._on_default_pair_changed(self.default_pair.currentText())
         self._apply_investment_preset(self.investment_mode.currentText())
 
@@ -248,6 +254,27 @@ class SettingsTab(QWidget):
         self.symbol_budget.blockSignals(False)
         self._emit()
 
+    def _on_quote_currency_changed(self, currency: str) -> None:
+        quote = currency.strip().upper() or "USDT"
+        current_pair = self.default_pair.currentText().strip()
+        current_base = current_pair.split("/", 1)[0] if "/" in current_pair else ""
+        available_pairs = [f"{asset}/{quote}" for asset in self._base_assets if asset != quote]
+        if not available_pairs:
+            available_pairs = [f"BTC/{quote}"]
+
+        self.default_pair.blockSignals(True)
+        self.default_pair.clear()
+        self.default_pair.addItems(available_pairs)
+        if current_base and f"{current_base}/{quote}" in available_pairs:
+            self.default_pair.setCurrentText(f"{current_base}/{quote}")
+        self.default_pair.blockSignals(False)
+
+        currency_suffix = f" {quote}"
+        self.capital_limit.setSuffix(currency_suffix)
+        self.symbol_budget.setSuffix(currency_suffix)
+        self.cash_buffer.setSuffix(currency_suffix)
+        self._emit()
+
     def _emit(self) -> None:
         if self._applying_state:
             return
@@ -262,7 +289,8 @@ class SettingsTab(QWidget):
         capital_limit = self.capital_limit.value()
         effective_capital = budget_value if budget_value > 0 else capital_limit
         estimated_order = effective_capital * (self.max_allocation.value() / 100.0)
-        self.simulation_hint.setText(f"Estimated max order: {estimated_order:.2f} USDT")
+        account_currency = self.quote_currency.currentText().strip().upper() or "USDT"
+        self.simulation_hint.setText(f"Estimated max order: {estimated_order:.2f} {account_currency}")
 
         self.settings_changed.emit(
             {
@@ -270,6 +298,7 @@ class SettingsTab(QWidget):
                 "chart_visible": self.chart_visible.isChecked(),
                 "theme": self.theme.currentText(),
                 "log_verbosity": self.log_verbosity.currentText(),
+                "account_currency": account_currency,
                 "default_pair": self.default_pair.currentText(),
                 "default_timeframe": self.default_tf.currentText(),
                 "investment_mode": self.investment_mode.currentText(),
@@ -292,6 +321,9 @@ class SettingsTab(QWidget):
             mode = str(runtime.get("investment_mode", "")).strip()
             if mode and mode in {self.investment_mode.itemText(i) for i in range(self.investment_mode.count())}:
                 self.investment_mode.setCurrentText(mode)
+            account_currency = str(runtime.get("account_currency", "")).strip().upper()
+            if account_currency and account_currency in {self.quote_currency.itemText(i) for i in range(self.quote_currency.count())}:
+                self.quote_currency.setCurrentText(account_currency)
             capital_limit = float(runtime.get("capital_limit_usdt", 0.0) or 0.0)
             self.capital_limit.setValue(max(capital_limit, 0.0))
             risk_fraction = float(runtime.get("risk_per_trade_fraction", 0.01) or 0.01)
@@ -314,7 +346,7 @@ class SettingsTab(QWidget):
                     "Optimizer: "
                     f"risk {float(optimized_risk)*100:.2f}% | "
                     f"allocation {float(optimized_alloc)*100:.2f}% | "
-                    f"capital {float(optimized_capital or 0.0):.2f} USDT"
+                    f"capital {float(optimized_capital or 0.0):.2f} {self.quote_currency.currentText().strip().upper() or 'USDT'}"
                 )
         except Exception:
             pass
