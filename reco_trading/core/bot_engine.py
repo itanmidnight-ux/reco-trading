@@ -411,7 +411,7 @@ class BotEngine:
         if conf_result.aligned:
             final_confidence = min(confidence * 1.08, 0.99)
         else:
-            penalty = max(conf_result.score, 0.50)
+            penalty = 0.75 + 0.25 * max(min(conf_result.score, 1.0), 0.0)
             final_confidence = confidence * penalty
         if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell():
             side = "HOLD"
@@ -549,11 +549,35 @@ class BotEngine:
             self._set_decision_gating("setup_quality_too_low", "HOLD")
             return False
 
-        if not self._trade_costs_are_acceptable(side):
-            await self._set_state(BotState.WAITING_MARKET_DATA, "trade_costs_too_high")
-            self.snapshot["cooldown"] = "TRADE_COSTS_TOO_HIGH"
-            self._set_decision_gating("trade_costs_too_high", "HOLD")
+        execution_soft_multiplier = 1.0
+        spread_gate = self._assess_spread_gate(
+            spread=_as_float(self.snapshot.get("spread"), 0.0),
+            price=max(_as_float(self.snapshot.get("price"), 0.0), 1e-9),
+        )
+        if not spread_gate["approved"]:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide_extreme")
+            self.snapshot["cooldown"] = "SPREAD_TOO_WIDE_EXTREME"
+            self._set_decision_gating("spread_too_wide_extreme", "HOLD")
             return False
+        execution_soft_multiplier *= float(spread_gate["size_multiplier"])
+
+        cost_gate = self._assess_trade_cost_gate(side)
+        if not cost_gate["approved"]:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "trade_costs_extreme")
+            self.snapshot["cooldown"] = "TRADE_COSTS_EXTREME"
+            self._set_decision_gating("trade_costs_extreme", "HOLD")
+            return False
+        execution_soft_multiplier *= float(cost_gate["size_multiplier"])
+        analysis["execution_soft_multiplier"] = execution_soft_multiplier
+        analysis["execution_soft_reasons"] = [str(spread_gate["reason"]), str(cost_gate["reason"])]
+        if execution_soft_multiplier < 0.999:
+            await self._log(
+                "INFO",
+                "trade_allowed_with_soft_filters "
+                f"symbol={self.symbol} side={side} confidence={confidence:.4f} "
+                f"size_multiplier={execution_soft_multiplier:.4f} "
+                f"reasons={analysis['execution_soft_reasons']}",
+            )
 
         if bool(getattr(self.settings, "feature_multi_symbol_enabled", False)):
             requested_notional = _as_float(self.snapshot.get("equity"), 0.0) * _as_float(
@@ -609,14 +633,26 @@ class BotEngine:
             return
 
         spread = _as_float(market_data.get("spread"), 0.0)
-        spread_ratio = spread / max(price, 1e-9)
-        if spread_ratio > self._effective_max_spread_ratio():
-            await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide")
+        spread_gate = self._assess_spread_gate(spread=spread, price=max(price, 1e-9))
+        if not spread_gate["approved"]:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide_extreme")
+            await self._log("WARNING", f"trade_rejected_extreme_spread symbol={self.symbol} spread={spread:.8f} price={price:.8f}")
             return
 
-        if not self._pullback_confirmed(bundle, side, market_data):
-            await self._set_state(BotState.WAITING_MARKET_DATA, "pullback_unconfirmed")
+        cost_gate = self._assess_trade_cost_gate(side)
+        if not cost_gate["approved"]:
+            await self._set_state(BotState.WAITING_MARKET_DATA, "trade_costs_extreme")
+            await self._log("WARNING", f"trade_rejected_extreme_costs symbol={self.symbol} side={side}")
             return
+
+        pullback_ok, pullback_extreme = self._pullback_assessment(bundle, side, market_data)
+        pullback_multiplier = 1.0
+        if not pullback_ok:
+            if pullback_extreme:
+                await self._set_state(BotState.WAITING_MARKET_DATA, "pullback_extreme_rejection")
+                await self._log("WARNING", f"trade_rejected_extreme_pullback symbol={self.symbol} side={side}")
+                return
+            pullback_multiplier = 0.70
 
         stop_loss, take_profit = self._build_stops(
             side,
@@ -629,6 +665,13 @@ class BotEngine:
             price=price,
             atr=atr,
         )
+        execution_soft_multiplier = max(_as_float(analysis.get("execution_soft_multiplier"), 1.0), 0.20)
+        runtime_soft_multiplier = (
+            max(float(spread_gate["size_multiplier"]), 0.20)
+            * max(float(cost_gate["size_multiplier"]), 0.20)
+            * pullback_multiplier
+        )
+        total_soft_multiplier = execution_soft_multiplier * runtime_soft_multiplier
         qty = self.calculate_position_size(
             price,
             stop_loss,
@@ -636,9 +679,18 @@ class BotEngine:
             float(bundle.size_multiplier)
             * max(float(intelligence_size_multiplier), 0.1)
             * max(_as_float(self.snapshot.get("advanced_size_multiplier"), 1.0), 0.1)
-            * self._confidence_size_multiplier(_as_float(analysis.get("confidence"), 0.0)),
+            * self._confidence_size_multiplier(_as_float(analysis.get("confidence"), 0.0))
+            * max(total_soft_multiplier, 0.20),
             risk_fraction_override=trade_controls["risk_per_trade_fraction"],
         )
+        if total_soft_multiplier < 0.999:
+            await self._log(
+                "INFO",
+                "trade_size_reduced_by_soft_filters "
+                f"symbol={self.symbol} side={side} soft_multiplier={total_soft_multiplier:.4f} "
+                f"spread_reason={spread_gate['reason']} cost_reason={cost_gate['reason']} "
+                f"pullback_ok={pullback_ok}",
+            )
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
             return
@@ -1092,7 +1144,7 @@ class BotEngine:
             "max_trade_balance_fraction": trade_allocation,
         }
 
-    def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
+    def _pullback_assessment(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> tuple[bool, bool]:
         """
         Confirmación de entrada con momentum mínimo.
         No bloquea en tendencia. Solo rechaza si la vela más reciente va
@@ -1100,14 +1152,13 @@ class BotEngine:
         """
         frame5 = market_data.get("frame5")
         if frame5 is None or len(frame5) < 4:
-            return True
+            return True, False
 
         row = frame5.iloc[-1]
         prev1 = frame5.iloc[-2]
         prev2 = frame5.iloc[-3]
 
         close = _as_float(row.get("close"), 0.0)
-        open_ = _as_float(row.get("open"), close)
         p1c = _as_float(prev1.get("close"), close)
         p2c = _as_float(prev2.get("close"), close)
         atr = _as_float(row.get("atr"), close * 0.005)
@@ -1115,11 +1166,19 @@ class BotEngine:
         if side == "BUY":
             two_consecutive_bear = (p1c < _as_float(prev1.get("open"), p1c)) and (p2c < _as_float(prev2.get("open"), p2c))
             strong_move_down = (p1c - close) > (0.5 * atr)
-            return not (two_consecutive_bear and strong_move_down)
+            extreme_move_down = (p1c - close) > (0.9 * atr)
+            blocked = two_consecutive_bear and strong_move_down
+            return (not blocked), bool(blocked and extreme_move_down)
 
         two_consecutive_bull = (p1c > _as_float(prev1.get("open"), p1c)) and (p2c > _as_float(prev2.get("open"), p2c))
         strong_move_up = (close - p1c) > (0.5 * atr)
-        return not (two_consecutive_bull and strong_move_up)
+        extreme_move_up = (close - p1c) > (0.9 * atr)
+        blocked = two_consecutive_bull and strong_move_up
+        return (not blocked), bool(blocked and extreme_move_up)
+
+    def _pullback_confirmed(self, bundle: SignalBundle, side: str, market_data: dict[str, Any]) -> bool:
+        confirmed, _extreme = self._pullback_assessment(bundle, side, market_data)
+        return confirmed
 
     def _build_stops(
         self, side: str, entry: float, atr: float, regime: str = "NORMAL_VOLATILITY"
@@ -1627,14 +1686,25 @@ class BotEngine:
             return 0.85 * min(base, 1.0)
         return 1.0 * base
 
-    def _trade_costs_are_acceptable(self, side: str) -> bool:
+    def _assess_spread_gate(self, *, spread: float, price: float) -> dict[str, object]:
+        safe_price = max(price, 1e-9)
+        spread_ratio = max(float(spread), 0.0) / safe_price
+        hard_limit = self._effective_max_spread_ratio()
+        soft_limit = hard_limit * 1.25
+        if spread_ratio <= hard_limit:
+            return {"approved": True, "size_multiplier": 1.0, "reason": "spread_ok"}
+        if spread_ratio <= soft_limit:
+            return {"approved": True, "size_multiplier": 0.65, "reason": "spread_soft_reduction"}
+        return {"approved": False, "size_multiplier": 0.0, "reason": "spread_extreme_reject"}
+
+    def _assess_trade_cost_gate(self, side: str) -> dict[str, object]:
         if side not in {"BUY", "SELL"}:
-            return False
+            return {"approved": False, "size_multiplier": 0.0, "reason": "invalid_side"}
         if not getattr(self.settings, "enforce_fee_floor", True):
-            return True
+            return {"approved": True, "size_multiplier": 1.0, "reason": "fee_floor_disabled"}
         price = _as_float(self.snapshot.get("price"), 0.0)
         if price <= 0:
-            return False
+            return {"approved": False, "size_multiplier": 0.0, "reason": "invalid_price"}
         spread_ratio = _as_float(self.snapshot.get("spread"), 0.0) / price
         fee_rate = max(_as_float(getattr(self.settings, "estimated_fee_rate", 0.001), 0.001), 0.0)
         total_cost = max((fee_rate * 2.0) + spread_ratio, 0.0)
@@ -1642,8 +1712,14 @@ class BotEngine:
         expected_move = atr / price if atr > 0 else 0.0
         min_rr = max(_as_float(getattr(self.settings, "min_expected_reward_risk", 1.8), 1.8), float(self._current_capital_profile().min_expected_reward_risk))
         if total_cost <= 0:
-            return True
-        return expected_move >= (total_cost * min_rr)
+            return {"approved": True, "size_multiplier": 1.0, "reason": "cost_floor_not_applicable"}
+        required_move = total_cost * min_rr
+        coverage = expected_move / max(required_move, 1e-9)
+        if coverage >= 1.0:
+            return {"approved": True, "size_multiplier": 1.0, "reason": "cost_floor_ok"}
+        if coverage >= 0.8:
+            return {"approved": True, "size_multiplier": 0.7, "reason": "cost_floor_soft_reduction"}
+        return {"approved": False, "size_multiplier": 0.0, "reason": "cost_floor_extreme_reject"}
 
     async def _set_state(self, new_state: BotState, context: str = "") -> None:
         if new_state == self.state:
