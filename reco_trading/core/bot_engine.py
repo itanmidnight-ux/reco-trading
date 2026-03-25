@@ -263,8 +263,16 @@ class BotEngine:
                         await self._refresh_account_snapshot(current_price=market_data.get("price"))
                         if not self._is_market_data_fresh(market_data):
                             self.observability.record_loop(stale_market_data=True)
+                            rejection_reason = "STALE_MARKET_DATA"
                             await self._set_state(BotState.WAITING_MARKET_DATA, "stale_market_data")
-                            self.snapshot["cooldown"] = "STALE_MARKET_DATA"
+                            self.snapshot["cooldown"] = rejection_reason
+                            await self._log_waiting_state_reason(rejection_reason)
+                            await self._log_trade_cycle_summary(
+                                analysis=None,
+                                decision="REJECTED",
+                                reason=rejection_reason,
+                                filter_checks=[],
+                            )
                             self._sync_ui_state()
                             self._safe_live_update(live)
                             await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
@@ -277,9 +285,30 @@ class BotEngine:
                             intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
                             self._apply_market_intelligence_snapshot(intelligence)
                             if intelligence.get("approved"):
+                                await self._log_trade_cycle_summary(
+                                    analysis=analysis,
+                                    decision="APPROVED",
+                                    reason="TRADE_APPROVED",
+                                    filter_checks=list(analysis.get("validation_checks", [])),
+                                )
                                 await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
                             else:
-                                await self._set_state(BotState.WAITING_MARKET_DATA, str(intelligence.get("reason", "market_intelligence")))
+                                rejection_reason = str(intelligence.get("reason", "MARKET_INTELLIGENCE_REJECT"))
+                                await self._set_state(BotState.WAITING_MARKET_DATA, rejection_reason)
+                                await self._log_waiting_state_reason(rejection_reason)
+                                await self._log_trade_cycle_summary(
+                                    analysis=analysis,
+                                    decision="REJECTED",
+                                    reason=rejection_reason,
+                                    filter_checks=list(analysis.get("validation_checks", [])),
+                                )
+                        else:
+                            await self._log_trade_cycle_summary(
+                                analysis=analysis,
+                                decision="REJECTED",
+                                reason=str(self.snapshot.get("decision_reason", "UNKNOWN")),
+                                filter_checks=list(analysis.get("validation_checks", [])),
+                            )
 
                         await self.manage_open_position(market_data)
                         self.observability.record_loop(stale_market_data=False)
@@ -385,6 +414,15 @@ class BotEngine:
                     self.pause_trading_until = pause_until
                     await self._log("WARNING", f"market_circuit_breaker swing={swing_pct:.2%} pausing_10min")
 
+        primary_age_seconds = (datetime.now(timezone.utc) - latest_primary_ts).total_seconds() if latest_primary_ts else -1.0
+        await self._log(
+            "INFO",
+            "market_data_snapshot "
+            f"symbol={self.symbol} candles_primary={len(frame5)} candles_confirmation={len(frame15)} "
+            f"latest_candle_ts={latest_primary_ts.isoformat() if latest_primary_ts else 'NONE'} "
+            f"candle_age_seconds={primary_age_seconds:.2f}",
+        )
+
         return {
             "frame5": frame5,
             "frame15": frame15,
@@ -455,17 +493,54 @@ class BotEngine:
         side = str(analysis.get("side", "HOLD")).upper()
         profile = self._current_capital_profile()
         min_confidence = max(self.settings.confidence_threshold, self._effective_min_signal_confidence())
-        if side == "HOLD":
-            await self._set_state(BotState.WAITING_MARKET_DATA, "hold_signal")
-            self.snapshot["cooldown"] = "HOLD_SIGNAL"
-            self._set_decision_gating("hold_signal", "HOLD")
+        validation_checks: list[dict[str, Any]] = []
+
+        async def _reject(
+            reason: str,
+            *,
+            state: BotState = BotState.WAITING_MARKET_DATA,
+            cooldown: str | None = None,
+            final_action: str = "HOLD",
+        ) -> bool:
+            rejection_reason = str(reason or "UNKNOWN")
+            await self._set_state(state, rejection_reason)
+            self.snapshot["cooldown"] = cooldown if cooldown is not None else rejection_reason.upper()
+            self._set_decision_gating(rejection_reason, final_action)
+            analysis["validation_checks"] = validation_checks
+            await self._log_trade_rejection_trace(analysis, validation_checks, str(self.snapshot.get("decision_reason", rejection_reason)))
+            if state == BotState.WAITING_MARKET_DATA:
+                await self._log_waiting_state_reason(str(self.snapshot.get("decision_reason", rejection_reason)))
             return False
 
-        if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell():
-            await self._set_state(BotState.WAITING_MARKET_DATA, "spot_short_blocked")
-            self.snapshot["cooldown"] = "SPOT_SHORT_BLOCKED"
-            self._set_decision_gating("spot_short_blocked", "HOLD")
-            return False
+        hold_signal = side != "HOLD"
+        validation_checks.append({
+            "name": "signal",
+            "value": side,
+            "threshold": "BUY/SELL",
+            "passed": hold_signal,
+        })
+        if not hold_signal:
+            return await _reject("hold_signal", cooldown="HOLD_SIGNAL")
+
+        confidence_pass = confidence >= min_confidence
+        validation_checks.append({
+            "name": "confidence",
+            "value": confidence,
+            "threshold": min_confidence,
+            "passed": confidence_pass,
+        })
+        if not confidence_pass:
+            return await _reject("confidence_below_threshold", cooldown="CONFIDENCE_BELOW_THRESHOLD")
+
+        spot_sell_allowed = not (getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell())
+        validation_checks.append({
+            "name": "spot_sell_inventory",
+            "value": side,
+            "threshold": "inventory_required_for_sell",
+            "passed": spot_sell_allowed,
+        })
+        if not spot_sell_allowed:
+            return await _reject("spot_short_blocked", cooldown="SPOT_SHORT_BLOCKED")
 
         usdt_balance = _as_float(self.snapshot.get("balance"), 0.0)
         total_equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), usdt_balance))
@@ -481,23 +556,38 @@ class BotEngine:
             if drawdown >= max_drawdown_fraction:
                 self.trading_paused_by_drawdown = True
 
+        validation_checks.append({
+            "name": "max_drawdown",
+            "value": bool(self.trading_paused_by_drawdown),
+            "threshold": f"<{max_drawdown_fraction:.4f}",
+            "passed": not self.trading_paused_by_drawdown,
+        })
         if self.trading_paused_by_drawdown:
-            await self._set_state(BotState.PAUSED, "max_drawdown")
-            self.snapshot["cooldown"] = "MAX_DRAWDOWN"
-            self._set_decision_gating("max_drawdown", "HOLD")
-            return False
+            return await _reject("max_drawdown", state=BotState.PAUSED, cooldown="MAX_DRAWDOWN")
 
-        if self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until:
-            await self._set_state(BotState.PAUSED, "loss_protection_pause")
-            self.snapshot["cooldown"] = f"PAUSED until {self.pause_trading_until.isoformat(timespec='seconds')}"
-            self._set_decision_gating("loss_protection_pause", "HOLD")
-            return False
+        pause_active = bool(self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until)
+        validation_checks.append({
+            "name": "loss_protection_pause",
+            "value": self.pause_trading_until.isoformat(timespec="seconds") if self.pause_trading_until else "none",
+            "threshold": "must_be_inactive",
+            "passed": not pause_active,
+        })
+        if pause_active:
+            return await _reject(
+                "loss_protection_pause",
+                state=BotState.PAUSED,
+                cooldown=f"PAUSED until {self.pause_trading_until.isoformat(timespec='seconds')}",
+            )
 
-        if not self._is_cooldown_complete():
-            await self._set_state(BotState.COOLDOWN, "cooldown_active")
-            self.snapshot["cooldown"] = "ACTIVE"
-            self._set_decision_gating("cooldown_active", "HOLD")
-            return False
+        cooldown_complete = self._is_cooldown_complete()
+        validation_checks.append({
+            "name": "cooldown",
+            "value": "complete" if cooldown_complete else "active",
+            "threshold": "complete",
+            "passed": cooldown_complete,
+        })
+        if not cooldown_complete:
+            return await _reject("cooldown_active", state=BotState.COOLDOWN, cooldown="ACTIVE")
 
         self.risk_manager.max_trades_per_day = self._effective_max_trades_per_day()
         risk = self.risk_manager.validate(
@@ -507,11 +597,14 @@ class BotEngine:
             confidence=confidence,
             confidence_threshold=min_confidence,
         )
+        validation_checks.append({
+            "name": "risk_manager",
+            "value": risk.reason,
+            "threshold": "approved",
+            "passed": bool(risk.approved),
+        })
         if not risk.approved:
-            await self._set_state(BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_MARKET_DATA, risk.reason)
-            self.snapshot["cooldown"] = risk.reason
-            self._set_decision_gating(risk.reason, "HOLD")
-            return False
+            return await _reject(risk.reason, state=BotState.PAUSED if risk.reason == "RISK_PAUSE" else BotState.WAITING_MARKET_DATA, cooldown=risk.reason)
 
         volatility_ratio = _as_float(self.snapshot.get("atr"), 0.0) / max(current_price, 1e-9)
         advanced = self.advanced_risk_manager.evaluate(
@@ -522,51 +615,70 @@ class BotEngine:
             peak_equity=max(_as_float(self.equity_peak, total_equity), 1.0),
             volatility_ratio=volatility_ratio,
         )
+        validation_checks.append({
+            "name": "advanced_risk",
+            "value": advanced.reason,
+            "threshold": "approved",
+            "passed": bool(advanced.approved),
+        })
         if not advanced.approved:
-            await self._set_state(BotState.PAUSED, advanced.reason)
-            self.snapshot["cooldown"] = advanced.reason
             if advanced.pause_trading:
                 self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self._effective_loss_pause_minutes())
-            self._set_decision_gating(advanced.reason, "HOLD")
-            return False
+            return await _reject(advanced.reason, state=BotState.PAUSED, cooldown=advanced.reason)
 
         self.snapshot["advanced_risk_reason"] = advanced.reason
         self.snapshot["advanced_size_multiplier"] = advanced.size_multiplier
 
         session_stats = self.session_tracker.stats()
-        if session_stats.recommendation == "PAUSE":
-            await self._set_state(BotState.PAUSED, "session_tracker_pause")
-            self.snapshot["cooldown"] = "SESSION_TRACKER_PAUSE"
-            self._set_decision_gating("session_tracker_pause", "HOLD")
-            return False
+        session_ok = session_stats.recommendation != "PAUSE"
+        validation_checks.append({
+            "name": "session_tracker",
+            "value": session_stats.recommendation,
+            "threshold": "!= PAUSE",
+            "passed": session_ok,
+        })
+        if not session_ok:
+            return await _reject("session_tracker_pause", state=BotState.PAUSED, cooldown="SESSION_TRACKER_PAUSE")
         self.snapshot["session_streak"] = session_stats.current_streak
         self.snapshot["session_recommendation"] = session_stats.recommendation
 
         setup_quality = _as_float(analysis.get("setup_quality"), _as_float(self.snapshot.get("signal_quality_score"), 0.0))
-        if setup_quality < self._effective_entry_quality_floor():
-            await self._set_state(BotState.WAITING_MARKET_DATA, "setup_quality_too_low")
-            self.snapshot["cooldown"] = "SETUP_QUALITY_TOO_LOW"
-            self._set_decision_gating("setup_quality_too_low", "HOLD")
-            return False
+        setup_floor = self._effective_entry_quality_floor()
+        setup_ok = setup_quality >= setup_floor
+        validation_checks.append({
+            "name": "setup_quality",
+            "value": setup_quality,
+            "threshold": setup_floor,
+            "passed": setup_ok,
+        })
+        if not setup_ok:
+            return await _reject("setup_quality_too_low", cooldown="SETUP_QUALITY_TOO_LOW")
 
         execution_soft_multiplier = 1.0
         spread_gate = self._assess_spread_gate(
             spread=_as_float(self.snapshot.get("spread"), 0.0),
             price=max(_as_float(self.snapshot.get("price"), 0.0), 1e-9),
         )
+        validation_checks.append({
+            "name": "spread",
+            "value": _as_float(self.snapshot.get("spread"), 0.0),
+            "threshold": self._effective_max_spread_ratio(),
+            "passed": bool(spread_gate["approved"]),
+            "reason": spread_gate["reason"],
+        })
         if not spread_gate["approved"]:
-            await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide_extreme")
-            self.snapshot["cooldown"] = "SPREAD_TOO_WIDE_EXTREME"
-            self._set_decision_gating("spread_too_wide_extreme", "HOLD")
-            return False
+            return await _reject("spread_too_wide_extreme", cooldown="SPREAD_TOO_WIDE_EXTREME")
         execution_soft_multiplier *= float(spread_gate["size_multiplier"])
 
         cost_gate = self._assess_trade_cost_gate(side)
+        validation_checks.append({
+            "name": "cost_check",
+            "value": cost_gate["reason"],
+            "threshold": "cost_floor_ok",
+            "passed": bool(cost_gate["approved"]),
+        })
         if not cost_gate["approved"]:
-            await self._set_state(BotState.WAITING_MARKET_DATA, "trade_costs_extreme")
-            self.snapshot["cooldown"] = "TRADE_COSTS_EXTREME"
-            self._set_decision_gating("trade_costs_extreme", "HOLD")
-            return False
+            return await _reject("trade_costs_extreme", cooldown="TRADE_COSTS_EXTREME")
         execution_soft_multiplier *= float(cost_gate["size_multiplier"])
         analysis["execution_soft_multiplier"] = execution_soft_multiplier
         analysis["execution_soft_reasons"] = [str(spread_gate["reason"]), str(cost_gate["reason"])]
@@ -598,16 +710,20 @@ class BotEngine:
                 max_correlation_observed=correlation_seen,
             )
             self.snapshot["portfolio_risk_reason"] = portfolio_check.reason
+            validation_checks.append({
+                "name": "portfolio_risk",
+                "value": portfolio_check.reason,
+                "threshold": "approved",
+                "passed": bool(portfolio_check.approved),
+            })
             if not portfolio_check.approved:
-                await self._set_state(BotState.PAUSED, portfolio_check.reason)
-                self.snapshot["cooldown"] = portfolio_check.reason.upper()
-                self._set_decision_gating(portfolio_check.reason, "HOLD")
-                return False
+                return await _reject(portfolio_check.reason, state=BotState.PAUSED, cooldown=portfolio_check.reason.upper())
 
         self.snapshot["capital_profile"] = profile.name
 
         self.snapshot["cooldown"] = "READY"
         self._set_decision_gating("ready", side)
+        analysis["validation_checks"] = validation_checks
         return True
 
     async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any], intelligence_size_multiplier: float = 1.0) -> None:
@@ -1720,6 +1836,69 @@ class BotEngine:
         if coverage >= 0.8:
             return {"approved": True, "size_multiplier": 0.7, "reason": "cost_floor_soft_reduction"}
         return {"approved": False, "size_multiplier": 0.0, "reason": "cost_floor_extreme_reject"}
+
+    async def _log_trade_rejection_trace(
+        self,
+        analysis: dict[str, Any],
+        filter_checks: list[dict[str, Any]],
+        reason: str,
+    ) -> None:
+        lines = ["[TRADE VALIDATION]"]
+        signal = str(analysis.get("side") or self.snapshot.get("signal") or "HOLD")
+        confidence = _as_float(analysis.get("confidence"), _as_float(self.snapshot.get("confidence"), 0.0))
+        min_confidence = max(self.settings.confidence_threshold, self._effective_min_signal_confidence())
+        setup_quality = _as_float(analysis.get("setup_quality"), _as_float(self.snapshot.get("signal_quality_score"), 0.0))
+        lines.append("")
+        lines.append(f"signal: {signal}")
+        lines.append(
+            f"confidence: {confidence:.4f} (threshold: {min_confidence:.4f}) "
+            f"→ {'PASS' if confidence >= min_confidence else 'FAIL'}"
+        )
+        lines.append(
+            f"setup_quality: {setup_quality:.4f} (required: {self._effective_entry_quality_floor():.4f}) "
+            f"→ {'PASS' if setup_quality >= self._effective_entry_quality_floor() else 'FAIL'}"
+        )
+        lines.append(
+            f"spread: {_as_float(self.snapshot.get('spread'), 0.0):.8f} "
+            f"(limit: {self._effective_max_spread_ratio():.6f})"
+        )
+        for check in filter_checks:
+            check_name = str(check.get("name", "unknown"))
+            value = check.get("value")
+            threshold = check.get("threshold")
+            passed = bool(check.get("passed"))
+            lines.append(f"{check_name}: {value} (threshold: {threshold}) → {'PASS' if passed else 'FAIL'}")
+        lines.append("")
+        lines.append(f"FINAL DECISION: REJECTED ({reason.upper()})")
+        await self._log("INFO", "\n".join(lines))
+
+    async def _log_trade_cycle_summary(
+        self,
+        *,
+        analysis: dict[str, Any] | None,
+        decision: str,
+        reason: str,
+        filter_checks: list[dict[str, Any]],
+    ) -> None:
+        signal = str((analysis or {}).get("side") or self.snapshot.get("signal") or "HOLD")
+        confidence = _as_float((analysis or {}).get("confidence"), _as_float(self.snapshot.get("confidence"), 0.0))
+        setup_quality = _as_float((analysis or {}).get("setup_quality"), _as_float(self.snapshot.get("signal_quality_score"), 0.0))
+        spread = _as_float(self.snapshot.get("spread"), 0.0)
+        price = max(_as_float(self.snapshot.get("price"), 0.0), 1e-9)
+        expected_move = _as_float(self.snapshot.get("atr"), 0.0) / price if price > 0 else 0.0
+        checks_text = ",".join(
+            f"{str(item.get('name', 'unknown')).upper()}={'PASS' if bool(item.get('passed')) else 'FAIL'}" for item in filter_checks
+        ) or "NONE"
+        await self._log(
+            "INFO",
+            "trade_cycle_summary "
+            f"SYMBOL={self.symbol} SIGNAL={signal} CONFIDENCE={confidence:.4f} SETUP_QUALITY={setup_quality:.4f} "
+            f"SPREAD={spread:.8f} EXPECTED_MOVE={expected_move:.8f} FILTERS={checks_text} "
+            f"DECISION={decision} REASON={str(reason).upper()}",
+        )
+
+    async def _log_waiting_state_reason(self, reason: str) -> None:
+        await self._log("INFO", f"STATE=WAITING_MARKET_DATA REASON={str(reason).upper()}")
 
     async def _set_state(self, new_state: BotState, context: str = "") -> None:
         if new_state == self.state:

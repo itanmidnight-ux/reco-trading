@@ -88,6 +88,7 @@ class DashboardTab(QWidget):
         hero_layout = QGridLayout(self.hero_panel)
         hero_layout.setContentsMargins(10, 10, 10, 10)
         hero_layout.setSpacing(10)
+        self.hero_layout = hero_layout
         self.hero_cards = {
             "price": StatCard("Market Price"),
             "signal": StatCard("Signal Quality"),
@@ -96,15 +97,17 @@ class DashboardTab(QWidget):
             "capital": StatCard("Capital Profile"),
             "operable": StatCard("Operable Capital"),
         }
-        for i, card in enumerate(self.hero_cards.values()):
-            hero_layout.addWidget(card, i // 3, i % 3)
+        self._set_uniform_card_presentation(self.hero_cards.values())
+        self._reflow_grid(hero_layout, list(self.hero_cards.values()), columns=3)
         root.addWidget(self.hero_panel)
 
         self.position_panel = self._panel()
         position_layout = QGridLayout(self.position_panel)
         position_layout.setContentsMargins(10, 10, 10, 10)
         position_layout.setSpacing(8)
-        position_layout.addWidget(self._title("Open Position"), 0, 0, 1, 4)
+        self.position_layout = position_layout
+        self.position_title = self._title("Open Position")
+        position_layout.addWidget(self.position_title, 0, 0, 1, 4)
         self.pos_cards = {
             "side": StatCard("Side", compact=True),
             "entry": StatCard("Entry", compact=True),
@@ -114,8 +117,8 @@ class DashboardTab(QWidget):
             "tp": StatCard("Take Profit", compact=True),
             "size": StatCard("Size", compact=True),
         }
-        for i, card in enumerate(self.pos_cards.values()):
-            position_layout.addWidget(card, 1 + i // 4, i % 4)
+        self._set_uniform_card_presentation(self.pos_cards.values())
+        self._reflow_grid(position_layout, list(self.pos_cards.values()), columns=4, start_row=1)
         root.addWidget(self.position_panel)
         self.position_panel.setVisible(False)
 
@@ -124,6 +127,9 @@ class DashboardTab(QWidget):
 
         body = QGridLayout()
         body.setSpacing(10)
+        body.setColumnStretch(0, 1)
+        body.setColumnStretch(1, 1)
+        self.body_layout = body
         root.addLayout(body)
 
         self.market_panel = self._panel()
@@ -208,6 +214,7 @@ class DashboardTab(QWidget):
         body.addWidget(self.account_panel, 0, 1)
         body.addWidget(self.activity_panel, 1, 0)
         body.addWidget(self.chart_panel, 1, 1)
+        self._apply_responsive_layout(self.width())
 
     def _build_controls(self) -> QFrame:
         panel = self._panel()
@@ -281,6 +288,58 @@ class DashboardTab(QWidget):
         label = QLabel(title)
         label.setObjectName("metricLabel")
         return label
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._apply_responsive_layout(max(self.width(), 1))
+
+    def _apply_responsive_layout(self, width: int) -> None:
+        if width < 980:
+            hero_columns = 1
+            position_columns = 2
+            self._place_main_panels_single_column()
+        elif width < 1380:
+            hero_columns = 2
+            position_columns = 3
+            self._place_main_panels_two_columns()
+        else:
+            hero_columns = 3
+            position_columns = 4
+            self._place_main_panels_two_columns()
+        self._reflow_grid(self.hero_layout, list(self.hero_cards.values()), columns=hero_columns)
+        self.position_layout.removeWidget(self.position_title)
+        self.position_layout.addWidget(self.position_title, 0, 0, 1, max(position_columns, 1))
+        self._reflow_grid(self.position_layout, list(self.pos_cards.values()), columns=position_columns, start_row=1)
+
+    def _place_main_panels_single_column(self) -> None:
+        self.body_layout.addWidget(self.market_panel, 0, 0, 1, 2)
+        self.body_layout.addWidget(self.account_panel, 1, 0, 1, 2)
+        self.body_layout.addWidget(self.activity_panel, 2, 0, 1, 2)
+        self.body_layout.addWidget(self.chart_panel, 3, 0, 1, 2)
+
+    def _place_main_panels_two_columns(self) -> None:
+        self.body_layout.addWidget(self.market_panel, 0, 0)
+        self.body_layout.addWidget(self.account_panel, 0, 1)
+        self.body_layout.addWidget(self.activity_panel, 1, 0)
+        self.body_layout.addWidget(self.chart_panel, 1, 1)
+
+    def _set_uniform_card_presentation(self, cards: Any) -> None:
+        for card in cards:
+            card.setMinimumHeight(88)
+            card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _reflow_grid(self, layout: QGridLayout, widgets: list[QWidget], *, columns: int, start_row: int = 0) -> None:
+        columns = max(columns, 1)
+        for widget in widgets:
+            layout.removeWidget(widget)
+        for column in range(6):
+            layout.setColumnStretch(column, 0)
+        for index, widget in enumerate(widgets):
+            row = start_row + (index // columns)
+            col = index % columns
+            layout.addWidget(widget, row, col)
+        for column in range(columns):
+            layout.setColumnStretch(column, 1)
 
     def update_state(self, state: dict[str, Any]) -> None:
         pair = state.get("pair", "BTC/USDT")
