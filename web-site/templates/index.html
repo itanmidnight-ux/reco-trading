@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reco-Trading Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --bg-dark: #0d1117;
+            --bg-card: #161b22;
+            --border-color: #30363d;
+            --text-primary: #c9d1d9;
+            --text-secondary: #8b949e;
+            --accent-green: #3fb950;
+            --accent-red: #f85149;
+            --accent-blue: #58a6ff;
+            --accent-yellow: #d29922;
+        }
+        
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+        }
+        
+        .navbar {
+            background-color: var(--bg-card);
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border-color);
+            margin-bottom: 20px;
+        }
+        
+        .card-header {
+            background-color: transparent;
+            border-bottom: 1px solid var(--border-color);
+            font-weight: 600;
+        }
+        
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+        }
+        
+        .stat-label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        .signal-buy { color: var(--accent-green); }
+        .signal-sell { color: var(--accent-red); }
+        .signal-hold { color: var(--accent-yellow); }
+        
+        .status-active { color: var(--accent-green); }
+        .status-inactive { color: var(--accent-red); }
+        .status-warning { color: var(--accent-yellow); }
+        
+        .nav-tabs .nav-link {
+            color: var(--text-secondary);
+            border: none;
+            border-bottom: 2px solid transparent;
+        }
+        
+        .nav-tabs .nav-link.active {
+            color: var(--accent-blue);
+            background: transparent;
+            border-bottom: 2px solid var(--accent-blue);
+        }
+        
+        .nav-tabs .nav-link:hover {
+            color: var(--text-primary);
+            border: none;
+        }
+        
+        .table {
+            color: var(--text-primary);
+        }
+        
+        .table-dark {
+            --bs-table-bg: var(--bg-card);
+        }
+        
+        .badge-bg-success { background-color: var(--accent-green); }
+        .badge-bg-danger { background-color: var(--accent-red); }
+        .badge-bg-warning { background-color: var(--accent-yellow); }
+        
+        .metric-card {
+            padding: 15px;
+            border-radius: 8px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+        }
+        
+        .last-update {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+        
+        #loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        
+        .tab-content {
+            padding-top: 20px;
+        }
+        
+        .health-ok { color: var(--accent-green); }
+        .health-error { color: var(--accent-red); }
+        .health-warning { color: var(--accent-yellow); }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-chart-line me-2"></i>Reco-Trading
+            </a>
+            <span class="navbar-text">
+                <span id="botStatus" class="badge bg-warning">INITIALIZING</span>
+            </span>
+            <span class="navbar-text ms-auto">
+                <i class="fas fa-clock me-1"></i>
+                <span id="lastUpdate" class="last-update">--:--:--</span>
+            </span>
+        </div>
+    </nav>
+
+    <div class="container-fluid mt-3">
+        <ul class="nav nav-tabs" id="dashboardTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="overview-tab" data-bs-toggle="tab" data-bs-target="#overview" type="button" role="tab">
+                    <i class="fas fa-home me-1"></i> Overview
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="trades-tab" data-bs-toggle="tab" data-bs-target="#trades" type="button" role="tab">
+                    <i class="fas fa-exchange-alt me-1"></i> Trades
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="analytics-tab" data-bs-toggle="tab" data-bs-target="#analytics" type="button" role="tab">
+                    <i class="fas fa-chart-bar me-1"></i> Analytics
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="health-tab" data-bs-toggle="tab" data-bs-target="#health" type="button" role="tab">
+                    <i class="fas fa-heartbeat me-1"></i> Health
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="settings-tab" data-bs-toggle="tab" data-bs-target="#settings" type="button" role="tab">
+                    <i class="fas fa-cog me-1"></i> Settings
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs" type="button" role="tab">
+                    <i class="fas fa-list me-1"></i> Logs
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="dashboardTabContent">
+            <!-- Overview Tab -->
+            <div class="tab-pane fade show active" id="overview" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Status</div>
+                            <div id="statusValue" class="stat-value text-warning">INITIALIZING</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Current Pair</div>
+                            <div id="pairValue" class="stat-value">BTC/USDT</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Price</div>
+                            <div id="priceValue" class="stat-value">--</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Signal</div>
+                            <div id="signalValue" class="stat-value signal-hold">HOLD</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="row mt-3">
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Confidence</div>
+                            <div id="confidenceValue" class="stat-value">--%</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Daily PnL</div>
+                            <div id="dailyPnlValue" class="stat-value">--%</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Total Equity</div>
+                            <div id="equityValue" class="stat-value">-- USDT</div>
+                        </div>
+                    </div>
+                    <div class="col-md-3">
+                        <div class="metric-card">
+                            <div class="stat-label">Win Rate</div>
+                            <div id="winRateValue" class="stat-value">--%</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Market Data</div>
+                            <div class="card-body">
+                                <table class="table table-sm">
+                                    <tr><td>Trend</td><td id="trendValue">--</td></tr>
+                                    <tr><td>ADX</td><td id="adxValue">--</td></tr>
+                                    <tr><td>Volatility Regime</td><td id="volatilityRegimeValue">--</td></tr>
+                                    <tr><td>Order Flow</td><td id="orderFlowValue">--</td></tr>
+                                    <tr><td>Spread</td><td id="spreadValue">--</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Position Info</div>
+                            <div class="card-body">
+                                <table class="table table-sm">
+                                    <tr><td>Has Position</td><td id="hasPositionValue">No</td></tr>
+                                    <tr><td>Side</td><td id="positionSideValue">--</td></tr>
+                                    <tr><td>Entry Price</td><td id="entryPriceValue">--</td></tr>
+                                    <tr><td>Unrealized PnL</td><td id="unrealizedPnlValue">--</td></tr>
+                                    <tr><td>Trades Today</td><td id="tradesTodayValue">0</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Trading Settings</div>
+                            <div class="card-body">
+                                <table class="table table-sm">
+                                    <tr><td>Timeframe</td><td id="timeframeValue">5m / 15m</td></tr>
+                                    <tr><td>Confidence Threshold</td><td id="confidenceThresholdValue">70%</td></tr>
+                                    <tr><td>Capital Profile</td><td id="capitalProfileValue">--</td></tr>
+                                    <tr><td>Operable Capital</td><td id="operableCapitalValue">--</td></tr>
+                                    <tr><td>Cooldown</td><td id="cooldownValue">--</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Trades Tab -->
+            <div class="tab-pane fade" id="trades" role="tabpanel">
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <i class="fas fa-history me-2"></i>Trade History
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-dark table-striped" id="tradesTable">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Pair</th>
+                                    <th>Side</th>
+                                    <th>Entry</th>
+                                    <th>Exit</th>
+                                    <th>Size</th>
+                                    <th>PnL</th>
+                                    <th>Exit Reason</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tradesTableBody">
+                                <tr><td colspan="8" class="text-center">No trades yet</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Analytics Tab -->
+            <div class="tab-pane fade" id="analytics" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">Performance Metrics</div>
+                            <div class="card-body">
+                                <table class="table table-sm">
+                                    <tr><td>Total Trades</td><td id="totalTradesValue">0</td></tr>
+                                    <tr><td>Winning Trades</td><td id="winningTradesValue">0</td></tr>
+                                    <tr><td>Losing Trades</td><td id="losingTradesValue">0</td></tr>
+                                    <tr><td>Win Rate</td><td id="winRateAnalyticsValue">--%</td></tr>
+                                    <tr><td>Average Win</td><td id="avgWinValue">--</td></tr>
+                                    <tr><td>Average Loss</td><td id="avgLossValue">--</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-header">Session Stats</div>
+                            <div class="card-body">
+                                <table class="table table-sm">
+                                    <tr><td>Session PnL</td><td id="sessionPnlValue">--</td></tr>
+                                    <tr><td>Best Trade</td><td id="bestTradeValue">--</td></tr>
+                                    <tr><td>Worst Trade</td><td id="worstTradeValue">--</td></tr>
+                                    <tr><td>Last Trade</td><td id="lastTradeValue">--</td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Health Tab -->
+            <div class="tab-pane fade" id="health" role="tabpanel">
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Exchange</div>
+                            <div class="card-body">
+                                <div id="exchangeStatus" class="health-warning">
+                                    <i class="fas fa-circle me-2"></i>Checking...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Database</div>
+                            <div class="card-body">
+                                <div id="databaseStatus" class="health-warning">
+                                    <i class="fas fa-circle me-2"></i>Checking...
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">API Latency</div>
+                            <div class="card-body">
+                                <div id="apiLatency" class="stat-value">-- ms</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="row mt-3">
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Circuit Breaker Trips</div>
+                            <div class="card-body">
+                                <div id="circuitBreakerTrips" class="stat-value">0</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Exchange Reconnections</div>
+                            <div class="card-body">
+                                <div id="exchangeReconnections" class="stat-value">0</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="card">
+                            <div class="card-header">Stale Data Ratio</div>
+                            <div class="card-body">
+                                <div id="staleDataRatio" class="stat-value">--%</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div class="tab-pane fade" id="settings" role="tabpanel">
+                <div class="card mt-3">
+                    <div class="card-header">Bot Configuration</div>
+                    <div class="card-body">
+                        <table class="table table-sm">
+                            <tr><td>Trading Symbol</td><td id="settingsSymbol">--</td></tr>
+                            <tr><td>Primary Timeframe</td><td id="settingsTimeframe">--</td></tr>
+                            <tr><td>Confidence Threshold</td><td id="settingsConfidence">--</td></tr>
+                            <tr><td>Max Concurrent Trades</td><td id="settingsMaxTrades">--</td></tr>
+                            <tr><td>Daily Loss Limit</td><td id="settingsDailyLoss">--</td></tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Logs Tab -->
+            <div class="tab-pane fade" id="logs" role="tabpanel">
+                <div class="card mt-3">
+                    <div class="card-header">
+                        <i class="fas fa-list me-2"></i>System Logs
+                    </div>
+                    <div class="card-body" style="max-height: 500px; overflow-y: auto;">
+                        <div id="logsContainer" class="font-monospace" style="font-size: 0.85rem;">
+                            <div class="text-muted">Waiting for logs...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        let updateInterval = null;
+        
+        function formatNumber(num, decimals = 2) {
+            if (num === null || num === undefined || num === '--') return '--';
+            return typeof num === 'number' ? num.toFixed(decimals) : num;
+        }
+        
+        function formatPercent(num) {
+            if (num === null || num === undefined) return '--%';
+            return (num * 100).toFixed(1) + '%';
+        }
+        
+        function getSignalClass(signal) {
+            if (signal === 'BUY') return 'signal-buy';
+            if (signal === 'SELL') return 'signal-sell';
+            return 'signal-hold';
+        }
+        
+        function getStatusClass(status) {
+            if (status === 'RUNNING' || status === 'READY') return 'status-active';
+            if (status === 'ERROR') return 'status-inactive';
+            return 'status-warning';
+        }
+        
+        async function fetchSnapshot() {
+            try {
+                const response = await fetch('/api/snapshot');
+                if (!response.ok) throw new Error('Failed to fetch');
+                const data = await response.json();
+                updateDashboard(data);
+            } catch (error) {
+                console.error('Error fetching snapshot:', error);
+            }
+        }
+        
+        function updateDashboard(data) {
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+            
+            const status = data.status || 'UNKNOWN';
+            document.getElementById('botStatus').textContent = status;
+            document.getElementById('botStatus').className = 'badge ' + (status === 'RUNNING' ? 'bg-success' : status === 'ERROR' ? 'bg-danger' : 'bg-warning');
+            document.getElementById('statusValue').textContent = status;
+            document.getElementById('statusValue').className = 'stat-value ' + getStatusClass(status);
+            
+            document.getElementById('pairValue').textContent = data.pair || '--';
+            document.getElementById('priceValue').textContent = formatNumber(data.price, 4);
+            
+            const signal = data.signal || 'HOLD';
+            document.getElementById('signalValue').textContent = signal;
+            document.getElementById('signalValue').className = 'stat-value ' + getSignalClass(signal);
+            
+            document.getElementById('confidenceValue').textContent = formatPercent(data.confidence);
+            
+            const dailyPnl = data.daily_pnl;
+            if (dailyPnl !== null && dailyPnl !== undefined) {
+                document.getElementById('dailyPnlValue').textContent = (dailyPnl >= 0 ? '+' : '') + formatPercent(dailyPnl);
+                document.getElementById('dailyPnlValue').className = 'stat-value ' + (dailyPnl >= 0 ? 'signal-buy' : 'signal-sell');
+            }
+            
+            document.getElementById('equityValue').textContent = formatNumber(data.total_equity || data.equity) + ' USDT';
+            document.getElementById('winRateValue').textContent = formatPercent(data.win_rate);
+            
+            document.getElementById('trendValue').textContent = data.trend || '--';
+            document.getElementById('adxValue').textContent = formatNumber(data.adx, 1);
+            document.getElementById('volatilityRegimeValue').textContent = data.volatility_regime || '--';
+            document.getElementById('orderFlowValue').textContent = data.order_flow || '--';
+            document.getElementById('spreadValue').textContent = formatPercent(data.spread);
+            
+            document.getElementById('hasPositionValue').textContent = data.has_open_position ? 'Yes' : 'No';
+            document.getElementById('positionSideValue').textContent = data.open_position_side || '--';
+            document.getElementById('entryPriceValue').textContent = formatNumber(data.open_position_entry, 4);
+            document.getElementById('unrealizedPnlValue').textContent = formatNumber(data.unrealized_pnl, 4);
+            document.getElementById('tradesTodayValue').textContent = data.trades_today || 0;
+            
+            document.getElementById('timeframeValue').textContent = data.timeframe || '--';
+            document.getElementById('confidenceThresholdValue').textContent = formatPercent(data.confidence_threshold || 0.7);
+            document.getElementById('capitalProfileValue').textContent = data.capital_profile || '--';
+            document.getElementById('operableCapitalValue').textContent = formatNumber(data.operable_capital_usdt) + ' USDT';
+            document.getElementById('cooldownValue').textContent = data.cooldown || '--';
+            
+            updateTradesTable(data.trade_history || []);
+            updateHealth(data);
+            updateLogs(data.logs || []);
+            
+            document.getElementById('loading').style.display = 'none';
+        }
+        
+        function updateTradesTable(trades) {
+            const tbody = document.getElementById('tradesTableBody');
+            if (!trades || trades.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="text-center">No trades yet</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = trades.slice(0, 50).map(trade => {
+                const pnl = trade.pnl || 0;
+                const pnlClass = pnl >= 0 ? 'signal-buy' : 'signal-sell';
+                return `
+                    <tr>
+                        <td>${trade.time || trade.exit_time || '--'}</td>
+                        <td>${trade.pair || '--'}</td>
+                        <td class="${trade.side === 'BUY' ? 'signal-buy' : 'signal-sell'}">${trade.side || '--'}</td>
+                        <td>${formatNumber(trade.entry, 4)}</td>
+                        <td>${formatNumber(trade.exit, 4)}</td>
+                        <td>${formatNumber(trade.size || trade.quantity, 4)}</td>
+                        <td class="${pnlClass}">${pnl >= 0 ? '+' : ''}${formatNumber(pnl, 4)}</td>
+                        <td>${trade.exit_reason || trade.status || '--'}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+        
+        function updateHealth(data) {
+            const exchange = data.exchange_status || 'UNKNOWN';
+            const database = data.database_status || 'UNKNOWN';
+            
+            const exchangeEl = document.getElementById('exchangeStatus');
+            exchangeEl.className = exchange === 'CONNECTED' ? 'health-ok' : exchange === 'ERROR' ? 'health-error' : 'health-warning';
+            exchangeEl.innerHTML = `<i class="fas fa-circle me-2"></i>${exchange}`;
+            
+            const dbEl = document.getElementById('databaseStatus');
+            dbEl.className = database === 'CONNECTED' ? 'health-ok' : database === 'ERROR' ? 'health-error' : 'health-warning';
+            dbEl.innerHTML = `<i class="fas fa-circle me-2"></i>${database}`;
+            
+            document.getElementById('apiLatency').textContent = formatNumber(data.api_latency_p95_ms, 0) + ' ms';
+            document.getElementById('circuitBreakerTrips').textContent = data.circuit_breaker_trips || 0;
+            document.getElementById('exchangeReconnections').textContent = data.exchange_reconnections || 0;
+            document.getElementById('staleDataRatio').textContent = formatPercent(data.stale_market_data_ratio);
+        }
+        
+        function updateLogs(logs) {
+            const container = document.getElementById('logsContainer');
+            if (!logs || logs.length === 0) {
+                container.innerHTML = '<div class="text-muted">Waiting for logs...</div>';
+                return;
+            }
+            
+            container.innerHTML = logs.slice(0, 100).map(log => {
+                const time = log.time || '';
+                const message = log.message || log.msg || '';
+                const level = log.level || 'INFO';
+                const levelClass = level === 'ERROR' ? 'text-danger' : level === 'WARNING' ? 'text-warning' : 'text-info';
+                return `<div class="${levelClass}">[${time}] ${message}</div>`;
+            }).join('');
+        }
+        
+        async function checkServer() {
+            try {
+                const response = await fetch('/api/health');
+                if (response.ok) {
+                    document.getElementById('loading').style.display = 'none';
+                    startPolling();
+                }
+            } catch (error) {
+                setTimeout(checkServer, 1000);
+            }
+        }
+        
+        function startPolling() {
+            if (updateInterval) clearInterval(updateInterval);
+            fetchSnapshot();
+            updateInterval = setInterval(fetchSnapshot, 2000);
+        }
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            checkServer();
+        });
+    </script>
+</body>
+</html>

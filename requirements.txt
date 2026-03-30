@@ -12,3 +12,4 @@ pyqtgraph
 pydantic
 pydantic-settings
 pyyaml>=6.0
+flask
