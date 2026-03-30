@@ -43,7 +43,6 @@ from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
 from reco_trading.core.integrations import initialize_all_modules, get_system_status, create_default_config
 from reco_trading.core.autonomous_brain import AutonomousTradingBrain, create_autonomous_brain
 from reco_trading.core.emergency_systems import EmergencySystem, DataValidator
-from reco_trading.core.super_intelligent_improver import SuperIntelligentImprover
 
 if TYPE_CHECKING:
     from reco_trading.ui.state_manager import StateManager
@@ -172,8 +171,7 @@ class BotEngine:
         
         self.emergency_system = EmergencySystem()
         self.data_validator = DataValidator()
-        self.super_improver = SuperIntelligentImprover(enabled=True)
-        self.logger.info("Emergency System, Data Validator, and Super Intelligent Improver initialized")
+        self.logger.info("Emergency System and Data Validator initialized")
         
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -280,12 +278,11 @@ class BotEngine:
             
             await self.resilience.start()
             await self.auto_improver.start()
-            await self.super_improver.start()
             await self.multi_pair_manager.start()
             self.autonomous_brain.set_bot_engine(self)
             await self.autonomous_brain.start()
             self._auto_improver_initialized = True
-            self.logger.info("Resilience, Auto-Improver, Super Improver, Multi-Pair Manager, and Autonomous Brain started")
+            self.logger.info("Resilience, Auto-Improver, Multi-Pair Manager, and Autonomous Brain started")
             
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -411,7 +408,6 @@ class BotEngine:
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
         finally:
             await self.auto_improver.stop()
-            await self.super_improver.stop()
             await self.autonomous_brain.stop()
             await self.resilience.stop()
             await self.client.close()
@@ -667,12 +663,6 @@ class BotEngine:
             self.logger.warning("Trading blocked by auto-improvement system due to poor performance")
             self.snapshot["cooldown"] = "AUTO_IMPROVE_BLOCK"
             self.snapshot["decision_reason"] = "BLOCKED_BY_AUTO_IMPROVER"
-            return False
-        
-        if self.super_improver.should_block_trading():
-            self.logger.warning("Trading blocked by Super Intelligent Improver due to poor performance")
-            self.snapshot["cooldown"] = "SUPER_IMPROVE_BLOCK"
-            self.snapshot["decision_reason"] = "BLOCKED_BY_SUPER_IMPROVER"
             return False
         
         trading_allowed, emergency_reason = self.emergency_system.is_trading_allowed()
@@ -1470,21 +1460,6 @@ class BotEngine:
                 "pnl": pnl,
                 "duration_minutes": duration_minutes,
                 "exit_reason": exit_reason,
-            })
-            self.super_improver.record_trade({
-                "timestamp": datetime.now(timezone.utc),
-                "pair": self.symbol,
-                "side": position.side,
-                "entry": position.entry_price,
-                "exit": exit_price,
-                "quantity": position.quantity,
-                "pnl": pnl,
-                "pnl_percent": (pnl / position.entry_price * 100) if position.entry_price > 0 else 0,
-                "duration_minutes": duration_minutes,
-                "confidence": 0.7,
-                "market_regime": self.snapshot.get("volatility_regime", "UNKNOWN"),
-                "exit_reason": exit_reason,
-                "signal_quality": self.snapshot.get("confidence", 0.5),
             })
             self.logger.info(f"Trade recorded for auto-improvement: PnL={pnl:.4f}, Duration={duration_minutes:.1f}min")
 
