@@ -1,4 +1,0 @@
-risk_per_trade_fraction: 0.01
-max_daily_loss_percent: 3.0
-max_consecutive_losses: 3
-max_drawdown_percent: 10.0
