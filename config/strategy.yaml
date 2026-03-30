@@ -1,0 +1,4 @@
+min_signal_confidence: 0.60
+hold_threshold: 0.45
+use_liquidity_filter: true
+use_reversal_confirmation: true

@@ -1,0 +1,5 @@
+symbol: BTCUSDT
+timeframe: 5m
+confirmation_timeframe: 15m
+loop_sleep_seconds: 10
+max_concurrent_trades: 1

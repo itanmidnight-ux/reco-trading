@@ -1,0 +1,17 @@
+{
+  "id": "var_20260329225710_2746",
+  "name": "DefaultStrategy_gen3",
+  "parameters": {
+    "stop_loss": 0.04,
+    "take_profit": 0.08,
+    "rsi_period": 14,
+    "rsi_overbought": 70,
+    "rsi_oversold": 30,
+    "ma_period": 20,
+    "position_size": 0.21500979304644158
+  },
+  "base_strategy": "DefaultStrategy",
+  "generation": 3,
+  "created_at": "2026-03-29T22:57:10.741332+00:00",
+  "parent_id": null
+}
