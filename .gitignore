@@ -1,0 +1,119 @@
+# ==============================
+# Python
+# ==============================
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ==============================
+# IDEs
+# ==============================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ==============================
+# Environment & Secrets
+# ==============================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.cert
+credentials.json
+secrets.yaml
+secrets.yml
+config/secrets.py
+config/local_*.py
+
+# ==============================
+# Logs
+# ==============================
+*.log
+logs/
+bot.log
+bot_new.log
+*.log.*
+
+# ==============================
+# Database
+# ==============================
+*.db
+*.sqlite
+*.sqlite3
+data/
+*.dump
+postgres_data/
+redis_data/
+
+# ==============================
+# Cache & Temporary
+# ==============================
+.cache/
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.cache
+temp/
+tmp/
+*.tmp
+
+# ==============================
+# Testing
+# ==============================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+
+# ==============================
+# Docker
+# ==============================
+.dockerignore
+
+# ==============================
+# User Data (keep structure but ignore contents)
+# ==============================
+user_data/config.json
+user_data/*.json
+user_data/strategies/*.py
+!user_data/strategies/__init__.py
+
+# ==============================
+# Model Files (large binaries)
+# ==============================
+*.h5
+*.pkl
+*.joblib
+*.model
+models/

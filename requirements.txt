@@ -1,0 +1,14 @@
+ccxt
+pandas
+numpy
+ta
+sqlalchemy
+asyncpg
+rich
+python-dotenv
+PySide6
+matplotlib
+pyqtgraph
+pydantic
+pydantic-settings
+pyyaml>=6.0
