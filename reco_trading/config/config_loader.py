@@ -11,6 +11,7 @@ class ConfigBundle:
     trading: dict[str, Any] = field(default_factory=dict)
     risk: dict[str, Any] = field(default_factory=dict)
     strategy: dict[str, Any] = field(default_factory=dict)
+    telegram: dict[str, Any] = field(default_factory=dict)
 
 
 class ConfigLoader:
@@ -25,6 +26,7 @@ class ConfigLoader:
             trading=self._validate_trading(self._read_yaml("trading.yaml")),
             risk=self._validate_risk(self._read_yaml("risk.yaml")),
             strategy=self._validate_strategy(self._read_yaml("strategy.yaml")),
+            telegram=self._validate_telegram(self._read_yaml("telegram.yaml")),
         )
 
     def _read_yaml(self, name: str) -> dict[str, Any]:
@@ -61,4 +63,26 @@ class ConfigLoader:
         defaults = {"min_signal_confidence": 0.60, "hold_threshold": 0.45, "use_liquidity_filter": True}
         out = {**defaults, **raw}
         out["min_signal_confidence"] = min(max(float(out.get("min_signal_confidence", 0.60)), 0.0), 1.0)
+        return out
+
+    @staticmethod
+    def _validate_telegram(raw: dict[str, Any]) -> dict[str, Any]:
+        defaults = {
+            "enabled": False,
+            "token": "",
+            "chat_id": "",
+            "notification_settings": {
+                "entries": True,
+                "exits": True,
+                "errors": True,
+                "warnings": True,
+                "status": True,
+                "daily_summary": True,
+                "emergency_stop": True,
+                "pair_switch": True,
+            },
+            "reload": True,
+            "balance_dust_level": 0.01,
+        }
+        out = {**defaults, **raw}
         return out

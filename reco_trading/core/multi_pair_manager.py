@@ -62,7 +62,7 @@ class MultiPairManager:
         self.active_pair: str = "BTC/USDT"
         self.pair_history: dict[str, list[dict]] = {}
         
-        self.scan_interval_seconds = 60
+        self.scan_interval_seconds = 30
         self.min_volume_24h = 1_000_000
         self.max_volatility = 0.15
         self.min_liquidity_score = 0.3
@@ -85,6 +85,15 @@ class MultiPairManager:
     async def start(self) -> None:
         self._is_running = True
         await self._initialize_pairs()
+        
+        self.logger.info(f"Multi-pair manager initialized with {len(self.default_pairs)} pairs")
+        
+        await self._scan_all_pairs()
+        await self._select_best_pair()
+        
+        best = self.pairs_metrics.get(self.active_pair)
+        self.logger.info(f"Initial best pair: {self.active_pair} (opportunity: {best.opportunity_score if best else 0:.3f})")
+        
         self._scan_task = asyncio.create_task(self._scan_loop())
         self.logger.info(f"Multi-pair manager started with {len(self.default_pairs)} pairs")
 
@@ -111,6 +120,12 @@ class MultiPairManager:
             try:
                 await self._scan_all_pairs()
                 await self._select_best_pair()
+                
+                sorted_pairs = sorted(self.pairs_metrics.items(), key=lambda x: x[1].opportunity_score, reverse=True)
+                top_3 = sorted_pairs[:3]
+                top_info = ", ".join([f"{s}:{m.opportunity_score:.2f}" for s, m in top_3])
+                self.logger.info(f"[SCAN] Pairs: {top_info} | Active: {self.active_pair}")
+                
                 await asyncio.sleep(self.scan_interval_seconds)
             except asyncio.CancelledError:
                 break
@@ -222,10 +237,12 @@ class MultiPairManager:
         best_pair = None
         best_score = -1.0
         
+        active_metrics = self.pairs_metrics.get(self.active_pair)
+        
         for symbol, metrics in self.pairs_metrics.items():
             if metrics.volume_24h < self.min_volume_24h:
                 continue
-            if metrics.volatility > self.max_volatility:
+            if metrics.volatility > self.max_volatility and metrics.volatility > 0.20:
                 continue
             if metrics.liquidity_score < self.min_liquidity_score:
                 continue
@@ -238,14 +255,57 @@ class MultiPairManager:
                 metrics.liquidity_score * self._weight_liquidity
             )
             
+            if metrics.market_regime == "LOW_VOLATILITY":
+                total_score *= 0.7
+            elif metrics.market_regime == "NORMAL":
+                total_score *= 1.0
+            elif metrics.market_regime == "HIGH_VOLATILITY":
+                total_score *= 1.1
+            
             if total_score > best_score:
                 best_score = total_score
                 best_pair = symbol
         
+        active_total_score = 0.0
+        if active_metrics:
+            active_total_score = (
+                active_metrics.opportunity_score * self._weight_opportunity +
+                active_metrics.momentum_score * self._weight_momentum +
+                active_metrics.trend_score * self._weight_trend +
+                active_metrics.volume_score * self._weight_volume +
+                active_metrics.liquidity_score * self._weight_liquidity
+            )
+            if active_metrics.market_regime == "LOW_VOLATILITY":
+                active_total_score *= 0.7
+            elif active_metrics.market_regime == "NORMAL":
+                active_total_score *= 1.0
+            elif active_metrics.market_regime == "HIGH_VOLATILITY":
+                active_total_score *= 1.1
+        
+        should_switch = False
+        switch_reason = ""
+        
         if best_pair and best_pair != self.active_pair:
+            score_diff = best_score - active_total_score
+            self.logger.info(f"=== SCORE COMPARISON: best={best_pair}({best_score:.3f}) vs active={self.active_pair}({active_total_score:.3f}), diff={score_diff:.3f}")
+            if score_diff > 0.08:
+                should_switch = True
+                switch_reason = f"better_score ({best_score:.2f} vs {active_total_score:.2f})"
+        
+        if active_metrics and active_metrics.market_regime == "LOW_VOLATILITY":
+            for symbol, metrics in self.pairs_metrics.items():
+                if symbol != self.active_pair and metrics.market_regime in ["NORMAL", "HIGH_VOLATILITY"]:
+                    if metrics.opportunity_score > active_metrics.opportunity_score:
+                        should_switch = True
+                        switch_reason = f"low_volatility ({active_metrics.market_regime} vs {metrics.market_regime})"
+                        best_pair = symbol
+                        best_score = metrics.opportunity_score
+                        break
+        
+        if should_switch and best_pair:
             old_pair = self.active_pair
             self.active_pair = best_pair
-            self.logger.info(f"Switched trading pair: {old_pair} -> {best_pair} (score: {best_score:.2f})")
+            self.logger.warning(f">>> AUTO-SWITCH PAIR: {old_pair} -> {best_pair} reason: {switch_reason}")
 
     def get_best_pair(self) -> str:
         return self.active_pair

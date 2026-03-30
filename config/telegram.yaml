@@ -1,0 +1,31 @@
+# Telegram Configuration for Reco-Trading
+# Get your bot token from @BotFather on Telegram
+# Get your chat ID from @userinfobot on Telegram
+
+# Enable/disable Telegram notifications
+enabled: false
+
+# Bot Token (from @BotFather)
+# Example: 1234567890:ABCdefGHIjklMNOpqrsTUVwxyz123456789
+token: ""
+
+# Your Chat ID (from @userinfobot)
+# Example: 123456789
+chat_id: ""
+
+# Notification settings
+notification_settings:
+  entries: true          # Notify on trade entry
+  exits: true           # Notify on trade exit
+  errors: true         # Notify on errors
+  warnings: true      # Notify on warnings
+  status: true         # Notify on status changes
+  daily_summary: true  # Send daily summary
+  emergency_stop: true # Notify on emergency stop
+  pair_switch: true    # Notify on pair changes
+
+# Allow config reload via Telegram command
+reload: true
+
+# Minimum balance to report
+balance_dust_level: 0.01

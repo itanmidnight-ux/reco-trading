@@ -248,6 +248,48 @@ class IntelligentPositionSizer:
             self._loss_streak += 1
             self._win_streak = 0
 
+    def calculate_kelly_position_size(
+        self,
+        win_rate: float,
+        avg_win_percent: float,
+        avg_loss_percent: float,
+        confidence: float = 1.0,
+    ) -> float:
+        """
+        Calculate optimal position size using Kelly Criterion.
+        
+        Returns the fraction of capital to risk (0-1).
+        """
+        if win_rate <= 0 or avg_loss_percent <= 0:
+            return self.config.risk_per_trade_percent / 100
+        
+        win_loss_ratio = avg_win_percent / avg_loss_percent
+        
+        kelly = (win_rate * win_loss_ratio - (1 - win_rate)) / win_loss_ratio
+        
+        kelly = max(0.0, min(kelly, 0.25))
+        
+        half_kelly = kelly / 2
+        
+        quarter_kelly = half_kelly / 2
+        
+        if self.config.conservative_mode:
+            optimal_fraction = quarter_kelly
+        elif confidence >= 0.8:
+            optimal_fraction = half_kelly
+        else:
+            optimal_fraction = quarter_kelly
+        
+        optimal_fraction = min(optimal_fraction, self.config.risk_per_trade_percent / 100)
+        
+        self.logger.info(
+            f"Kelly Criterion: Full={kelly:.2%}, Half={half_kelly:.2%}, "
+            f"Quarter={quarter_kelly:.2%}, Using={optimal_fraction:.2%} "
+            f"(win_rate={win_rate:.1%}, win_loss_ratio={win_loss_ratio:.2f})"
+        )
+        
+        return optimal_fraction
+
     def get_status(self) -> dict:
         """Get current position sizing status."""
         

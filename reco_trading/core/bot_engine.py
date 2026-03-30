@@ -42,6 +42,8 @@ from reco_trading.ml.enhanced_ml_engine import EnhancedMLEngine
 from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
 from reco_trading.core.integrations import initialize_all_modules, get_system_status, create_default_config
 from reco_trading.core.autonomous_brain import AutonomousTradingBrain, create_autonomous_brain
+from reco_trading.core.emergency_systems import EmergencySystem, DataValidator
+from reco_trading.core.super_intelligent_improver import SuperIntelligentImprover
 
 if TYPE_CHECKING:
     from reco_trading.ui.state_manager import StateManager
@@ -122,6 +124,7 @@ class BotEngine:
         self.runtime_investment_mode: str = "Balanced"
         self.runtime_dynamic_exit_enabled: bool = False
         self.runtime_confidence_boost_multiplier: float = 1.0
+        self.runtime_confidence_threshold: float | None = None
         self.runtime_filter_config: dict[str, float] = self._get_default_filter_config()
         self.manual_pause = False
         self.emergency_stop_active = False
@@ -166,6 +169,11 @@ class BotEngine:
         
         self.autonomous_brain = create_autonomous_brain(enabled=True, capital=1000.0)
         self.logger.info("Autonomous Trading Brain initialized")
+        
+        self.emergency_system = EmergencySystem()
+        self.data_validator = DataValidator()
+        self.super_improver = SuperIntelligentImprover(enabled=True)
+        self.logger.info("Emergency System, Data Validator, and Super Intelligent Improver initialized")
         
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
@@ -272,11 +280,12 @@ class BotEngine:
             
             await self.resilience.start()
             await self.auto_improver.start()
+            await self.super_improver.start()
             await self.multi_pair_manager.start()
             self.autonomous_brain.set_bot_engine(self)
             await self.autonomous_brain.start()
             self._auto_improver_initialized = True
-            self.logger.info("Resilience, Auto-Improver, Multi-Pair Manager, and Autonomous Brain started")
+            self.logger.info("Resilience, Auto-Improver, Super Improver, Multi-Pair Manager, and Autonomous Brain started")
             
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -402,6 +411,7 @@ class BotEngine:
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
         finally:
             await self.auto_improver.stop()
+            await self.super_improver.stop()
             await self.autonomous_brain.stop()
             await self.resilience.stop()
             await self.client.close()
@@ -626,6 +636,17 @@ class BotEngine:
         consecutive_losses = self.auto_improver._performance.consecutive_losses if self.auto_improver.enabled else 0
         has_open_position = len(self.position_manager.positions) > 0
         
+        current_best_pair = self.multi_pair_manager.get_best_pair()
+        if current_best_pair != self.symbol and not has_open_position:
+            old_symbol = self.symbol
+            self.symbol = current_best_pair
+            self.order_manager = OrderManager(self.client, self.symbol)
+            self.market_stream = MarketStream(self.client, self.symbol, self.settings.history_limit)
+            self._cached_frame5 = None
+            self._cached_frame15 = None
+            self.logger.warning(f"Auto-switched to best pair: {old_symbol} -> {self.symbol}")
+            self.snapshot["pair_switch"] = self.symbol
+        
         if not has_open_position and self.multi_pair_manager.should_switch_pair(consecutive_losses):
             try:
                 new_pair = self.multi_pair_manager.get_alternative_pairs(1)
@@ -647,7 +668,20 @@ class BotEngine:
             self.snapshot["cooldown"] = "AUTO_IMPROVE_BLOCK"
             self.snapshot["decision_reason"] = "BLOCKED_BY_AUTO_IMPROVER"
             return False
-            
+        
+        if self.super_improver.should_block_trading():
+            self.logger.warning("Trading blocked by Super Intelligent Improver due to poor performance")
+            self.snapshot["cooldown"] = "SUPER_IMPROVE_BLOCK"
+            self.snapshot["decision_reason"] = "BLOCKED_BY_SUPER_IMPROVER"
+            return False
+        
+        trading_allowed, emergency_reason = self.emergency_system.is_trading_allowed()
+        if not trading_allowed:
+            self.logger.warning(f"Emergency system blocked trading: {emergency_reason}")
+            self.snapshot["cooldown"] = "EMERGENCY_BLOCK"
+            self.snapshot["decision_reason"] = emergency_reason
+            return False
+        
         confidence = float(analysis["confidence"])
         side = str(analysis.get("side", "HOLD")).upper()
         profile = self._current_capital_profile()
@@ -693,39 +727,51 @@ class BotEngine:
 
         adx_value = _as_float(self.snapshot.get("adx"), 0.0)
         adx_threshold = self._effective_adx_threshold()
-        adx_pass = adx_value >= adx_threshold
+        
+        high_confidence_trade = confidence >= 0.75
+        if high_confidence_trade:
+            adx_pass = True
+        else:
+            adx_pass = adx_value >= adx_threshold
+        
         validation_checks.append({
             "name": "adx_threshold",
             "value": adx_value,
             "threshold": f">= {adx_threshold}",
             "passed": adx_pass,
         })
-        if not adx_pass:
+        if not adx_pass and not high_confidence_trade:
             await self._log("INFO", f"adx_filter_rejected adx={adx_value:.2f} threshold={adx_threshold}")
 
         rsi_value = _as_float(self.snapshot.get("rsi"), 50.0)
         if side == "BUY":
             rsi_threshold = self._effective_rsi_buy_threshold()
-            rsi_pass = rsi_value >= rsi_threshold
+            if high_confidence_trade:
+                rsi_pass = True
+            else:
+                rsi_pass = rsi_value >= rsi_threshold
         else:
             rsi_threshold = self._effective_rsi_sell_threshold()
-            rsi_pass = rsi_value <= rsi_threshold
+            if high_confidence_trade:
+                rsi_pass = True
+            else:
+                rsi_pass = rsi_value <= rsi_threshold
         validation_checks.append({
             "name": "rsi_filter",
             "value": rsi_value,
             "threshold": f"{rsi_threshold} ({side})",
             "passed": rsi_pass,
         })
-        if not rsi_pass:
+        if not rsi_pass and not high_confidence_trade:
             await self._log("INFO", f"rsi_filter_rejected rsi={rsi_value:.2f} threshold={rsi_threshold} side={side}")
 
         volume_ratio = _as_float(self.snapshot.get("volume_ratio"), 1.0)
         if side == "BUY":
-            vol_threshold = self.runtime_filter_config.get("volume_buy_threshold", 1.10)
+            vol_threshold = self.runtime_filter_config.get("volume_buy_threshold", 0.80)
             vol_pass = volume_ratio >= vol_threshold
         else:
-            vol_threshold = self.runtime_filter_config.get("volume_sell_threshold", 0.65)
-            vol_pass = volume_ratio <= vol_threshold
+            vol_threshold = self.runtime_filter_config.get("volume_sell_threshold", 0.80)
+            vol_pass = volume_ratio >= vol_threshold
         validation_checks.append({
             "name": "volume_filter",
             "value": volume_ratio,
@@ -1425,6 +1471,21 @@ class BotEngine:
                 "duration_minutes": duration_minutes,
                 "exit_reason": exit_reason,
             })
+            self.super_improver.record_trade({
+                "timestamp": datetime.now(timezone.utc),
+                "pair": self.symbol,
+                "side": position.side,
+                "entry": position.entry_price,
+                "exit": exit_price,
+                "quantity": position.quantity,
+                "pnl": pnl,
+                "pnl_percent": (pnl / position.entry_price * 100) if position.entry_price > 0 else 0,
+                "duration_minutes": duration_minutes,
+                "confidence": 0.7,
+                "market_regime": self.snapshot.get("volatility_regime", "UNKNOWN"),
+                "exit_reason": exit_reason,
+                "signal_quality": self.snapshot.get("confidence", 0.5),
+            })
             self.logger.info(f"Trade recorded for auto-improvement: PnL={pnl:.4f}, Duration={duration_minutes:.1f}min")
 
         if pnl > 0:
@@ -1433,6 +1494,10 @@ class BotEngine:
         self.snapshot["last_trade"] = f"{position.side} {exit_reason} pnl={pnl:.4f}"
 
         await self._log("INFO", f"position_closed trade_id={position.trade_id} reason={exit_reason} exit_price={exit_price:.8f} pnl={pnl:.8f}")
+        
+        self.emergency_system.record_trade(pnl, pnl > 0)
+        self.emergency_system.update_equity(_as_float(self.snapshot.get("total_equity"), 1000.0))
+        
         self._sync_ui_state()
 
         if self.state_manager:
@@ -2052,6 +2117,8 @@ class BotEngine:
         return min(float(self.settings.max_trade_balance_fraction), profile_fraction)
 
     def _effective_min_signal_confidence(self) -> float:
+        if self.runtime_confidence_threshold is not None:
+            return self.runtime_confidence_threshold
         return max(float(self._current_capital_profile().min_confidence), float(self.settings.confidence_threshold))
 
     def _effective_max_spread_ratio(self) -> float:
@@ -2408,6 +2475,16 @@ class BotEngine:
             },
         }
         
+        emergency_status = self.emergency_system.get_status()
+        self.snapshot["emergency_system"] = {
+            "emergency_level": emergency_status.get("emergency_level", "normal"),
+            "trading_allowed": emergency_status.get("trading_allowed", True),
+            "kill_switch_triggered": emergency_status.get("kill_switch_triggered", False),
+            "consecutive_losses": emergency_status.get("consecutive_losses", 0),
+            "session_pnl": emergency_status.get("session_pnl", 0),
+            "drawdown_percent": emergency_status.get("drawdown_percent", 0),
+        }
+        
         self.snapshot["hyperopt"] = {
             "status": "Activo" if self.auto_improver.enabled else "Inactivo",
             "current_trial": self.auto_improver.get_improvement_metrics().get("optimization_count", 0) if hasattr(self, 'auto_improver') else 0,
@@ -2556,26 +2633,26 @@ class BotEngine:
         normalized_symbol = self.symbol.replace("/", "").upper()
         default_configs = {
             "BTCUSDT": {
-                "adx_threshold": 12.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
-                "volume_buy_threshold": 0.90, "volume_sell_threshold": 0.85,
+                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
+                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
                 "atr_low_threshold": 0.0008, "atr_high_threshold": 0.030,
-                "stop_loss_atr_multiplier": 1.5, "take_profit_atr_multiplier": 2.5, "min_confidence": 0.45,
+                "stop_loss_atr_multiplier": 1.5, "take_profit_atr_multiplier": 2.5, "min_confidence": 0.40,
             },
             "ETHUSDT": {
-                "adx_threshold": 12.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
-                "volume_buy_threshold": 0.90, "volume_sell_threshold": 0.85,
+                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
+                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
                 "atr_low_threshold": 0.001, "atr_high_threshold": 0.040,
-                "stop_loss_atr_multiplier": 1.6, "take_profit_atr_multiplier": 2.6, "min_confidence": 0.45,
+                "stop_loss_atr_multiplier": 1.6, "take_profit_atr_multiplier": 2.6, "min_confidence": 0.40,
             },
             "SOLUSDT": {
-                "adx_threshold": 12.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
-                "volume_buy_threshold": 0.85, "volume_sell_threshold": 0.90,
+                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
+                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
                 "atr_low_threshold": 0.002, "atr_high_threshold": 0.060,
-                "stop_loss_atr_multiplier": 2.0, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.45,
+                "stop_loss_atr_multiplier": 2.0, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.40,
             },
             "BNBUSDT": {
-                "adx_threshold": 12.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
-                "volume_buy_threshold": 0.85, "volume_sell_threshold": 0.90,
+                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
+                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
                 "atr_low_threshold": 0.001, "atr_high_threshold": 0.050,
                 "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 2.8, "min_confidence": 0.45,
             },
@@ -2594,13 +2671,13 @@ class BotEngine:
         })
 
     def _effective_adx_threshold(self) -> float:
-        return self.runtime_filter_config.get("adx_threshold", 22.0)
+        return self.runtime_filter_config.get("adx_threshold", 10.0)
 
     def _effective_rsi_buy_threshold(self) -> float:
-        return self.runtime_filter_config.get("rsi_buy_threshold", 55.0)
+        return self.runtime_filter_config.get("rsi_buy_threshold", 40.0)
 
     def _effective_rsi_sell_threshold(self) -> float:
-        return self.runtime_filter_config.get("rsi_sell_threshold", 45.0)
+        return self.runtime_filter_config.get("rsi_sell_threshold", 60.0)
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:

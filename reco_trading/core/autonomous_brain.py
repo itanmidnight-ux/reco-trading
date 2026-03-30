@@ -99,6 +99,8 @@ class AutonomousTradingBrain:
                 
                 await self._analyze_performance()
                 
+                await self._adjust_confidence_threshold()
+                
                 await self._adjust_to_market()
                 
                 await self._optimize_parameters()
@@ -277,6 +279,73 @@ class AutonomousTradingBrain:
             "recent_performance": recent_performance,
             "current_filters": self.get_current_filters(),
         }
+
+    async def _adjust_confidence_threshold(self) -> None:
+        """Analyze market and adjust confidence threshold automatically."""
+        
+        if not hasattr(self, '_bot_engine') or not self._bot_engine:
+            return
+        
+        try:
+            settings = getattr(self._bot_engine, 'settings', None)
+            if not settings or not getattr(settings, 'auto_confidence_adjustment', True):
+                return
+            
+            current_confidence = getattr(settings, 'min_signal_confidence', 0.70)
+            
+            market_metrics = self._bot_engine.snapshot.get("market_regime", "UNKNOWN")
+            pair = getattr(self._bot_engine, 'symbol', "BTC/USDT")
+            
+            pair_metrics = None
+            if hasattr(self._bot_engine, 'multi_pair_manager'):
+                pair_metrics = self._bot_engine.multi_pair_manager.get_pair_metrics(pair)
+            
+            opportunity_score = pair_metrics.opportunity_score if pair_metrics else 0.5
+            volatility = pair_metrics.volatility if pair_metrics else 0.03
+            
+            new_confidence = current_confidence
+            
+            if self._consecutive_losses >= 3:
+                new_confidence = min(0.85, current_confidence + 0.05)
+                self.logger.warning(f"Consecutive losses detected - Increasing confidence to {new_confidence:.0%}")
+            elif self._consecutive_losses >= 5:
+                new_confidence = min(0.90, current_confidence + 0.10)
+                self.logger.warning(f"Multiple consecutive losses - Increasing confidence to {new_confidence:.0%}")
+            elif self._consecutive_wins >= 5:
+                new_confidence = max(0.60, current_confidence - 0.05)
+                self.logger.info(f"Strong win streak - Reducing confidence to {new_confidence:.0%} to take more trades")
+            
+            if market_metrics == "HIGH_VOLATILITY":
+                new_confidence = max(new_confidence, 0.75)
+                self.logger.info(f"High volatility market - Setting confidence to {new_confidence:.0%}")
+            elif market_metrics == "LOW_VOLATILITY":
+                new_confidence = min(new_confidence, 0.65)
+                self.logger.info(f"Low volatility market - Setting confidence to {new_confidence:.0%}")
+            
+            if opportunity_score > 0.7:
+                new_confidence = max(0.65, new_confidence - 0.05)
+                self.logger.info(f"High opportunity score ({opportunity_score:.2f}) - Reducing confidence to {new_confidence:.0%}")
+            elif opportunity_score < 0.4:
+                new_confidence = min(0.80, new_confidence + 0.05)
+                self.logger.info(f"Low opportunity score ({opportunity_score:.2f}) - Increasing confidence to {new_confidence:.0%}")
+            
+            if volatility > 0.10:
+                new_confidence = min(0.85, new_confidence + 0.05)
+                self.logger.info(f"High volatility ({volatility:.2%}) - Increasing confidence to {new_confidence:.0%}")
+            elif volatility < 0.02:
+                new_confidence = max(0.60, new_confidence - 0.05)
+                self.logger.info(f"Low volatility ({volatility:.2%}) - Reducing confidence to {new_confidence:.0%}")
+            
+            if new_confidence != current_confidence:
+                self._bot_engine.runtime_confidence_threshold = new_confidence
+                self.logger.info(f">>> AUTO-ADJUSTED confidence: {current_confidence:.0%} -> {new_confidence:.0%} for {pair}")
+                
+                self._bot_engine.snapshot["auto_confidence_adjusted"] = True
+                self._bot_engine.snapshot["previous_confidence"] = current_confidence
+                self._bot_engine.snapshot["new_confidence"] = new_confidence
+        
+        except Exception as e:
+            self.logger.error(f"Error adjusting confidence threshold: {e}")
 
 
 def create_autonomous_brain(

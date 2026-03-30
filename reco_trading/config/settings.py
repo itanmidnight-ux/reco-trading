@@ -35,15 +35,16 @@ class Settings(BaseSettings):
     # =========================
     # SIGNAL THRESHOLDS
     # =========================
-    min_signal_confidence: float = Field(default=0.55, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
-    strong_signal_confidence: float = 0.85
-    exceptional_signal_confidence: float = 0.90
-    confidence_hold_threshold: float = 0.55
-    adx_min_threshold: float = 22.0
+    min_signal_confidence: float = Field(default=0.70, validation_alias=AliasChoices("MIN_SIGNAL_CONFIDENCE", "CONFIDENCE_THRESHOLD"))
+    strong_signal_confidence: float = 0.80
+    exceptional_signal_confidence: float = 0.85
+    confidence_hold_threshold: float = 0.70
+    adx_min_threshold: float = 15.0
     max_spread_ratio: float = 0.004
     max_slippage_ratio: float = 0.003
-    min_volume_ratio: float = 0.8
+    min_volume_ratio: float = 0.7
     execution_model_enabled: bool = False
+    auto_confidence_adjustment: bool = True
 
     # =========================
     # MARKET INTELLIGENCE
@@ -97,10 +98,15 @@ class Settings(BaseSettings):
     api_latency_window_size: int = 200
     stale_market_data_max_age_seconds: int = 180
     feature_multi_symbol_enabled: bool = False
-    trading_symbols: list[str] = Field(default_factory=list, validation_alias=AliasChoices("TRADING_SYMBOLS", "SYMBOLS"))
+    trading_symbols: list[str] = Field(default_factory=lambda: [
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
+        "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT",
+        "DOT/USDT", "MATIC/USDT", "LINK/USDT", "ATOM/USDT"
+    ], validation_alias=AliasChoices("TRADING_SYMBOLS", "SYMBOLS"))
     max_global_exposure_fraction: float = 0.7
     max_symbol_correlation: float = 0.85
     symbol_capital_limits: dict[str, float] = Field(default_factory=dict, validation_alias=AliasChoices("SYMBOL_CAPITAL_LIMITS"))
+    feature_multi_symbol_enabled: bool = True
 
     @property
     def symbol(self) -> str:
