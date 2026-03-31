@@ -249,6 +249,7 @@
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#analytics"><i class="fas fa-chart-pie me-1"></i> Analytics</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#market"><i class="fas fa-chart-line me-1"></i> Market</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#strategy"><i class="fas fa-brain me-1"></i> Strategy</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-ml"><i class="fas fa-robot me-1"></i> AI/ML</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#risk"><i class="fas fa-shield-alt me-1"></i> Risk</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#health"><i class="fas fa-heartbeat me-1"></i> Health</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs"><i class="fas fa-list me-1"></i> Logs</button></li>
@@ -512,6 +513,73 @@
                 </div>
             </div>
 
+            <!-- AI/ML Tab -->
+            <div class="tab-pane fade" id="ai-ml">
+                <div class="grid-4 mt-3">
+                    <div class="stat-card">
+                        <div class="stat-value glow-purple" id="regimeValue">-</div>
+                        <div class="stat-label">Market Regime</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value glow-orange" id="optimizerScoreValue">0</div>
+                        <div class="stat-label">Optimizer Score</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="consecutiveLossesValue">0</div>
+                        <div class="stat-label">Consecutive Losses</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value glow-cyan" id="activePairValue">BTC/USDT</div>
+                        <div class="stat-label">Active Pair</div>
+                    </div>
+                </div>
+                
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-brain text-purple"></i> Bayesian Optimizer</div>
+                        <div class="card-body" id="optimizerData">
+                            <div class="text-muted">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-dna text-orange"></i> Genetic Algorithm</div>
+                        <div class="card-body" id="evolverData">
+                            <div class="text-muted">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-layer-group text-cyan"></i> Pairs Opportunity Scores</div>
+                        <div class="card-body" id="pairsData" style="max-height: 250px; overflow-y: auto;">
+                            <div class="text-muted">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-sliders-h text-green"></i> Current Filters</div>
+                        <div class="card-body" id="filtersData">
+                            <div class="text-muted">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-chart-line text-blue"></i> Regime Detector</div>
+                        <div class="card-body" id="regimeData">
+                            <div class="text-muted">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-filter text-yellow"></i> Adaptive Filters</div>
+                        <div class="card-body" id="adaptiveFiltersData">
+                            <div class="text-muted">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Logs -->
             <div class="tab-pane fade" id="logs">
                 <div class="card mt-3">
@@ -719,10 +787,118 @@
             } catch(e) { alert('Error: '+e); }
         }
         
+        async function fetchAIMLData() {
+            try {
+                const [autonomousRes, multipairRes] = await Promise.all([
+                    fetch('/api/autonomous').catch(() => ({json: () => ({error: 'Not available'})})),
+                    fetch('/api/multipair').catch(() => ({json: () => ({error: 'Not available'})}))
+                ]);
+                
+                const autonomous = await autonomousRes.json();
+                const multipair = await multipairRes.json();
+                
+                if (autonomous.error && autonomous.error !== 'Autonomous brain not available') {
+                    document.getElementById('regimeValue').textContent = '-';
+                    document.getElementById('optimizerScoreValue').textContent = '0';
+                    document.getElementById('consecutiveLossesValue').textContent = '0';
+                    document.getElementById('activePairValue').textContent = multipair.active_pair || 'BTC/USDT';
+                    document.getElementById('optimizerData').innerHTML = '<div class="text-muted">Bot not running</div>';
+                    document.getElementById('evolverData').innerHTML = '<div class="text-muted">Bot not running</div>';
+                    document.getElementById('filtersData').innerHTML = '<div class="text-muted">Bot not running</div>';
+                    document.getElementById('regimeData').innerHTML = '<div class="text-muted">Bot not running</div>';
+                    document.getElementById('adaptiveFiltersData').innerHTML = '<div class="text-muted">Bot not running</div>';
+                    return;
+                }
+                
+                // Update regime
+                document.getElementById('regimeValue').textContent = 
+                    autonomous.regime_detector?.current || '-';
+                
+                // Update optimizer score
+                const optScore = autonomous.strategy_optimizer?.optimizer?.best_score || 0;
+                document.getElementById('optimizerScoreValue').textContent = 
+                    typeof optScore === 'number' ? optScore.toFixed(2) : '0';
+                
+                // Update consecutive losses
+                document.getElementById('consecutiveLossesValue').textContent = 
+                    autonomous.consecutive_losses || 0;
+                
+                // Update active pair
+                document.getElementById('activePairValue').textContent = 
+                    multipair.active_pair || autonomous.current_best_pair || 'BTC/USDT';
+                
+                // Update optimizer data
+                const optData = autonomous.strategy_optimizer || {};
+                document.getElementById('optimizerData').innerHTML = `
+                    <div class="info-row"><span class="info-label">Iterations</span><span class="info-value">${optData.optimizer?.iteration || 0}</span></div>
+                    <div class="info-row"><span class="info-label">Best Score</span><span class="info-value">${(optData.optimizer?.best_score || 0).toFixed(2)}</span></div>
+                    <div class="info-row"><span class="info-label">Observations</span><span class="info-value">${optData.optimizer?.observations_count || 0}</span></div>
+                    <div class="info-row"><span class="info-label">History Count</span><span class="info-value">${optData.performance_history_count || 0}</span></div>
+                    <div class="mt-2"><strong>Current Params:</strong></div>
+                    <pre class="small mt-1" style="max-height: 100px; overflow-y: auto;">${JSON.stringify(optData.current_params || {}, null, 2)}</pre>
+                `;
+                
+                // Update evolver data
+                const evolverData = autonomous.strategy_evolver || {};
+                document.getElementById('evolverData').innerHTML = `
+                    <div class="info-row"><span class="info-label">Generation</span><span class="info-value">${evolverData.optimizer?.generation || 0}</span></div>
+                    <div class="info-row"><span class="info-label">Best Fitness</span><span class="info-value">${(evolverData.optimizer?.best_fitness || 0).toFixed(2)}</span></div>
+                    <div class="info-row"><span class="info-label">Population Size</span><span class="info-value">${evolverData.optimizer?.population_size || 0}</span></div>
+                    <div class="info-row"><span class="info-label">Mutation Rate</span><span class="info-value">${((evolverData.optimizer?.mutation_rate || 0) * 100).toFixed(0)}%</span></div>
+                `;
+                
+                // Update pairs data
+                if (multipair.pairs && multipair.pairs.length > 0) {
+                    const sortedPairs = [...multipair.pairs].sort((a, b) => b.opportunity_score - a.opportunity_score);
+                    document.getElementById('pairsData').innerHTML = sortedPairs.slice(0, 12).map(p => `
+                        <div class="info-row">
+                            <span class="info-label">${p.symbol}</span>
+                            <span class="info-value">${p.opportunity_score.toFixed(2)}</span>
+                        </div>
+                    `).join('');
+                } else {
+                    document.getElementById('pairsData').innerHTML = '<div class="text-muted">Scanning pairs...</div>';
+                }
+                
+                // Update filters
+                const filters = autonomous.current_filters || {};
+                document.getElementById('filtersData').innerHTML = `
+                    <div class="info-row"><span class="info-label">RSI Period</span><span class="info-value">${filters.rsi_period || '-'}</span></div>
+                    <div class="info-row"><span class="info-label">RSI Overbought</span><span class="info-value">${filters.rsi_overbought || '-'}</span></div>
+                    <div class="info-row"><span class="info-label">RSI Oversold</span><span class="info-value">${filters.rsi_oversold || '-'}</span></div>
+                    <div class="info-row"><span class="info-label">MA Short</span><span class="info-value">${filters.ma_short_period || '-'}</span></div>
+                    <div class="info-row"><span class="info-label">MA Long</span><span class="info-value">${filters.ma_long_period || '-'}</span></div>
+                `;
+                
+                // Update regime data
+                const regimeData = autonomous.regime_detector || {};
+                document.getElementById('regimeData').innerHTML = `
+                    <div class="info-row"><span class="info-label">Current</span><span class="info-value">${regimeData.current || '-'}</span></div>
+                    <div class="info-row"><span class="info-label">Trend</span><span class="info-value">${regimeData.current_trend || '-'}</span></div>
+                    <div class="info-row"><span class="info-label">Volatility</span><span class="info-value">${((regimeData.current_volatility || 0) * 100).toFixed(2)}%</span></div>
+                    <div class="info-row"><span class="info-label">History</span><span class="info-value">${regimeData.history_length || 0}</span></div>
+                `;
+                
+                // Update adaptive filters
+                const adaptFilters = autonomous.adaptive_filters || {};
+                document.getElementById('adaptiveFiltersData').innerHTML = `
+                    <div class="info-row"><span class="info-label">KAMA Trend</span><span class="info-value">${adaptFilters.kama?.trend || '-'}</span></div>
+                    <div class="info-row"><span class="info-label">KAMA Value</span><span class="info-value">${(adaptFilters.kama?.current_value || 0).toFixed(2)}</span></div>
+                    <div class="info-row"><span class="info-label">Kalman Init</span><span class="info-value">${adaptFilters.kalman?.initialized ? 'Yes' : 'No'}</span></div>
+                    <div class="info-row"><span class="info-label">Price History</span><span class="info-value">${adaptFilters.price_history_count || 0}</span></div>
+                `;
+                
+            } catch(e) {
+                console.error('Error fetching AI/ML data:', e);
+            }
+        }
+        
         document.addEventListener('DOMContentLoaded', () => {
             fetchSnapshot();
             loadAllTrades();
+            fetchAIMLData();
             setInterval(fetchSnapshot, 1500);
+            setInterval(fetchAIMLData, 5000);
         });
     </script>
 </body>

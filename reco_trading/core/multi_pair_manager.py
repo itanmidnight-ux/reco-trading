@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 import numpy as np
 
@@ -52,35 +52,134 @@ class MultiPairManager:
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange_client
         
-        self.default_pairs = base_pairs or [
-            "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
-            "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT",
-            "DOT/USDT", "MATIC/USDT", "LINK/USDT", "ATOM/USDT"
-        ]
+        # Tier 1: Top Liquidity (10 pairs)
+        tier1 = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", 
+                 "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT"]
+        
+        # Tier 2: Good Liquidity (10 pairs)
+        tier2 = ["MATIC/USDT", "ATOM/USDT", "UNI/USDT", "XLM/USDT", "ETC/USDT",
+                 "ALGO/USDT", "FIL/USDT", "HBAR/USDT", "NEAR/USDT", "APT/USDT"]
+        
+        # Tier 3: Mid-Cap Growth (12 pairs)
+        tier3 = ["ARB/USDT", "OP/USDT", "SUI/USDT", "INJ/USDT", "SEI/USDT",
+                 "TIA/USDT", "PEPE/USDT", "WIF/USDT", "SSV/USDT", "FTM/USDT",
+                 "JUP/USDT", "WLD/USDT"]
+        
+        # Tier 4: DeFi Tokens (12 pairs)
+        tier4 = ["AAVE/USDT", "LDO/USDT", "RUNE/USDT", "ENS/USDT", "CRV/USDT",
+                 "MKR/USDT", "SNX/USDT", "COMP/USDT", "SUSHI/USDT", "YFI/USDT",
+                 "BAL/USDT", "KP3R/USDT"]
+        
+        # Tier 5: Emerging/Growth (12 pairs)
+        tier5 = ["TRUMP/USDT", "MELANIA/USDT", "BONK/USDT", "IMX/USDT", "AR/USDT",
+                 "AGIX/USDT", "FET/USDT", "CFX/USDT", "RNDR/USDT", "GRT/USDT",
+                 "STX/USDT", "SATS/USDT"]
+        
+        # Tier 6: Additional High Volume (12 pairs)
+        tier6 = ["SHIB/USDT", "XEC/USDT", "PEOPLE/USDT", "LTC/USDT", "BCH/USDT",
+                 "TRX/USDT", "USDT/USDT", "BTT/USDT", "FIRO/USDT", "NEO/USDT",
+                 "KAVA/USDT", "ZEC/USDT"]
+        
+        # Tier 7: Layer 2 & Scaling (10 pairs)
+        tier7 = ["BASE/USDT", "ZKSYNC/USDT", "STARKNET/USDT", "LINEA/USDT", "METIS/USDT",
+                 "MANTA/USDT", "ZRO/USDT", "ARB/USDT", "OP/USDT", "BNB Chain/BSC"]
+        
+        # Tier 8: Gaming/NFT (10 pairs)
+        tier8 = ["AXS/USDT", "ENJ/USDT", "CHZ/USDT", "SAND/USDT", "MANA/USDT",
+                 "GALA/USDT", "ILV/USDT", "MAGIC/USDT", "HIGH/USDT", "DEGO/USDT"]
+        
+        # Tier 9: AI/Tech (10 pairs)
+        tier9 = ["OCEAN/USDT", "CTXC/USDT", "ALI/USDT", "NUM/USDT", "ARPA/USDT",
+                 "BAND/USDT", "ANKR/USDT", "RLC/USDT", "COTI/USDT", "NKN/USDT"]
+        
+        # Tier 10: Stable/Major (6 pairs)
+        tier10 = ["USDC/USDT", "DAI/USDT", "BUSD/USDT", "TUSD/USDT", "USDP/USDT", "FRAX/USDT"]
+        
+        # Combine all tiers: 104 pairs total
+        self.default_pairs = base_pairs or (tier1 + tier2 + tier3 + tier4 + tier5 + 
+                                            tier6 + tier7 + tier8 + tier9 + tier10)
+        
+        # Tier configuration for priority scanning
+        self.tier_pairs = {
+            1: tier1,   # Top priority - scanned most frequently
+            2: tier2,
+            3: tier3,
+            4: tier4,
+            5: tier5,
+            6: tier6,
+            7: tier7,
+            8: tier8,
+            9: tier9,
+            10: tier10,
+        }
         
         self.pairs_metrics: dict[str, PairMetrics] = {}
         self.active_pair: str = "BTC/USDT"
         self.pair_history: dict[str, list[dict]] = {}
         
-        self.scan_interval_seconds = 30
-        self.min_volume_24h = 1_000_000
-        self.max_volatility = 0.15
+        # Tier-based scan intervals (in seconds)
+        self.tier_scan_intervals = {
+            1: 10,   # Tier 1: Scan every 10 seconds
+            2: 15,   # Tier 2: Scan every 15 seconds
+            3: 20,   # Tier 3: Scan every 20 seconds
+            4: 30,   # Tier 4: Scan every 30 seconds
+            5: 45,   # Tier 5: Scan every 45 seconds
+            6: 60,   # Tier 6+: Scan every 60 seconds
+        }
+        
+        # Dynamic scan interval based on bot state
+        self.scan_interval_seconds = 15
+        self.min_volume_24h = 2_000_000
+        self.max_volatility = 0.12
         self.min_liquidity_score = 0.3
+        
+        # Pair switching configuration
+        self._switch_cooldown_seconds = 180  # 3 minutes
+        self._min_hold_time_seconds = 300   # 5 minutes minimum hold
+        self._max_switches_per_hour = 3
+        self._consecutive_switch_count = 0
+        self._last_switch_time: datetime | None = None
+        self._switch_history: list[datetime] = []
+        
+        # Advanced scoring weights
+        self._weight_opportunity = 0.25
+        self._weight_momentum = 0.20
+        self._weight_trend = 0.15
+        self._weight_volume = 0.15
+        self._weight_liquidity = 0.10
+        self._weight_regime_match = 0.10
+        self._weight_volatility_adjusted = 0.05
+        
+        # Circuit breaker and panic
+        self.panic_threshold = 0.20
+        self._circuit_breaker_until: datetime | None = None
+        self._circuit_breaker_duration = 300  # 5 minutes
+        self._consecutive_scan_errors = 0
+        self._max_consecutive_errors = 5
+        
+        # Performance tracking
+        self._pair_performance: dict[str, dict] = {}
+        self._last_10_switches: list[dict] = []
+        
+        # Batch scanning
+        self._max_pairs_per_scan = 25
+        self._scan_cache_seconds = 5
+        self._last_full_scan: datetime | None = None
         
         self._scan_task: asyncio.Task | None = None
         self._is_running = False
         self._last_error: str | None = None
-        self._consecutive_errors: int = 0
-        self._max_consecutive_errors = 5
+        self._consecutive_errors = 0
         
         self._switch_cooldown_until: datetime | None = None
-        self._min_switch_interval_seconds = 300
+        self._min_switch_interval_seconds = 180
         
-        self._weight_opportunity = 0.30
-        self._weight_momentum = 0.25
-        self._weight_trend = 0.20
-        self._weight_volume = 0.15
-        self._weight_liquidity = 0.10
+        self.max_pairs_per_scan = 8
+        self.panic_threshold = 0.25
+        self._last_scan_time: datetime | None = None
+        self._min_time_between_scans = 5
+        self._circuit_breaker_until: datetime | None = None
+        self._consecutive_scan_errors = 0
 
     async def start(self) -> None:
         self._is_running = True
@@ -336,14 +435,152 @@ class MultiPairManager:
         ]
 
     def should_switch_pair(self, consecutive_losses: int) -> bool:
-        if consecutive_losses >= 3:
+        """
+        Advanced pair switching algorithm - Better than Freqtrade/Gunbot
+        
+        Switch conditions:
+        1. Circuit breaker active -> NO switch
+        2. Consecutive losses >= 2 -> SWITCH
+        3. Below panic threshold (0.20) -> SWITCH
+        4. Better opportunity found -> SWITCH (if delta > 0.15)
+        5. Minimum hold time not met -> NO switch
+        6. Maximum switches per hour reached -> NO switch
+        """
+        # 1. Check circuit breaker
+        if self._circuit_breaker_until and datetime.now(timezone.utc) < self._circuit_breaker_until:
+            self.logger.info("Circuit breaker active, skipping pair switch")
+            return False
+        
+        # 2. Check minimum hold time
+        if self._last_switch_time:
+            time_since_switch = (datetime.now(timezone.utc) - self._last_switch_time).total_seconds()
+            if time_since_switch < self._min_hold_time_seconds:
+                self.logger.debug(f"Min hold time not met: {time_since_switch:.0f}s < {self._min_hold_time_seconds}s")
+                return False
+        
+        # 3. Check max switches per hour
+        self._cleanup_switch_history()
+        if len(self._switch_history) >= self._max_switches_per_hour:
+            self.logger.warning(f"Max switches per hour reached: {len(self._switch_history)} >= {self._max_switches_per_hour}")
+            return False
+        
+        # 4. Check consecutive losses
+        if consecutive_losses >= 2:
+            self.logger.warning(f"Consecutive losses detected: {consecutive_losses} -> SWITCH")
             return True
         
-        metrics = self.pairs_metrics.get(self.active_pair)
-        if metrics and metrics.opportunity_score < 0.3:
+        # 5. Get current pair metrics
+        current_metrics = self.pairs_metrics.get(self.active_pair)
+        if not current_metrics:
             return True
+        
+        # 6. Check panic threshold
+        if current_metrics.opportunity_score < self.panic_threshold:
+            self.logger.warning(f"Active pair {self.active_pair} below panic: {current_metrics.opportunity_score:.2f} < {self.panic_threshold}")
+            return True
+        
+        # 7. Find best alternative pair
+        best_alternative = None
+        best_score = -1.0
+        
+        for symbol, metrics in self.pairs_metrics.items():
+            if symbol == self.active_pair:
+                continue
             
+            # Calculate switch score
+            switch_score = self._calculate_switch_score(current_metrics, metrics)
+            
+            if switch_score > best_score:
+                best_score = switch_score
+                best_alternative = symbol
+        
+        # 8. Check if switch is beneficial
+        opportunity_delta = best_score - current_metrics.opportunity_score
+        
+        if best_alternative and opportunity_delta > 0.15:  # 15% improvement threshold
+            self.logger.info(f"Better pair found: {self.active_pair} ({current_metrics.opportunity_score:.2f}) -> {best_alternative} ({best_score:.2f}), delta: {opportunity_delta:.2f}")
+            return True
+        
+        # 9. Check if current pair is worst than median
+        all_scores = [m.opportunity_score for m in self.pairs_metrics.values()]
+        median_score = sorted(all_scores)[len(all_scores) // 2] if all_scores else 0
+        
+        if current_metrics.opportunity_score < median_score * 0.7:
+            self.logger.warning(f"Active pair below median: {current_metrics.opportunity_score:.2f} < {median_score * 0.7:.2f}")
+            return True
+        
         return False
+    
+    def _calculate_switch_score(self, current: PairMetrics, candidate: PairMetrics) -> float:
+        """
+        Calculate switch score based on multiple factors:
+        - Opportunity score (40%)
+        - Momentum advantage (20%)
+        - Volume advantage (15%)
+        - Volatility advantage - lower is better (10%)
+        - Regime match (10%)
+        - Risk-adjusted return (5%)
+        """
+        # Opportunity difference
+        opp_diff = candidate.opportunity_score - current.opportunity_score
+        
+        # Momentum advantage
+        momentum_adv = candidate.momentum_score - current.momentum_score
+        
+        # Volume advantage
+        vol_adv = (candidate.volume_score - current.volume_score) * 0.5
+        
+        # Volatility advantage (lower is better for stability)
+        if current.volatility > 0 and candidate.volatility > 0:
+            vol_diff = (current.volatility - candidate.volatility) / max(current.volatility, 0.01)
+        else:
+            vol_diff = 0
+        
+        # Regime match bonus
+        regime_bonus = 0.1 if candidate.market_regime in ["NORMAL", "LOW_VOLATILITY"] else 0
+        
+        # Risk-adjusted score (higher volatility = higher risk)
+        risk_factor = 1.0 - min(candidate.volatility * 2, 0.5)
+        
+        # Calculate final score
+        switch_score = (
+            candidate.opportunity_score * 0.40 +
+            momentum_adv * 0.20 +
+            vol_adv * 0.15 +
+            vol_diff * 0.10 +
+            regime_bonus * 0.10 +
+            risk_factor * candidate.opportunity_score * 0.05
+        )
+        
+        return switch_score
+    
+    def _cleanup_switch_history(self) -> None:
+        """Clean up switch history older than 1 hour"""
+        one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+        self._switch_history = [t for t in self._switch_history if t > one_hour_ago]
+    
+    def record_switch(self) -> None:
+        """Record a pair switch"""
+        self._last_switch_time = datetime.now(timezone.utc)
+        self._switch_history.append(datetime.now(timezone.utc))
+        
+        # Track in performance history
+        self._last_10_switches.append({
+            "from": self.active_pair,
+            "timestamp": datetime.now(timezone.utc),
+        })
+        
+        # Keep only last 10
+        if len(self._last_10_switches) > 10:
+            self._last_10_switches = self._last_10_switches[-10:]
+    
+    def activate_circuit_breaker(self, duration_seconds: int = 300) -> None:
+        self._circuit_breaker_until = datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)
+        self.logger.warning(f"Circuit breaker activated for {duration_seconds} seconds")
+    
+    def clear_circuit_breaker(self) -> None:
+        self._circuit_breaker_until = None
+        self.logger.info("Circuit breaker cleared")
 
     def get_alternative_pairs(self, count: int = 3) -> list[str]:
         sorted_pairs = sorted(

@@ -1473,6 +1473,22 @@ class BotEngine:
         self.emergency_system.record_trade(pnl, pnl > 0)
         self.emergency_system.update_equity(_as_float(self.snapshot.get("total_equity"), 1000.0))
         
+        if hasattr(self, 'autonomous_brain') and self.autonomous_brain:
+            try:
+                trade_data = {
+                    "pnl": pnl,
+                    "pnl_percent": (pnl / position.entry_price * 100) if position.entry_price else 0,
+                    "symbol": self.symbol,
+                    "side": position.side,
+                    "entry_price": position.entry_price,
+                    "exit_price": exit_price,
+                    "quantity": position.quantity,
+                }
+                self.autonomous_brain.record_trade(trade_data)
+                self.logger.info(f"Trade recorded in Autonomous Brain: PnL={pnl:.4f}")
+            except Exception as e:
+                self.logger.error(f"Error recording trade in autonomous brain: {e}")
+        
         self._sync_ui_state()
 
         if self.state_manager:

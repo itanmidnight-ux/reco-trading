@@ -221,6 +221,50 @@ def create_app() -> Flask:
             logger.error(f"Error getting settings: {e}")
         return jsonify({})
     
+    @app.route('/api/autonomous')
+    def api_autonomous():
+        """Get autonomous brain status including optimizers and regime detector."""
+        global _global_bot_instance, _bot_instance_getter
+        bot = _global_bot_instance or (_bot_instance_getter() if _bot_instance_getter else None)
+        if not bot or not hasattr(bot, 'autonomous_brain'):
+            return jsonify({"error": "Autonomous brain not available"})
+        try:
+            return jsonify(bot.autonomous_brain.get_status())
+        except Exception as e:
+            logger.error(f"Error getting autonomous status: {e}")
+            return jsonify({"error": str(e)})
+    
+    @app.route('/api/multipair')
+    def api_multipair():
+        """Get multi-pair manager status."""
+        global _global_bot_instance, _bot_instance_getter
+        bot = _global_bot_instance or (_bot_instance_getter() if _bot_instance_getter else None)
+        if not bot or not hasattr(bot, 'multi_pair_manager'):
+            return jsonify({"error": "Multi-pair manager not available"})
+        try:
+            mpm = bot.multi_pair_manager
+            pairs_data = []
+            for symbol in mpm.default_pairs:
+                if symbol in mpm.pairs_metrics:
+                    m = mpm.pairs_metrics[symbol]
+                    pairs_data.append({
+                        "symbol": symbol,
+                        "opportunity_score": float(m.opportunity_score),
+                        "volatility": float(m.volatility),
+                        "momentum_score": float(m.momentum_score),
+                        "volume_score": float(m.volume_score),
+                        "trend_direction": m.trend_direction,
+                        "rsi": float(m.rsi),
+                    })
+            return jsonify({
+                "active_pair": mpm.active_pair,
+                "scan_interval": mpm.scan_interval_seconds,
+                "pairs": pairs_data,
+            })
+        except Exception as e:
+            logger.error(f"Error getting multipair status: {e}")
+            return jsonify({"error": str(e)})
+    
     _app = app
     return app
 

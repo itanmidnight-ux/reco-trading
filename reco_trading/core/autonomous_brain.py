@@ -8,6 +8,12 @@ from typing import Any
 
 from reco_trading.core.bayesian_optimizer import StrategyOptimizer, create_default_parameter_space
 from reco_trading.core.genetic_optimizer import StrategyEvolver
+from reco_trading.core.market_regime_detector import MarketRegimeDetector, AdaptiveFilters
+from reco_trading.core.adaptive_config import AdaptiveFilterManager
+from reco_trading.agents.coordinator import AgentCoordinator, MultiAgentTradingSystem
+from reco_trading.ml.meta_learner import MarketMetaLearner
+from reco_trading.ml.continual import ContinualLearner, ConceptDriftHandler
+from reco_trading.onchain import OnChainAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +26,13 @@ class AutonomousConfig:
     auto_market_selection: bool = True
     auto_filter_adjustment: bool = True
     auto_risk_adjustment: bool = True
-    decision_interval_seconds: int = 60
+    decision_interval_seconds: int = 30
     min_capital: float = 10.0
     max_capital: float = 1000.0
+    optimization_interval_hours: int = 4
+    emergency_pause_after_losses: int = 5
+    auto_resume_after_wins: int = 3
+    max_daily_trades: int = 20
 
 
 class AutonomousTradingBrain:
@@ -64,7 +74,18 @@ class AutonomousTradingBrain:
         self._strategy_optimizer = StrategyOptimizer()
         self._strategy_evolver = StrategyEvolver()
         
-        self.logger.info("Autonomous Trading Brain initialized")
+        self._regime_detector = MarketRegimeDetector()
+        self._adaptive_filters = AdaptiveFilters()
+        self._adaptive_config = AdaptiveFilterManager()
+        
+        self._agent_coordinator = AgentCoordinator()
+        self._multi_agent_system = MultiAgentTradingSystem()
+        self._meta_learner = MarketMetaLearner()
+        self._continual_learner = ContinualLearner()
+        self._drift_handler = ConceptDriftHandler()
+        self._onchain_analyzer = OnChainAnalyzer()
+        
+        self.logger.info("Autonomous Trading Brain initialized with LLM Agents, Meta-Learning, On-Chain, and Adaptive Config")
     
     def set_bot_engine(self, bot_engine) -> None:
         """Set reference to bot engine for accessing market data and ML."""
@@ -79,13 +100,20 @@ class AutonomousTradingBrain:
             return
         
         self._is_running = True
+        
+        await self._agent_coordinator.start()
+        await self._multi_agent_system.start()
+        
         self._decision_loop_task = asyncio.create_task(self._decision_loop())
-        self.logger.info("Autonomous Trading Brain started")
+        self.logger.info("Autonomous Trading Brain started with all AI systems")
 
     async def stop(self) -> None:
         """Stop the autonomous trading system."""
         
         self._is_running = False
+        
+        await self._agent_coordinator.stop()
+        await self._multi_agent_system.stop()
         
         if self._decision_loop_task:
             self._decision_loop_task.cancel()
@@ -169,7 +197,7 @@ class AutonomousTradingBrain:
         self.logger.info("Applying aggressive measures due to consecutive wins")
 
     async def _adjust_to_market(self) -> None:
-        """Adjust trading parameters to current market conditions."""
+        """Adjust trading parameters to current market conditions using regime detection."""
         
         try:
             market_condition = "NORMAL"
@@ -188,12 +216,52 @@ class AutonomousTradingBrain:
                 except Exception:
                     pass
             
+            if hasattr(self, '_regime_detector') and self._regime_detector:
+                frame = getattr(self._bot_engine, '_cached_frame5', None) if hasattr(self, '_bot_engine') and self._bot_engine else None
+                if frame is not None and len(frame) >= 20:
+                    prices = frame['close'].tolist()
+                    volumes = frame['volume'].tolist() if 'volume' in frame.columns else None
+                    regime = self._regime_detector.update(prices, volumes)
+                    market_condition = regime.regime
+                    self.logger.info(f"Detected regime: {regime.regime} (confidence: {regime.confidence:.0%}, volatility: {regime.volatility:.2%})")
+                    
+                    recommended = self._regime_detector.get_recommended_filters()
+                    await self._apply_regime_filters(recommended)
+            
             self._current_market_condition = market_condition
             
             self.filter_adjuster.adjust_filters(self._current_market_condition)
             
         except Exception as e:
             self.logger.error(f"Market adjustment error: {e}")
+    
+    async def _apply_regime_filters(self, recommended: dict[str, Any]) -> None:
+        """Apply filters recommended by regime detector."""
+        
+        if not hasattr(self, '_bot_engine') or not self._bot_engine:
+            return
+        
+        try:
+            settings = getattr(self._bot_engine, 'settings', None)
+            if not settings:
+                return
+            
+            if 'min_signal_confidence' in recommended:
+                settings.min_signal_confidence = recommended['min_signal_confidence']
+            
+            if 'stop_loss' in recommended:
+                settings.stop_loss = recommended['stop_loss']
+            
+            if 'take_profit' in recommended:
+                settings.take_profit = recommended['take_profit']
+            
+            if 'position_size' in recommended:
+                self.position_sizer.config.risk_per_trade_percent = recommended['position_size']
+            
+            self.logger.info(f"Applied regime filters: {recommended}")
+            
+        except Exception as e:
+            self.logger.error(f"Error applying regime filters: {e}")
 
     async def _optimize_parameters(self) -> None:
         """Optimize trading parameters using Bayesian and Genetic algorithms."""
@@ -206,7 +274,9 @@ class AutonomousTradingBrain:
         
         hours_since = (now - self._last_optimization).total_seconds() / 3600
         
-        if hours_since >= 6:
+        optimization_interval = getattr(self.config, 'optimization_interval_hours', 4)
+        
+        if hours_since >= optimization_interval:
             self.logger.info("Running Bayesian and Genetic parameter optimization")
             self._last_optimization = now
             
@@ -382,6 +452,14 @@ class AutonomousTradingBrain:
             "current_filters": self.get_current_filters(),
             "strategy_optimizer": self._strategy_optimizer.get_status(),
             "strategy_evolver": self._strategy_evolver.get_status(),
+            "regime_detector": self._regime_detector.get_regime_statistics() if hasattr(self, '_regime_detector') and self._regime_detector else {},
+            "adaptive_filters": self._adaptive_filters.get_status() if hasattr(self, '_adaptive_filters') and self._adaptive_filters else {},
+            "adaptive_config": self._adaptive_config.get_current_config() if hasattr(self, '_adaptive_config') and self._adaptive_config else {},
+            "llm_agents": self._agent_coordinator.get_coordinator_stats() if hasattr(self, '_agent_coordinator') else {},
+            "meta_learner": self._meta_learner.get_meta_stats() if hasattr(self, '_meta_learner') else {},
+            "continual_learner": self._continual_learner.get_performance_metrics() if hasattr(self, '_continual_learner') else {},
+            "drift_handler": self._drift_handler.get_handler_stats() if hasattr(self, '_drift_handler') else {},
+            "onchain": self._onchain_analyzer.get_analyzer_stats() if hasattr(self, '_onchain_analyzer') else {},
         }
 
     async def _adjust_confidence_threshold(self) -> None:
