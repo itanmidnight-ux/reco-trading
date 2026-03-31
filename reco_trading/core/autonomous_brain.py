@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
+from reco_trading.core.bayesian_optimizer import StrategyOptimizer, create_default_parameter_space
+from reco_trading.core.genetic_optimizer import StrategyEvolver
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,6 +60,9 @@ class AutonomousTradingBrain:
         
         self._current_best_pair: str = "BTC/USDT"
         self._current_market_condition: str = "NORMAL"
+        
+        self._strategy_optimizer = StrategyOptimizer()
+        self._strategy_evolver = StrategyEvolver()
         
         self.logger.info("Autonomous Trading Brain initialized")
     
@@ -190,7 +196,7 @@ class AutonomousTradingBrain:
             self.logger.error(f"Market adjustment error: {e}")
 
     async def _optimize_parameters(self) -> None:
-        """Optimize trading parameters periodically."""
+        """Optimize trading parameters using Bayesian and Genetic algorithms."""
         
         now = datetime.now(timezone.utc)
         
@@ -201,8 +207,70 @@ class AutonomousTradingBrain:
         hours_since = (now - self._last_optimization).total_seconds() / 3600
         
         if hours_since >= 6:
-            self.logger.info("Running parameter optimization")
+            self.logger.info("Running Bayesian and Genetic parameter optimization")
             self._last_optimization = now
+            
+            try:
+                bayesian_result = self._strategy_optimizer.optimize(min_observations=5)
+                
+                if bayesian_result.improvement_found and bayesian_result.best_params:
+                    await self._apply_optimized_params(bayesian_result.best_params)
+                    self.logger.info(
+                        f"Applied Bayesian optimized parameters: {bayesian_result.best_params} "
+                        f"(score: {bayesian_result.best_score:.2f})"
+                    )
+                else:
+                    self.logger.info(
+                        f"Bayesian: No improvement found. Best score: {bayesian_result.best_score:.2f}"
+                    )
+                    
+                current_params = self._strategy_optimizer.get_current_params()
+                self._strategy_evolver.set_current_params(current_params)
+                
+                ga_best = self._strategy_evolver.evolve_once()
+                
+                if ga_best and ga_best != current_params:
+                    await self._apply_optimized_params(ga_best)
+                    self.logger.info(f"Applied GA optimized parameters: {ga_best}")
+                
+            except Exception as e:
+                self.logger.error(f"Parameter optimization error: {e}")
+    
+    async def _apply_optimized_params(self, params: dict[str, float]) -> None:
+        """Apply optimized parameters to the trading system."""
+        
+        if not hasattr(self, '_bot_engine') or not self._bot_engine:
+            return
+        
+        try:
+            settings = getattr(self._bot_engine, 'settings', None)
+            if not settings:
+                return
+            
+            if 'min_signal_confidence' in params:
+                new_confidence = params['min_signal_confidence']
+                settings.min_signal_confidence = new_confidence
+                self._bot_engine.runtime_confidence_threshold = new_confidence
+                self.logger.info(f"Applied optimized confidence: {new_confidence:.0%}")
+            
+            if 'stop_loss_percent' in params:
+                settings.stop_loss = params['stop_loss_percent']
+                self.logger.info(f"Applied optimized stop loss: {params['stop_loss_percent']}%")
+            
+            if 'take_profit_percent' in params:
+                settings.take_profit = params['take_profit_percent']
+                self.logger.info(f"Applied optimized take profit: {params['take_profit_percent']}%")
+            
+            if 'position_size_percent' in params:
+                self.position_sizer.config.risk_per_trade_percent = params['position_size_percent']
+                self.logger.info(f"Applied optimized position size: {params['position_size_percent']}%")
+            
+            now = datetime.now(timezone.utc)
+            self._bot_engine.snapshot["auto_optimized_params"] = params
+            self._bot_engine.snapshot["optimization_applied_at"] = now.isoformat()
+            
+        except Exception as e:
+            self.logger.error(f"Error applying optimized params: {e}")
 
     def initialize_capital(self, capital: float) -> None:
         """Initialize capital for position sizing."""
@@ -250,6 +318,40 @@ class AutonomousTradingBrain:
             pnl_percent=trade_data.get("pnl_percent", 0),
             won=won,
         )
+        
+        self._record_for_optimization(trade_data)
+    
+    def _record_for_optimization(self, trade_data: dict) -> None:
+        """Record trade data for Bayesian optimization."""
+        
+        try:
+            recent_trades = self._performance_history[-20:] if self._performance_history else []
+            
+            if len(recent_trades) < 3:
+                return
+            
+            wins = sum(1 for t in recent_trades if t.get("pnl", 0) > 0)
+            win_rate = wins / len(recent_trades)
+            
+            total_pnl = sum(t.get("pnl", 0) for t in recent_trades)
+            
+            avg_win = sum(t.get("pnl", 0) for t in recent_trades if t.get("pnl", 0) > 0) / max(wins, 1)
+            avg_loss = sum(abs(t.get("pnl", 0)) for t in recent_trades if t.get("pnl", 0) < 0) / max(len(recent_trades) - wins, 1)
+            profit_factor = avg_win / max(avg_loss, 0.01)
+            
+            performance = {
+                "win_rate": win_rate,
+                "profit_factor": profit_factor,
+                "total_trades": len(recent_trades),
+                "total_pnl": total_pnl,
+                "consecutive_losses": self._consecutive_losses,
+            }
+            
+            self._strategy_optimizer.record_performance(performance)
+            self._strategy_evolver.record_performance(performance)
+            
+        except Exception as e:
+            self.logger.error(f"Error recording for optimization: {e}")
 
     def get_current_filters(self) -> dict:
         """Get current trading filters."""
@@ -278,6 +380,8 @@ class AutonomousTradingBrain:
             "position_sizing": self.position_sizer.get_status(),
             "recent_performance": recent_performance,
             "current_filters": self.get_current_filters(),
+            "strategy_optimizer": self._strategy_optimizer.get_status(),
+            "strategy_evolver": self._strategy_evolver.get_status(),
         }
 
     async def _adjust_confidence_threshold(self) -> None:
