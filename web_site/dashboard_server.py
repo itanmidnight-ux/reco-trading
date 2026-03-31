@@ -159,6 +159,46 @@ def create_app() -> Flask:
         trades = snapshot.get("trade_history", [])
         return jsonify(trades)
     
+    @app.route('/api/all_trades')
+    def api_all_trades():
+        """Get all trades from database."""
+        if _global_bot_instance is None:
+            return jsonify([])
+        
+        try:
+            repository = getattr(_global_bot_instance, 'repository', None)
+            if repository:
+                import asyncio
+                try:
+                    trades = asyncio.get_event_loop().run_until_complete(
+                        repository.get_trades(limit=100)
+                    )
+                    return jsonify([
+                        {
+                            "trade_id": str(t.trade_id),
+                            "pair": t.pair,
+                            "side": t.side,
+                            "entry": float(t.entry_price) if t.entry_price else 0,
+                            "exit": float(t.close_price) if t.close_price else 0,
+                            "size": float(t.quantity) if t.quantity else 0,
+                            "pnl": float(t.profit_abs) if t.profit_abs else 0,
+                            "pnl_percent": float(t.close_rate) * 100 if t.close_rate else 0,
+                            "status": t.status,
+                            "entry_time": t.entry_timestamp.isoformat() if t.entry_timestamp else None,
+                            "exit_time": t.exit_timestamp.isoformat() if t.exit_timestamp else None,
+                        }
+                        for t in trades
+                    ])
+                except Exception as e:
+                    logger.error(f"Error fetching trades from db: {e}")
+            
+            snapshot = get_bot_snapshot()
+            trades = snapshot.get("trade_history", [])
+            return jsonify(trades)
+        except Exception as e:
+            logger.error(f"Error getting all trades: {e}")
+            return jsonify([])
+    
     @app.route('/api/analytics')
     def api_analytics():
         snapshot = get_bot_snapshot()

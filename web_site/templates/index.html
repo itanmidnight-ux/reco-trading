@@ -6,124 +6,130 @@
     <title>Reco-Trading Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-primary: #0a0e14;
-            --bg-secondary: #131920;
-            --bg-card: #1a2028;
-            --bg-hover: #242d38;
-            --border-color: #2a3441;
+            --bg-primary: #0a0f14;
+            --bg-secondary: #111820;
+            --bg-card: #161d26;
+            --bg-hover: #1e2732;
+            --border-color: #252f3d;
             --text-primary: #ffffff;
-            --text-secondary: #c0c0c0;
-            --text-muted: #808080;
-            --accent-cyan: #39d0d8;
-            --accent-green: #2ea043;
-            --accent-red: #da3633;
-            --accent-yellow: #d29922;
-            --accent-purple: #a371f7;
-            --accent-blue: #388bfd;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --accent-cyan: #22d3ee;
+            --accent-green: #34d399;
+            --accent-red: #f87171;
+            --accent-yellow: #fbbf24;
+            --accent-blue: #60a5fa;
+            --accent-purple: #a78bfa;
+            --accent-orange: #fb923c;
         }
         
-        * { box-sizing: border-box; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
         
         body {
             background: var(--bg-primary);
             color: var(--text-primary);
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-family: 'Inter', -apple-system, sans-serif;
             min-height: 100vh;
+            font-size: 14px;
         }
         
         .navbar {
             background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
             border-bottom: 1px solid var(--border-color);
-            padding: 1rem 0;
+            padding: 0.6rem 0;
         }
         
         .navbar-brand {
             font-weight: 700;
-            font-size: 1.4rem;
-            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue));
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            font-size: 1.2rem;
+            color: var(--accent-cyan) !important;
+            text-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
         }
         
         .status-badge {
-            padding: 0.4rem 1rem;
+            padding: 0.3rem 0.75rem;
             border-radius: 20px;
-            font-size: 0.85rem;
-            font-weight: 500;
+            font-size: 0.75rem;
+            font-weight: 600;
         }
         
-        .status-running { background: rgba(46, 160, 67, 0.15); color: var(--accent-green); border: 1px solid var(--accent-green); }
-        .status-error { background: rgba(218, 54, 51, 0.15); color: var(--accent-red); border: 1px solid var(--accent-red); }
-        .status-warning { background: rgba(210, 153, 34, 0.15); color: var(--accent-yellow); border: 1px solid var(--accent-yellow); }
-        .status-waiting { background: rgba(56, 139, 253, 0.15); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
+        .status-running { background: rgba(52, 211, 153, 0.15); color: var(--accent-green); border: 1px solid var(--accent-green); }
+        .status-error { background: rgba(248, 113, 113, 0.15); color: var(--accent-red); border: 1px solid var(--accent-red); }
+        .status-paused { background: rgba(251, 191, 36, 0.15); color: var(--accent-yellow); border: 1px solid var(--accent-yellow); }
+        .status-waiting { background: rgba(96, 165, 250, 0.15); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
         
         .card {
             background: var(--bg-card);
             border: 1px solid var(--border-color);
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            margin-bottom: 1.5rem;
+            border-radius: 10px;
+            margin-bottom: 1rem;
         }
         
         .card-header {
-            background: transparent;
+            background: var(--bg-secondary);
             border-bottom: 1px solid var(--border-color);
-            padding: 1rem 1.25rem;
+            padding: 0.6rem 1rem;
             font-weight: 600;
-            color: var(--text-secondary);
+            color: var(--text-primary);
             font-size: 0.85rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         
-        .card-body { padding: 1.25rem; }
+        .card-body { padding: 1rem; }
         
         .stat-card {
             background: var(--bg-card);
             border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 1.5rem;
+            border-radius: 10px;
+            padding: 1rem;
             text-align: center;
-            transition: all 0.3s ease;
+            transition: transform 0.2s;
         }
         
-        .stat-card:hover {
-            transform: translateY(-2px);
-            border-color: var(--accent-cyan);
-            box-shadow: 0 8px 25px rgba(57, 208, 216, 0.15);
-        }
+        .stat-card:hover { transform: translateY(-2px); border-color: var(--accent-cyan); }
         
         .stat-value {
-            font-size: 2rem;
+            font-size: 1.5rem;
             font-weight: 700;
-            margin-bottom: 0.25rem;
-            font-family: 'Inter', monospace;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
         }
         
+        .stat-value-lg { font-size: 2rem; }
+        
         .stat-label {
-            font-size: 0.8rem;
+            font-size: 0.7rem;
             color: var(--text-secondary);
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            margin-top: 0.25rem;
         }
         
-        .signal-buy { color: var(--accent-green) !important; }
-        .signal-sell { color: var(--accent-red) !important; }
-        .signal-hold { color: var(--accent-yellow) !important; }
+        .text-cyan { color: var(--accent-cyan) !important; }
+        .text-green { color: var(--accent-green) !important; }
+        .text-red { color: var(--accent-red) !important; }
+        .text-yellow { color: var(--accent-yellow) !important; }
+        .text-blue { color: var(--accent-blue) !important; }
+        .text-purple { color: var(--accent-purple) !important; }
+        .text-orange { color: var(--accent-orange) !important; }
+        .text-white { color: var(--text-primary) !important; }
+        .text-muted { color: var(--text-muted) !important; }
         
-        .nav-tabs { border-bottom: 1px solid var(--border-color); gap: 0.5rem; }
+        .nav-tabs { border-bottom: 1px solid var(--border-color); gap: 0.25rem; padding: 0.5rem 0.5rem 0; }
         
         .nav-tabs .nav-link {
             color: var(--text-secondary);
             border: none;
-            border-radius: 8px;
-            padding: 0.75rem 1.25rem;
+            border-radius: 6px 6px 0 0;
+            padding: 0.5rem 0.85rem;
             font-weight: 500;
-            transition: all 0.2s ease;
+            font-size: 0.85rem;
+            transition: all 0.2s;
         }
         
         .nav-tabs .nav-link:hover { color: var(--text-primary); background: var(--bg-hover); }
@@ -132,60 +138,47 @@
             color: var(--accent-cyan);
             background: var(--bg-card);
             border: 1px solid var(--border-color);
-            border-bottom-color: var(--accent-cyan);
+            border-bottom-color: var(--bg-card);
         }
         
-        .table { color: var(--text-primary); }
+        .table { color: var(--text-primary); margin-bottom: 0; }
         
-        .table-dark { --bs-table-bg: var(--bg-card); }
-        
-        .table > thead {
-            background: var(--bg-secondary);
-            color: var(--text-secondary);
-            font-size: 0.8rem;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
+        .table > thead { background: var(--bg-secondary); color: var(--text-secondary); font-size: 0.7rem; text-transform: uppercase; }
         .table > tbody > tr { border-bottom: 1px solid var(--border-color); }
         .table > tbody > tr:hover { background: var(--bg-hover); }
+        .table td, .table th { border-color: var(--border-color); padding: 0.5rem 0.6rem; vertical-align: middle; font-size: 0.85rem; }
         
-        .health-ok { color: var(--accent-green); }
-        .health-error { color: var(--accent-red); }
-        .health-warning { color: var(--accent-yellow); }
-        
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 0.75rem 0;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
+        .info-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); font-size: 0.85rem; }
         .info-row:last-child { border-bottom: none; }
+        .info-label { color: var(--text-secondary); }
+        .info-value { color: var(--text-primary); font-weight: 500; font-family: 'JetBrains Mono', monospace; }
         
-        .info-label { color: var(--text-secondary); font-size: 0.9rem; }
-        .info-value { font-weight: 600; font-family: 'Inter', monospace; }
+        .btn-success { background: var(--accent-green); border: none; }
+        .btn-success:hover { background: #4ade80; }
+        .btn-warning { background: var(--accent-yellow); border: none; color: #000; }
+        .btn-warning:hover { background: #fcd34d; }
+        .btn-danger { background: var(--accent-red); border: none; }
+        .btn-danger:hover { background: #fca5a5; }
+        .btn-primary { background: var(--accent-blue); border: none; }
+        .btn-primary:hover { background: #93c5fd; }
+        .btn { font-weight: 600; padding: 0.3rem 0.65rem; font-size: 0.8rem; }
         
-        .positive { color: var(--accent-green); }
-        .negative { color: var(--accent-red); }
-        
-        .last-update { font-size: 0.85rem; color: var(--text-muted); }
-        .glow-cyan { text-shadow: 0 0 10px rgba(57, 208, 216, 0.5); }
+        .badge { padding: 0.25rem 0.5rem; font-size: 0.7rem; font-weight: 600; }
+        .badge-green { background: rgba(52, 211, 153, 0.15); color: var(--accent-green); }
+        .badge-red { background: rgba(248, 113, 113, 0.15); color: var(--accent-red); }
+        .badge-yellow { background: rgba(251, 191, 36, 0.15); color: var(--accent-yellow); }
+        .badge-blue { background: rgba(96, 165, 250, 0.15); color: var(--accent-blue); }
+        .badge-purple { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); }
         
         #loading {
-            position: fixed;
-            top: 0; left: 0;
-            width: 100%; height: 100%;
-            background: rgba(10, 14, 20, 0.95);
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(10, 15, 20, 0.95);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
             z-index: 9999;
         }
         
         .loader {
-            width: 60px; height: 60px;
+            width: 45px; height: 45px;
             border: 3px solid var(--border-color);
             border-top-color: var(--accent-cyan);
             border-radius: 50%;
@@ -194,307 +187,336 @@
         
         @keyframes spin { to { transform: rotate(360deg); } }
         
-        .tab-content { padding-top: 1.5rem; }
+        .tab-content { padding: 1rem; background: var(--bg-card); border: 1px solid var(--border-color); border-top: none; }
         
-        .log-entry {
-            font-family: 'Inter', monospace;
-            font-size: 0.85rem;
-            padding: 0.25rem 0;
-            border-left: 2px solid transparent;
-            padding-left: 0.5rem;
+        .glow-cyan { text-shadow: 0 0 15px rgba(34, 211, 238, 0.5); }
+        .glow-green { text-shadow: 0 0 15px rgba(52, 211, 153, 0.5); }
+        .glow-red { text-shadow: 0 0 15px rgba(248, 113, 113, 0.5); }
+        
+        .progress { background: var(--bg-secondary); border-radius: 6px; height: 8px; }
+        .progress-bar { background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue)); border-radius: 6px; }
+        
+        .log-entry { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 0.25rem 0; color: var(--text-secondary); }
+        .log-entry.error { color: var(--accent-red); }
+        .log-entry.warning { color: var(--accent-yellow); }
+        .log-entry.info { color: var(--accent-blue); }
+        
+        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
+        
+        @media (max-width: 768px) {
+            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
         }
         
-        .log-entry.log-error { border-left-color: var(--accent-red); color: var(--accent-red); }
-        .log-entry.log-warning { border-left-color: var(--accent-yellow); }
-        .log-entry.log-info { border-left-color: var(--accent-blue); }
+        .section-title { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.75rem; }
         
-        .empty-state { text-align: center; padding: 3rem; color: var(--text-secondary); }
-        .empty-state i { font-size: 3rem; margin-bottom: 1rem; opacity: 0.5; }
+        .signal-box {
+            display: inline-block;
+            padding: 0.5rem 1.5rem;
+            border-radius: 8px;
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
         
-        .btn-success { background: #2ea043; border: none; }
-        .btn-success:hover { background: #3fb950; }
-        .btn-warning { background: #d29922; border: none; color: #000; }
-        .btn-warning:hover { background: #e3b341; }
-        .btn-danger { background: #da3633; border: none; }
-        .btn-danger:hover { background: #f85149; }
-        .btn { font-weight: 600; padding: 0.4rem 0.8rem; font-size: 0.85rem; }
+        .signal-buy { background: linear-gradient(135deg, rgba(52, 211, 153, 0.2), rgba(52, 211, 153, 0.1)); border: 2px solid var(--accent-green); color: var(--accent-green); }
+        .signal-sell { background: linear-gradient(135deg, rgba(248, 113, 113, 0.2), rgba(248, 113, 113, 0.1)); border: 2px solid var(--accent-red); color: var(--accent-red); }
+        .signal-hold { background: linear-gradient(135deg, rgba(251, 191, 36, 0.2), rgba(251, 191, 36, 0.1)); border: 2px solid var(--accent-yellow); color: var(--accent-yellow); }
     </style>
 </head>
 <body>
     <div id="loading">
         <div class="loader"></div>
-        <p class="mt-3" style="color: var(--text-secondary);">Connecting to bot...</p>
+        <p class="mt-3 text-muted">Connecting to bot...</p>
     </div>
 
-    <nav class="navbar navbar-expand-lg navbar-dark">
-        <div class="container-fluid px-4">
-            <a class="navbar-brand" href="#">
-                <i class="fas fa-chart-line me-2"></i>Reco-Trading
-            </a>
+    <nav class="navbar navbar-dark">
+        <div class="container-fluid px-3">
+            <a class="navbar-brand" href="#"><i class="fas fa-chart-line me-2"></i>Reco-Trading</a>
             <div class="d-flex align-items-center gap-2">
-                <button class="btn btn-success btn-sm" id="btnResume" onclick="sendControl('resume')" title="Resume Bot">
-                    <i class="fas fa-play"></i> Resume
-                </button>
-                <button class="btn btn-warning btn-sm" id="btnPause" onclick="sendControl('pause')" title="Pause Bot">
-                    <i class="fas fa-pause"></i> Pause
-                </button>
-                <button class="btn btn-danger btn-sm" id="btnEmergency" onclick="sendControl('emergency')" title="Emergency Stop">
-                    <i class="fas fa-exclamation-triangle"></i> Emergency
-                </button>
+                <button class="btn btn-success btn-sm" onclick="sendControl('resume')" title="Resume"><i class="fas fa-play"></i></button>
+                <button class="btn btn-warning btn-sm" onclick="sendControl('pause')" title="Pause"><i class="fas fa-pause"></i></button>
+                <button class="btn btn-danger btn-sm" onclick="sendControl('emergency')" title="Emergency Stop"><i class="fas fa-exclamation-triangle"></i></button>
                 <span id="botStatus" class="status-badge status-waiting">CONNECTING</span>
-                <span class="last-update">
-                    <i class="fas fa-clock me-1"></i>
-                    <span id="lastUpdate">--:--:--</span>
-                </span>
             </div>
         </div>
     </nav>
 
-    <div class="container-fluid px-4 py-3">
-        <ul class="nav nav-tabs" id="dashboardTabs" role="tablist">
-            <li class="nav-item">
-                <button class="nav-link active" id="overview-tab" data-bs-toggle="tab" data-bs-target="#overview" type="button">
-                    <i class="fas fa-th-large me-2"></i>Overview
-                </button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link" id="trades-tab" data-bs-toggle="tab" data-bs-target="#trades" type="button">
-                    <i class="fas fa-exchange-alt me-2"></i>Trades
-                </button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link" id="analytics-tab" data-bs-toggle="tab" data-bs-target="#analytics" type="button">
-                    <i class="fas fa-chart-pie me-2"></i>Analytics
-                </button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link" id="health-tab" data-bs-toggle="tab" data-bs-target="#health" type="button">
-                    <i class="fas fa-heartbeat me-2"></i>Health
-                </button>
-            </li>
-            <li class="nav-item">
-                <button class="nav-link" id="logs-tab" data-bs-toggle="tab" data-bs-target="#logs" type="button">
-                    <i class="fas fa-list-alt me-2"></i>Logs
-                </button>
-            </li>
+    <div class="container-fluid px-3 py-2">
+        <ul class="nav nav-tabs" id="dashboardTabs">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#overview"><i class="fas fa-home me-1"></i> Overview</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#trades"><i class="fas fa-exchange-alt me-1"></i> Trades</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#analytics"><i class="fas fa-chart-pie me-1"></i> Analytics</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#market"><i class="fas fa-chart-line me-1"></i> Market</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#strategy"><i class="fas fa-brain me-1"></i> Strategy</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#risk"><i class="fas fa-shield-alt me-1"></i> Risk</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#health"><i class="fas fa-heartbeat me-1"></i> Health</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs"><i class="fas fa-list me-1"></i> Logs</button></li>
         </ul>
 
-        <div class="tab-content" id="dashboardTabContent">
+        <div class="tab-content">
+            <!-- Overview -->
             <div class="tab-pane fade show active" id="overview">
-                <div class="row mt-4">
-                    <div class="col-md-3">
-                        <div class="stat-card">
-                            <div class="stat-value glow-cyan" id="priceValue">$0.00</div>
-                            <div class="stat-label">Current Price</div>
+                <div class="grid-4 mt-3">
+                    <div class="stat-card"><div class="stat-value stat-value-lg glow-cyan" id="priceValue">$0.00</div><div class="stat-label">Market Price</div></div>
+                    <div class="stat-card"><div class="stat-value" id="signalValue">HOLD</div><div class="stat-label">Signal</div></div>
+                    <div class="stat-card"><div class="stat-value" id="confidenceValue">0%</div><div class="stat-label">Confidence</div></div>
+                    <div class="stat-card"><div class="stat-value" id="pairValue">BTC/USDT</div><div class="stat-label">Trading Pair</div></div>
+                </div>
+                
+                <div class="grid-3 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-wallet text-cyan"></i> Account</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Total Equity</span><span class="info-value" id="equityValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Balance</span><span class="info-value" id="balanceValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Daily P&L</span><span class="info-value" id="dailyPnlValue">0.00%</span></div>
+                            <div class="info-row"><span class="info-label">Session P&L</span><span class="info-value" id="sessionPnlValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Unrealized P&L</span><span class="info-value" id="unrealizedPnlValue">$0.00</span></div>
                         </div>
                     </div>
-                    <div class="col-md-3">
-                        <div class="stat-card">
-                            <div class="stat-value" id="signalValue">HOLD</div>
-                            <div class="stat-label">Signal</div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-chart-line text-green"></i> Performance</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Trades Today</span><span class="info-value" id="tradesTodayValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Win Rate</span><span class="info-value" id="winRateValue">0%</span></div>
+                            <div class="info-row"><span class="info-label">Capital Profile</span><span class="info-value" id="capitalProfileValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Operable Capital</span><span class="info-value" id="operableCapitalValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Last Trade</span><span class="info-value" id="lastTradeValue">-</span></div>
                         </div>
                     </div>
-                    <div class="col-md-3">
-                        <div class="stat-card">
-                            <div class="stat-value" id="confidenceValue">0%</div>
-                            <div class="stat-label">Confidence</div>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="stat-card">
-                            <div class="stat-value" id="pairValue">BTC/USDT</div>
-                            <div class="stat-label">Trading Pair</div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-cog text-yellow"></i> Status</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Status</span><span class="info-value" id="statusValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Cooldown</span><span class="info-value" id="cooldownValue">READY</span></div>
+                            <div class="info-row"><span class="info-label">Position</span><span class="info-value" id="hasPositionValue">None</span></div>
+                            <div class="info-row"><span class="info-label">Entry Price</span><span class="info-value" id="entryPriceValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Exchange</span><span class="info-value text-green" id="exchangeStatusValue">Connected</span></div>
                         </div>
                     </div>
                 </div>
                 
-                <div class="row mt-4">
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-wallet me-2"></i>Account</div>
-                            <div class="card-body">
-                                <div class="info-row">
-                                    <span class="info-label">Total Equity</span>
-                                    <span class="info-value" id="equityValue">$0.00</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Daily P&L</span>
-                                    <span class="info-value" id="dailyPnlValue">0.00%</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Win Rate</span>
-                                    <span class="info-value" id="winRateValue">0%</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Trades Today</span>
-                                    <span class="info-value" id="tradesTodayValue">0</span>
-                                </div>
-                            </div>
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-chart-area text-blue"></i> Market</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Trend</span><span class="info-value" id="trendValue">NEUTRAL</span></div>
+                            <div class="info-row"><span class="info-label">ADX</span><span class="info-value" id="adxValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Volatility</span><span class="info-value" id="volatilityRegimeValue">NORMAL</span></div>
+                            <div class="info-row"><span class="info-label">Order Flow</span><span class="info-value" id="orderFlowValue">NEUTRAL</span></div>
+                            <div class="info-row"><span class="info-label">Spread</span><span class="info-value" id="spreadValue">0%</span></div>
                         </div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-chart-line me-2"></i>Market</div>
-                            <div class="card-body">
-                                <div class="info-row">
-                                    <span class="info-label">Trend</span>
-                                    <span class="info-value" id="trendValue">NEUTRAL</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">ADX</span>
-                                    <span class="info-value" id="adxValue">0</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Volatility</span>
-                                    <span class="info-value" id="volatilityRegimeValue">NORMAL</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Order Flow</span>
-                                    <span class="info-value" id="orderFlowValue">NEUTRAL</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-cog me-2"></i>Status</div>
-                            <div class="card-body">
-                                <div class="info-row">
-                                    <span class="info-label">Cooldown</span>
-                                    <span class="info-value" id="cooldownValue">READY</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Position</span>
-                                    <span class="info-value" id="hasPositionValue">None</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Timeframe</span>
-                                    <span class="info-value" id="timeframeValue">5m / 15m</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Exchange</span>
-                                    <span class="info-value health-ok" id="exchangeStatusValue">Connected</span>
-                                </div>
-                            </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-robot text-purple"></i> AI/ML</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">ML Direction</span><span class="info-value" id="mlDirectionValue">-</span></div>
+                            <div class="info-row"><span class="info-label">ML Confidence</span><span class="info-value" id="mlConfidenceValue">0%</span></div>
+                            <div class="info-row"><span class="info-label">Market Regime</span><span class="info-value" id="marketRegimeValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Market Sentiment</span><span class="info-value" id="marketSentimentValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Confluence Score</span><span class="info-value" id="confluenceScoreValue">0%</span></div>
                         </div>
                     </div>
                 </div>
             </div>
 
+            <!-- Trades -->
             <div class="tab-pane fade" id="trades">
-                <div class="card mt-4">
-                    <div class="card-header"><i class="fas fa-history me-2"></i>Recent Trades</div>
+                <div class="card mt-3">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span><i class="fas fa-history text-cyan"></i> Trade History</span>
+                        <button class="btn btn-primary btn-sm" onclick="loadAllTrades()"><i class="fas fa-sync"></i> Refresh</button>
+                    </div>
                     <div class="card-body p-0">
-                        <table class="table table-hover mb-0" id="tradesTable">
-                            <thead>
-                                <tr>
-                                    <th>Time</th>
-                                    <th>Pair</th>
-                                    <th>Side</th>
-                                    <th>Entry Price</th>
-                                    <th>Exit Price</th>
-                                    <th>Quantity</th>
-                                    <th>P&L ($)</th>
-                                    <th>P&L (%)</th>
-                                    <th>Duration</th>
-                                    <th>Exit Reason</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tradesTableBody"></tbody>
-                        </table>
+                        <div class="table-responsive">
+                            <table class="table table-hover" id="allTradesTable">
+                                <thead><tr><th>ID</th><th>Time</th><th>Pair</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&L ($)</th><th>P&L (%)</th><th>Status</th></tr></thead>
+                                <tbody id="allTradesTableBody"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>
 
+            <!-- Analytics -->
             <div class="tab-pane fade" id="analytics">
-                <div class="row mt-4">
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-chart-bar me-2"></i>Performance</div>
-                            <div class="card-body">
-                                <div class="info-row">
-                                    <span class="info-label">Total Trades</span>
-                                    <span class="info-value" id="totalTradesValue">0</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Winners</span>
-                                    <span class="info-value positive" id="winningTradesValue">0</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Losers</span>
-                                    <span class="info-value negative" id="losingTradesValue">0</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Win Rate</span>
-                                    <span class="info-value" id="winRateAnalyticsValue">0%</span>
-                                </div>
-                            </div>
+                <div class="grid-3 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-chart-bar text-cyan"></i> Performance</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Total Trades</span><span class="info-value" id="totalTradesValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Winners</span><span class="info-value text-green" id="winningTradesValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Losers</span><span class="info-value text-red" id="losingTradesValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Win Rate</span><span class="info-value" id="winRateAnalyticsValue">0%</span></div>
+                            <div class="info-row"><span class="info-label">Profit Factor</span><span class="info-value" id="profitFactorValue">0</span></div>
                         </div>
                     </div>
-                    <div class="col-md-6">
-                        <div class="card">
-                            <div class="card-header"><i class="fas fa-trophy me-2"></i>Session</div>
-                            <div class="card-body">
-                                <div class="info-row">
-                                    <span class="info-label">Session P&L</span>
-                                    <span class="info-value" id="sessionPnlValue">$0.00</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Best Trade</span>
-                                    <span class="info-value positive" id="bestTradeValue">$0.00</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Worst Trade</span>
-                                    <span class="info-value negative" id="worstTradeValue">$0.00</span>
-                                </div>
-                                <div class="info-row">
-                                    <span class="info-label">Last Trade</span>
-                                    <span class="info-value" id="lastTradeValue">--</span>
-                                </div>
-                            </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-trophy text-yellow"></i> Session</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Session P&L</span><span class="info-value" id="sessionPnlAnalyticsValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Best Trade</span><span class="info-value text-green" id="bestTradeValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Worst Trade</span><span class="info-value text-red" id="worstTradeValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Average Win</span><span class="info-value text-green" id="avgWinValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Average Loss</span><span class="info-value text-red" id="avgLossValue">$0.00</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-percentage text-purple"></i> Rates</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Risk Per Trade</span><span class="info-value" id="riskPerTradeValue">1%</span></div>
+                            <div class="info-row"><span class="info-label">Size Multiplier</span><span class="info-value" id="sizeMultiplierValue">1x</span></div>
+                            <div class="info-row"><span class="info-label">Session Streak</span><span class="info-value" id="sessionStreakValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Recommendation</span><span class="info-value" id="sessionRecommendationValue">-</span></div>
                         </div>
                     </div>
                 </div>
             </div>
 
+            <!-- Market -->
+            <div class="tab-pane fade" id="market">
+                <div class="grid-4 mt-3">
+                    <div class="stat-card"><div class="stat-value" id="spreadValue2">0%</div><div class="stat-label">Spread</div></div>
+                    <div class="stat-card"><div class="stat-value" id="volumeValue">$0</div><div class="stat-label">Volume 24h</div></div>
+                    <div class="stat-card"><div class="stat-value" id="rsiValue">50</div><div class="stat-label">RSI</div></div>
+                    <div class="stat-card"><div class="stat-value" id="change24hValue">0%</div><div class="stat-label">Change 24h</div></div>
+                </div>
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header">Support & Resistance</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Distance to Support</span><span class="info-value" id="distanceSupportValue">0%</span></div>
+                            <div class="info-row"><span class="info-label">Distance to Resistance</span><span class="info-value" id="distanceResistanceValue">0%</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">Position Details</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Stop Loss</span><span class="info-value" id="slValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Take Profit</span><span class="info-value" id="tpValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Position Qty</span><span class="info-value" id="positionQtyValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Risk Fraction</span><span class="info-value" id="riskFractionValue">-</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Strategy -->
+            <div class="tab-pane fade" id="strategy">
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-signal text-green"></i> Signal Engines</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Trend</span><span class="info-value" id="signalTrend">-</span></div>
+                            <div class="info-row"><span class="info-label">Momentum</span><span class="info-value" id="signalMomentum">-</span></div>
+                            <div class="info-row"><span class="info-label">Volume</span><span class="info-value" id="signalVolume">-</span></div>
+                            <div class="info-row"><span class="info-label">Volatility</span><span class="info-value" id="signalVolatility">-</span></div>
+                            <div class="info-row"><span class="info-label">Structure</span><span class="info-value" id="signalStructure">-</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-robot text-purple"></i> Auto-Improver</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Enabled</span><span class="info-value text-green" id="autoImproveEnabled">Yes</span></div>
+                            <div class="info-row"><span class="info-label">Consecutive Losses</span><span class="info-value text-red" id="consecutiveLosses">0</span></div>
+                            <div class="info-row"><span class="info-label">Consecutive Wins</span><span class="info-value text-green" id="consecutiveWins">0</span></div>
+                            <div class="info-row"><span class="info-label">Signal Quality</span><span class="info-value" id="signalQualityScore">0%</span></div>
+                            <div class="info-row"><span class="info-label">Raw Signal</span><span class="info-value" id="rawSignalValue">-</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header">Exit Intelligence</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Exit Score</span><span class="info-value" id="exitScoreValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Exit Threshold</span><span class="info-value" id="exitThresholdValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Exit Reason</span><span class="info-value" id="exitReasonValue">-</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">Decision</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Decision Reason</span><span class="info-value" id="decisionReasonValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Cooldown Gate</span><span class="info-value" id="cooldownGateValue">-</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Risk -->
+            <div class="tab-pane fade" id="risk">
+                <div class="grid-3 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-shield-alt text-red"></i> Risk Metrics</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Max Drawdown</span><span class="info-value text-red" id="maxDrawdownValue">0%</span></div>
+                            <div class="info-row"><span class="info-label">Risk Per Trade</span><span class="info-value" id="riskPerTradeValue2">1%</span></div>
+                            <div class="info-row"><span class="info-label">Capital Limit</span><span class="info-value" id="capitalLimitValue">$0</span></div>
+                            <div class="info-row"><span class="info-label">Cash Buffer</span><span class="info-value" id="cashBufferValue">$0</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-exclamation-triangle text-yellow"></i> Emergency</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Circuit Breaker</span><span class="info-value" id="circuitBreakerTripsValue">0 trips</span></div>
+                            <div class="info-row"><span class="info-label">Emergency Stop</span><span class="info-value text-yellow" id="emergencyStopValue">Inactive</span></div>
+                            <div class="info-row"><span class="info-label">Reconnections</span><span class="info-value" id="reconnectionsValue">0</span></div>
+                            <div class="info-row"><span class="info-label">Dynamic Exit</span><span class="info-value" id="dynamicExitValue">-</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-sliders-h text-blue"></i> Runtime</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Investment Mode</span><span class="info-value" id="investmentModeValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Capital Reserve</span><span class="info-value" id="capitalReserveValue">0%</span></div>
+                            <div class="info-row"><span class="info-label">Optimized Risk</span><span class="info-value" id="optimizedRiskValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Optimization Reason</span><span class="info-value" id="optimizationReasonValue">-</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Health -->
             <div class="tab-pane fade" id="health">
-                <div class="row mt-4">
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-header">Exchange</div>
-                            <div class="card-body text-center">
-                                <i class="fas fa-check-circle fa-2x mb-3 health-ok" id="exchangeIcon"></i>
-                                <div id="exchangeStatus" class="health-ok">Connected</div>
-                            </div>
+                <div class="grid-4 mt-3">
+                    <div class="card">
+                        <div class="card-header text-center">Exchange</div>
+                        <div class="card-body text-center">
+                            <i class="fas fa-check-circle fa-2x text-green mb-2" id="exchangeIcon"></i>
+                            <div id="exchangeStatus" class="text-green">Connected</div>
                         </div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-header">Database</div>
-                            <div class="card-body text-center">
-                                <i class="fas fa-check-circle fa-2x mb-3 health-ok" id="databaseIcon"></i>
-                                <div id="databaseStatus" class="health-ok">Connected</div>
-                            </div>
+                    <div class="card">
+                        <div class="card-header text-center">Database</div>
+                        <div class="card-body text-center">
+                            <i class="fas fa-check-circle fa-2x text-green mb-2" id="databaseIcon"></i>
+                            <div id="databaseStatus" class="text-green">Connected</div>
                         </div>
                     </div>
-                    <div class="col-md-4">
-                        <div class="card">
-                            <div class="card-header">API Latency</div>
-                            <div class="card-body text-center">
-                                <div class="stat-value" id="apiLatency">0 ms</div>
-                                <div class="stat-label">p95</div>
-                            </div>
+                    <div class="card">
+                        <div class="card-header text-center">API Latency</div>
+                        <div class="card-body text-center">
+                            <div class="stat-value" id="apiLatency">0 ms</div>
+                            <div class="stat-label">p95</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header text-center">Uptime</div>
+                        <div class="card-body text-center">
+                            <div class="stat-value" id="uptimeValue">0h</div>
+                            <div class="stat-label">Running</div>
                         </div>
                     </div>
                 </div>
             </div>
 
+            <!-- Logs -->
             <div class="tab-pane fade" id="logs">
-                <div class="card mt-4">
-                    <div class="card-header"><i class="fas fa-list me-2"></i>System Logs</div>
-                    <div class="card-body" style="max-height: 500px; overflow-y: auto;" id="logsContainer">
-                        <div class="empty-state"><i class="fas fa-clipboard-list"></i><p>No logs yet</p></div>
-                    </div>
+                <div class="card mt-3">
+                    <div class="card-header"><i class="fas fa-list text-cyan"></i> System Logs</div>
+                    <div class="card-body" style="max-height: 500px; overflow-y: auto;" id="logsContainer"></div>
                 </div>
             </div>
         </div>
@@ -504,190 +526,204 @@
     <script>
         let updateInterval = null;
         
-        function formatNumber(num, decimals = 2) {
-            if (num === null || num === undefined || num === '--') return '0.00';
-            return typeof num === 'number' ? num.toFixed(decimals) : num;
-        }
+        function fmt(n, d=2) { return (n===null||n===undefined)?'-':typeof n==='number'?n.toFixed(d):n; }
+        function fmtPct(n) { return n===null||n===undefined?'-':(n*100).toFixed(1)+'%'; }
+        function fmtCur(n) { return '$'+fmt(n,2); }
         
-        function formatPercent(num) {
-            if (num === null || num === undefined) return '0%';
-            return (num * 100).toFixed(1) + '%';
-        }
-        
-        function formatCurrency(num) {
-            if (num === null || num === undefined) return '$0.00';
-            return '$' + formatNumber(num, 2);
-        }
-        
-        function getSignalClass(signal) {
-            if (signal === 'BUY') return 'signal-buy';
-            if (signal === 'SELL') return 'signal-sell';
-            return 'signal-hold';
-        }
-        
-        function getStatusClass(status) {
-            if (status === 'RUNNING' || status === 'READY') return 'status-running';
-            if (status === 'ERROR') return 'status-error';
-            if (status === 'WAITING') return 'status-waiting';
-            return 'status-warning';
+        function getSignalClass(s) { return s==='BUY'?'signal-buy':s==='SELL'?'signal-sell':'signal-hold'; }
+        function getStatusClass(s) {
+            if(s==='RUNNING'||s==='READY')return'status-running';
+            if(s==='ERROR')return'status-error';
+            if(s==='PAUSED'||s==='USER_PAUSED')return'status-paused';
+            return'status-waiting';
         }
         
         async function fetchSnapshot() {
             try {
-                const response = await fetch('/api/snapshot');
-                if (!response.ok) throw new Error('Failed to fetch');
-                const data = await response.json();
-                updateDashboard(data);
-            } catch (error) {
-                console.error('Error fetching snapshot:', error);
-            }
+                const r = await fetch('/api/snapshot');
+                if(!r.ok) throw new Error('Failed');
+                updateDashboard(await r.json());
+            } catch(e) { console.error('Error:',e); }
         }
         
-        function updateDashboard(data) {
-            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+        async function loadAllTrades() {
+            try {
+                const r = await fetch('/api/all_trades');
+                updateTradesTable(await r.json());
+            } catch(e) { console.error('Error loading trades:',e); }
+        }
+        
+        function updateDashboard(d) {
+            // Status
+            const status = d.status||'WAITING';
+            document.getElementById('botStatus').textContent = status;
+            document.getElementById('botStatus').className = 'status-badge '+getStatusClass(status);
+            document.getElementById('statusValue').textContent = status;
             
-            const status = data.status || 'WAITING';
-            const statusEl = document.getElementById('botStatus');
-            statusEl.textContent = status;
-            statusEl.className = 'status-badge ' + getStatusClass(status);
+            // Price & Signal
+            document.getElementById('priceValue').textContent = fmtCur(d.price);
+            const sig = d.signal||'HOLD', sigEl = document.getElementById('signalValue');
+            sigEl.textContent = sig;
+            sigEl.className = 'stat-value '+getSignalClass(sig).replace('signal-','');
+            const signalBox = document.getElementById('signalValue');
+            signalBox.className = 'signal-box '+getSignalClass(sig);
+            signalBox.textContent = sig;
             
-            document.getElementById('priceValue').textContent = formatCurrency(data.price);
+            document.getElementById('confidenceValue').textContent = fmtPct(d.confidence);
+            document.getElementById('pairValue').textContent = d.pair||'BTC/USDT';
             
-            const signal = data.signal || 'HOLD';
-            const signalEl = document.getElementById('signalValue');
-            signalEl.textContent = signal;
-            signalEl.className = 'stat-value ' + getSignalClass(signal);
+            // Account
+            document.getElementById('equityValue').textContent = fmtCur(d.total_equity||d.equity);
+            document.getElementById('balanceValue').textContent = fmtCur(d.balance);
             
-            document.getElementById('confidenceValue').textContent = formatPercent(data.confidence);
-            document.getElementById('pairValue').textContent = data.pair || 'BTC/USDT';
+            const pnl = d.daily_pnl||0;
+            const pnlEl = document.getElementById('dailyPnlValue');
+            pnlEl.textContent = (pnl>=0?'+':'')+fmtPct(pnl);
+            pnlEl.className = 'info-value '+(pnl>=0?'text-green':'text-red');
             
-            const equity = data.total_equity || data.equity || 0;
-            document.getElementById('equityValue').textContent = formatCurrency(equity);
+            const spnl = d.session_pnl||0;
+            const spnlEl = document.getElementById('sessionPnlValue');
+            spnlEl.textContent = (spnl>=0?'+$':'$')+fmt(spnl,2);
+            spnlEl.className = 'info-value '+(spnl>=0?'text-green':'text-red');
             
-            const dailyPnl = data.daily_pnl || 0;
-            const dailyPnlEl = document.getElementById('dailyPnlValue');
-            dailyPnlEl.textContent = (dailyPnl >= 0 ? '+' : '') + formatPercent(dailyPnl);
-            dailyPnlEl.className = 'info-value ' + (dailyPnl >= 0 ? 'positive' : 'negative');
+            const upnl = d.unrealized_pnl||0;
+            const upnlEl = document.getElementById('unrealizedPnlValue');
+            upnlEl.textContent = (upnl>=0?'+$':'$')+fmt(upnl,2);
+            upnlEl.className = 'info-value '+(upnl>=0?'text-green':'text-red');
             
-            document.getElementById('winRateValue').textContent = formatPercent(data.win_rate);
-            document.getElementById('tradesTodayValue').textContent = data.trades_today || 0;
+            // Performance
+            document.getElementById('tradesTodayValue').textContent = d.trades_today||0;
+            document.getElementById('winRateValue').textContent = fmtPct(d.win_rate);
+            document.getElementById('capitalProfileValue').textContent = d.capital_profile||'-';
+            document.getElementById('operableCapitalValue').textContent = fmtCur(d.operable_capital_usdt);
+            document.getElementById('lastTradeValue').textContent = d.last_trade||'-';
             
-            document.getElementById('trendValue').textContent = data.trend || 'NEUTRAL';
-            document.getElementById('adxValue').textContent = formatNumber(data.adx, 1);
-            document.getElementById('volatilityRegimeValue').textContent = data.volatility_regime || 'NORMAL';
-            document.getElementById('orderFlowValue').textContent = data.order_flow || 'NEUTRAL';
+            // Status
+            document.getElementById('cooldownValue').textContent = d.cooldown||'READY';
+            document.getElementById('hasPositionValue').textContent = d.has_open_position?(d.open_position_side||'Open'):'None';
+            document.getElementById('entryPriceValue').textContent = fmtCur(d.open_position_entry);
             
-            document.getElementById('cooldownValue').textContent = data.cooldown || 'READY';
-            document.getElementById('hasPositionValue').textContent = data.has_open_position ? (data.open_position_side || 'Open') : 'None';
-            document.getElementById('timeframeValue').textContent = data.timeframe || '5m / 15m';
+            const exc = d.exchange_status||'UNKNOWN';
+            document.getElementById('exchangeStatusValue').textContent = exc==='CONNECTED'?'Connected':exc;
+            document.getElementById('exchangeStatusValue').className = 'info-value '+(exc==='CONNECTED'?'text-green':'text-red');
             
-            const exchange = data.exchange_status || 'UNKNOWN';
-            const exchangeEl = document.getElementById('exchangeStatusValue');
-            if (exchange === 'CONNECTED') {
-                exchangeEl.textContent = 'Connected';
-                exchangeEl.className = 'info-value health-ok';
-            } else {
-                exchangeEl.textContent = exchange;
-                exchangeEl.className = 'info-value health-error';
-            }
+            // Market
+            document.getElementById('trendValue').textContent = d.trend||'NEUTRAL';
+            document.getElementById('adxValue').textContent = fmt(d.adx,1);
+            document.getElementById('volatilityRegimeValue').textContent = d.volatility_regime||'NORMAL';
+            document.getElementById('orderFlowValue').textContent = d.order_flow||'NEUTRAL';
+            document.getElementById('spreadValue').textContent = fmtPct(d.spread);
             
-            updateTradesTable(data.trade_history || []);
-            updateHealth(data);
-            updateLogs(data.logs || []);
+            // AI/ML
+            document.getElementById('mlDirectionValue').textContent = d.ml_direction||'-';
+            document.getElementById('mlConfidenceValue').textContent = fmtPct(d.ml_confidence);
+            document.getElementById('marketRegimeValue').textContent = d.market_regime||'-';
+            document.getElementById('marketSentimentValue').textContent = d.market_sentiment||'-';
+            document.getElementById('confluenceScoreValue').textContent = fmtPct(d.confluence_score);
             
+            // Market tab
+            document.getElementById('spreadValue2').textContent = fmtPct(d.spread);
+            document.getElementById('rsiValue').textContent = fmt(d.rsi,0);
+            document.getElementById('change24hValue').textContent = fmtPct(d.change_24h);
+            document.getElementById('distanceSupportValue').textContent = fmtPct(d.distance_to_support);
+            document.getElementById('distanceResistanceValue').textContent = fmtPct(d.distance_to_resistance);
+            
+            // Position
+            document.getElementById('slValue').textContent = fmtCur(d.open_position_sl);
+            document.getElementById('tpValue').textContent = fmtCur(d.open_position_tp);
+            document.getElementById('positionQtyValue').textContent = fmt(d.open_position_qty,4);
+            document.getElementById('riskFractionValue').textContent = fmtPct(d.live_trade_risk_fraction);
+            
+            // Strategy
+            const signals = d.signals||{};
+            document.getElementById('signalTrend').textContent = signals.trend||'-';
+            document.getElementById('signalMomentum').textContent = signals.momentum||'-';
+            document.getElementById('signalVolume').textContent = signals.volume||'-';
+            document.getElementById('signalVolatility').textContent = signals.volatility||'-';
+            document.getElementById('signalStructure').textContent = signals.structure||'-';
+            document.getElementById('signalQualityScore').textContent = fmtPct(d.signal_quality_score);
+            document.getElementById('rawSignalValue').textContent = d.raw_signal||'-';
+            
+            // Exit Intelligence
+            document.getElementById('exitScoreValue').textContent = fmt(d.exit_intelligence_score,3);
+            document.getElementById('exitThresholdValue').textContent = fmt(d.exit_intelligence_threshold,3);
+            document.getElementById('exitReasonValue').textContent = d.exit_intelligence_reason||'-';
+            document.getElementById('decisionReasonValue').textContent = d.decision_reason||'-';
+            document.getElementById('cooldownGateValue').textContent = d.cooldown_complete?'Complete':'Active';
+            
+            // Risk
+            document.getElementById('riskPerTradeValue').textContent = fmtPct(d.live_trade_risk_fraction);
+            document.getElementById('riskPerTradeValue2').textContent = fmtPct(d.live_trade_risk_fraction);
+            document.getElementById('capitalLimitValue').textContent = fmtCur(d.capital_limit_usdt);
+            document.getElementById('cashBufferValue').textContent = fmtCur(d.min_cash_buffer_usdt);
+            document.getElementById('circuitBreakerTripsValue').textContent = (d.circuit_breaker_trips||0)+' trips';
+            document.getElementById('emergencyStopValue').textContent = d.emergency_stop_active?'Active':'Inactive';
+            document.getElementById('reconnectionsValue').textContent = d.exchange_reconnections||0;
+            document.getElementById('dynamicExitValue').textContent = d.dynamic_exit_enabled?'Enabled':'Disabled';
+            document.getElementById('investmentModeValue').textContent = d.investment_mode||'-';
+            document.getElementById('capitalReserveValue').textContent = fmtPct(d.capital_reserve_ratio);
+            document.getElementById('optimizedRiskValue').textContent = fmtPct(d.optimized_risk_per_trade_fraction);
+            document.getElementById('optimizationReasonValue').textContent = d.optimization_reason||'-';
+            
+            // Health
+            document.getElementById('exchangeIcon').className = 'fas fa-'+(exc==='CONNECTED'?'check-circle text-green':'times-circle text-red')+' fa-2x mb-2';
+            document.getElementById('exchangeStatus').textContent = exc==='CONNECTED'?'Connected':exc;
+            document.getElementById('exchangeStatus').className = exc==='CONNECTED'?'text-green':'text-red';
+            
+            const db = d.database_status||'UNKNOWN';
+            document.getElementById('databaseIcon').className = 'fas fa-'+(db==='CONNECTED'?'check-circle text-green':'times-circle text-red')+' fa-2x mb-2';
+            document.getElementById('databaseStatus').textContent = db==='CONNECTED'?'Connected':db;
+            document.getElementById('databaseStatus').className = db==='CONNECTED'?'text-green':'text-red';
+            
+            document.getElementById('apiLatency').textContent = fmt(d.api_latency_p95_ms,0)+' ms';
+            
+            // Update trades
+            updateTradesTable(d.trade_history||[]);
+            updateLogs(d.logs||[]);
             document.getElementById('loading').style.display = 'none';
         }
         
         function updateTradesTable(trades) {
-            const tbody = document.getElementById('tradesTableBody');
-            if (!trades || trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted py-4">No trades yet</td></tr>';
-                return;
-            }
-            
-            tbody.innerHTML = trades.slice(0, 30).map(trade => {
-                const pnl = trade.pnl || 0;
-                const pnlPercent = trade.pnl_percent || ((trade.exit - trade.entry) / trade.entry * 100) || 0;
-                const pnlClass = pnl >= 0 ? 'positive' : 'negative';
-                const duration = trade.duration_minutes ? Math.round(trade.duration_minutes) + 'm' : '-';
-                return `
-                    <tr>
-                        <td>${trade.time || trade.exit_time || '--'}</td>
-                        <td>${trade.pair || '--'}</td>
-                        <td class="${trade.side === 'BUY' ? 'signal-buy' : 'signal-sell'}">${trade.side || '--'}</td>
-                        <td>${formatNumber(trade.entry, 4)}</td>
-                        <td>${formatNumber(trade.exit, 4)}</td>
-                        <td>${formatNumber(trade.size || trade.quantity, 4)}</td>
-                        <td class="${pnlClass}">${pnl >= 0 ? '+' : ''}${formatNumber(pnl, 2)}</td>
-                        <td class="${pnlClass}">${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%</td>
-                        <td>${duration}</td>
-                        <td>${trade.exit_reason || trade.status || '--'}</td>
-                    </tr>
-                `;
+            const tbody = document.getElementById('allTradesTableBody');
+            if(!trades.length) { tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No trades yet</td></tr>'; return; }
+            tbody.innerHTML = trades.slice(0,30).map(t => {
+                const p = t.pnl||0, pp = t.pnl_percent||((t.exit-t.entry)/t.entry*100)||0;
+                return `<tr>
+                    <td>${t.trade_id||'-'}</td>
+                    <td>${t.time||t.exit_time||'-'}</td>
+                    <td>${t.pair||'-'}</td>
+                    <td class="${t.side==='BUY'?'text-green':t.side==='SELL'?'text-red':''}">${t.side||'-'}</td>
+                    <td>${fmt(t.entry,4)}</td>
+                    <td>${fmt(t.exit,4)}</td>
+                    <td>${fmt(t.size||t.quantity,4)}</td>
+                    <td class="${p>=0?'text-green':'text-red'}">${p>=0?'+':''}${fmt(p,2)}</td>
+                    <td class="${pp>=0?'text-green':'text-red'}">${pp>=0?'+':''}${pp.toFixed(2)}%</td>
+                    <td><span class="badge ${t.status==='closed'?'badge-green':'badge-blue'}">${t.status||'closed'}</span></td>
+                </tr>`;
             }).join('');
-        }
-        
-        function updateHealth(data) {
-            const exchange = data.exchange_status || 'UNKNOWN';
-            const database = data.database_status || 'UNKNOWN';
-            
-            const exchangeEl = document.getElementById('exchangeStatus');
-            exchangeEl.className = exchange === 'CONNECTED' ? 'health-ok' : exchange === 'ERROR' ? 'health-error' : 'health-warning';
-            exchangeEl.textContent = exchange === 'CONNECTED' ? 'Connected' : exchange;
-            
-            const exchangeIcon = document.getElementById('exchangeIcon');
-            exchangeIcon.className = exchange === 'CONNECTED' ? 'fas fa-check-circle fa-2x mb-3 health-ok' : 'fas fa-exclamation-circle fa-2x mb-3 health-error';
-            
-            const dbEl = document.getElementById('databaseStatus');
-            dbEl.className = database === 'CONNECTED' ? 'health-ok' : database === 'ERROR' ? 'health-error' : 'health-warning';
-            dbEl.textContent = database === 'CONNECTED' ? 'Connected' : database;
-            
-            const dbIcon = document.getElementById('databaseIcon');
-            dbIcon.className = database === 'CONNECTED' ? 'fas fa-check-circle fa-2x mb-3 health-ok' : 'fas fa-exclamation-circle fa-2x mb-3 health-error';
-            
-            document.getElementById('apiLatency').textContent = formatNumber(data.api_latency_p95_ms, 0) + ' ms';
         }
         
         function updateLogs(logs) {
-            const container = document.getElementById('logsContainer');
-            if (!logs || logs.length === 0) {
-                container.innerHTML = '<div class="empty-state"><i class="fas fa-clipboard-list"></i><p>No logs yet</p></div>';
-                return;
-            }
-            
-            container.innerHTML = logs.slice(0, 50).map(log => {
-                const time = log.time || '';
-                const message = log.message || log.msg || '';
-                const level = log.level || 'INFO';
-                const logClass = level === 'ERROR' ? 'log-error' : level === 'WARNING' ? 'log-warning' : 'log-info';
-                return `<div class="log-entry ${logClass}">[${time}] ${message}</div>`;
-            }).join('');
+            const c = document.getElementById('logsContainer');
+            if(!logs.length) { c.innerHTML = '<div class="text-muted text-center py-4">No logs yet</div>'; return; }
+            c.innerHTML = logs.slice(0,100).map(l => `<div class="log-entry ${(l.level||'').toLowerCase()}">[${l.time||''}] ${l.message||l.msg||''}</div>`).join('');
         }
         
-        function startPolling() {
-            if (updateInterval) clearInterval(updateInterval);
-            fetchSnapshot();
-            updateInterval = setInterval(fetchSnapshot, 1000);
-        }
-        
-        async function sendControl(action) {
-            if (!confirm('Are you sure you want to ' + action + ' the bot?')) return;
-            
+        async function sendControl(a) {
+            if(!confirm('Confirm: '+a+'?')) return;
             try {
-                const response = await fetch('/api/control/' + action, { method: 'POST' });
-                const result = await response.json();
-                if (result.success) {
-                    alert(result.message);
-                    fetchSnapshot();
-                } else {
-                    alert('Error: ' + result.error);
-                }
-            } catch (error) {
-                alert('Error sending command: ' + error);
-            }
+                const r = await fetch('/api/control/'+a, {method:'POST'});
+                const j = await r.json();
+                alert(j.success?j.message:'Error: '+j.error);
+                fetchSnapshot();
+            } catch(e) { alert('Error: '+e); }
         }
         
-        document.addEventListener('DOMContentLoaded', () => { startPolling(); });
+        document.addEventListener('DOMContentLoaded', () => {
+            fetchSnapshot();
+            loadAllTrades();
+            setInterval(fetchSnapshot, 1500);
+        });
     </script>
 </body>
 </html>
