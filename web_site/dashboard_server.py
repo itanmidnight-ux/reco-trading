@@ -4,8 +4,9 @@ import json
 import logging
 import socket
 import threading
+import time
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from flask import Flask, render_template, jsonify, Response
 
@@ -13,6 +14,7 @@ from flask import Flask, render_template, jsonify, Response
 logger = logging.getLogger(__name__)
 
 _global_bot_instance: Any = None
+_bot_instance_getter: Callable | None = None
 _app: Flask | None = None
 
 
@@ -23,19 +25,69 @@ def set_bot_instance(bot) -> None:
     logger.info("Bot instance set for web dashboard")
 
 
+def set_bot_instance_getter(getter: Callable) -> None:
+    """Set a callable that returns the bot instance."""
+    global _bot_instance_getter
+    _bot_instance_getter = getter
+    logger.info("Bot instance getter set for web dashboard")
+
+
 def get_bot_snapshot() -> dict[str, Any]:
     """Get current snapshot from bot."""
+    global _global_bot_instance
+    
+    if _global_bot_instance is None and _bot_instance_getter is not None:
+        try:
+            _global_bot_instance = _bot_instance_getter()
+        except Exception:
+            pass
+    
     if _global_bot_instance is None:
-        return {}
+        return {
+            "status": "WAITING",
+            "pair": "BTC/USDT",
+            "signal": "HOLD",
+            "confidence": 0.0,
+            "price": 0.0,
+            "daily_pnl": 0.0,
+            "equity": 0.0,
+            "total_equity": 0.0,
+            "win_rate": 0.0,
+            "trades_today": 0,
+            "has_open_position": False,
+            "trend": "NEUTRAL",
+            "volatility_regime": "NORMAL",
+            "order_flow": "NEUTRAL",
+            "adx": 0.0,
+            "spread": 0.0,
+            "cooldown": "READY",
+            "exchange_status": "CONNECTED",
+            "database_status": "CONNECTED",
+            "trade_history": [],
+            "logs": [],
+            "timeframe": "5m / 15m",
+        }
     
     try:
         snapshot = getattr(_global_bot_instance, 'snapshot', {})
         if callable(snapshot):
             snapshot = snapshot()
-        return snapshot if snapshot else {}
+        if snapshot is None:
+            snapshot = {}
+        
+        snapshot.setdefault("status", "RUNNING")
+        snapshot.setdefault("pair", "BTC/USDT")
+        snapshot.setdefault("signal", "HOLD")
+        
+        return snapshot
     except Exception as e:
         logger.error(f"Error getting bot snapshot: {e}")
-        return {}
+        return {
+            "status": "ERROR",
+            "pair": "BTC/USDT",
+            "signal": "HOLD",
+            "error": str(e),
+        }
 
 
 def create_app() -> Flask:
@@ -70,6 +122,36 @@ def create_app() -> Flask:
             "status": "running",
             "timestamp": datetime.now().isoformat(),
         })
+    
+    @app.route('/api/control/<action>', methods=['POST'])
+    def api_control(action):
+        """Send control command to bot."""
+        if _global_bot_instance is None:
+            return jsonify({"success": False, "error": "Bot not connected"})
+        
+        try:
+            if action == 'pause':
+                _global_bot_instance.snapshot["cooldown"] = "USER_PAUSED"
+                _global_bot_instance.snapshot["user_paused"] = True
+                logger.info("Bot paused via web dashboard")
+                return jsonify({"success": True, "message": "Bot paused"})
+            elif action == 'resume':
+                _global_bot_instance.snapshot["cooldown"] = None
+                _global_bot_instance.snapshot["user_paused"] = False
+                _global_bot_instance.snapshot["emergency_stop_active"] = False
+                logger.info("Bot resumed via web dashboard")
+                return jsonify({"success": True, "message": "Bot resumed"})
+            elif action == 'emergency':
+                _global_bot_instance.snapshot["cooldown"] = "EMERGENCY_STOP"
+                _global_bot_instance.snapshot["emergency_stop_active"] = True
+                _global_bot_instance.emergency_stop_active = True
+                logger.warning("Emergency stop activated via web dashboard")
+                return jsonify({"success": True, "message": "Emergency stop activated"})
+            else:
+                return jsonify({"success": False, "error": "Unknown action"})
+        except Exception as e:
+            logger.error(f"Error sending control: {e}")
+            return jsonify({"success": False, "error": str(e)})
     
     @app.route('/api/trades')
     def api_trades():

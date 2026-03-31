@@ -183,16 +183,13 @@ class TerminalDashboard:
             layout = Layout()
             layout.split_column(
                 Layout(Panel(headline, title="Executive Snapshot", border_style="bright_blue"), ratio=1),
-                Layout(Panel(status, title="Reco Trading Bot", border_style="cyan"), ratio=2),
-                Layout(Panel(portfolio, title="Portfolio & Risk"), ratio=2),
-                Layout(Panel(signal_table, border_style="magenta"), ratio=3),
-                Layout(Panel(exit_intel, border_style="bright_magenta"), ratio=2),
-                Layout(Panel(health, border_style="green"), ratio=2),
-                Layout(Panel(decision, border_style="yellow"), ratio=3),
+                Layout(Panel(status, title="Market Status", border_style="cyan"), ratio=2),
+                Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=2),
+                Layout(Panel(health, border_style="yellow"), ratio=1),
             )
             return Group(layout)
         except Exception as exc:  # noqa: BLE001
-            return Panel(f"Dashboard render error: {exc}", title="Reco Trading Bot", border_style="red")
+            return Panel(f"[red]Dashboard render error: {exc}[/red]", title="Reco Trading Bot", border_style="red")
 
 
 def _to_float(value: Any) -> float | None:

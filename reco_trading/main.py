@@ -3,8 +3,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-import threading
 import os
+import threading
+
+_project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from reco_trading.config.settings import Settings
 from reco_trading.core.bot_engine import BotEngine
@@ -117,8 +121,13 @@ def run() -> None:
     elif dashboard_type == 'web':
         logger.info("Web Dashboard selected (port 9000)")
         try:
-            from web_site.dashboard_server import run_in_thread
+            from web_site.dashboard_server import run_in_thread, set_bot_instance_getter
             web_dashboard_thread = run_in_thread(host='0.0.0.0', port=9000)
+            
+            def get_bot():
+                return bot_instance
+            
+            set_bot_instance_getter(get_bot)
             logger.info("Web Dashboard started on http://localhost:9000")
         except Exception as exc:
             logger.exception(f"Web Dashboard failed: {exc}, running headless")
