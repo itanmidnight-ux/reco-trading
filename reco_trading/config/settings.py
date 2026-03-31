@@ -82,10 +82,12 @@ class Settings(BaseSettings):
     loss_pause_after_consecutive: int = 4
 
     # =========================
-    # DATABASE
+    # DATABASE (PostgreSQL, MySQL, or SQLite)
     # =========================
-    postgres_dsn: str
+    postgres_dsn: Optional[str] = None
     postgres_admin_dsn: Optional[str] = None
+    mysql_dsn: Optional[str] = None
+    database_url: Optional[str] = None
 
     # =========================
     # REDIS

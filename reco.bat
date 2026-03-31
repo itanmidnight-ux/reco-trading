@@ -1,125 +1,147 @@
 @echo off
-REM ==========================================
-REM Reco-Trading Windows Launcher
-REM ==========================================
+setlocal enabledelayedexpansion
 
+:: ==========================================
+:: RECO-TRADING WINDOWS LAUNCHER v3.0
+:: Works without admin, auto-detects database
+:: ==========================================
+
+echo.
 echo ========================================
-echo Reco-Trading Bot Launcher (Windows)
+echo   Reco-Trading Bot Launcher v3.0
 echo ========================================
 echo.
 
-REM Check Python installation
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Python is not installed or not in PATH
-    echo Please install Python 3.11+ from https://python.org
+:: Check for virtual environment
+if not exist ".venv" (
+    echo [ERROR] Entorno virtual no encontrado
+    echo Ejecuta install.bat primero
     pause
     exit /b 1
 )
 
-REM Check if virtual environment exists
-if not exist "venv" (
-    echo Creating virtual environment...
-    python -m venv venv
+:: Activate virtual environment
+call .venv\Scripts\activate.bat
+
+:: Check Python
+python --version >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] Python no encontrado
+    pause
+    exit /b 1
 )
 
-REM Activate virtual environment
-echo Activating virtual environment...
-call venv\Scripts\activate.bat
+echo [OK] Python: 
 
-REM Install dependencies if needed
-if not exist "venv\Lib\site-packages\ccxt" (
-    echo Installing dependencies...
-    pip install -r requirements.txt
+:: Load .env if exists
+if exist ".env" (
+    for /f "usebackq tokens=1,* delims==" %%a in (.env) do (
+        set "%%a=%%b"
+    )
 )
 
-REM Check for .env file
-if not exist ".env" (
-    echo WARNING: .env file not found
-    echo Creating example .env file...
-    (
-        echo # Exchange API Keys
-        echo BINANCE_API_KEY=your_api_key_here
-        echo BINANCE_SECRET=your_secret_here
-        echo.
-        echo # Bot Configuration
-        echo DRY_RUN=true
-        echo LOG_LEVEL=INFO
-    ) > .env.example
-    echo Please copy .env.example to .env and add your API keys
+:: Check API keys
+if "%BINANCE_API_KEY%"=="" (
+    echo [ERROR] BINANCE_API_KEY no configurada
+    echo Edita .env y configura tus claves
+    pause
+    exit /b 1
+)
+
+if "%BINANCE_API_KEY%"=="CAMBIAR_POR_TU_API_KEY" (
+    echo [WARN] Por favor configura tus API keys en .env
+    echo   Reemplaza BINANCE_API_KEY con tu clave
+    echo   Reemplaza BINANCE_API_SECRET con tu secreto
     pause
 )
 
-REM Check for configuration
-if not exist "config\settings.yaml" (
-    echo Creating default config directory...
-    mkdir config 2>nul
-    echo Creating default settings...
-    (
-        echo # Reco-Trading Configuration
-        echo trading:
-        echo   symbol: BTC/USDT
-        echo   timeframe: 5m
-        echo   dry_run: true
-        echo.
-        echo autonomous:
-        echo   enabled: true
-        echo   decision_interval: 30
-        echo   optimization_interval: 4
-        echo.
-        echo multipair:
-        echo   enabled: true
-        echo   pairs_count: 104
-    ) > config\settings.yaml
+:: Verify database connection
+echo.
+echo [INFO] Verificando base de datos...
+
+set DB_STATUS=unknown
+
+:: Try PostgreSQL
+if defined POSTGRES_DSN (
+    python -c "import asyncio; import sys; sys.path.insert(0,'.'); from reco_trading.database.repository import Repository; asyncio.run(Repository('%POSTGRES_DSN%').verify_connectivity())" 2>nul
+    if not errorlevel 1 (
+        set DB_STATUS=PostgreSQL
+        echo [OK] PostgreSQL conectado
+        goto :db_check_done
+    )
 )
 
-REM Start the bot
-echo.
-echo ========================================
-echo Starting Reco-Trading Bot...
-echo ========================================
-echo.
+:: Try MySQL
+if defined MYSQL_DSN (
+    python -c "import asyncio; import sys; sys.path.insert(0,'.'); from reco_trading.database.repository import Repository; asyncio.run(Repository('%MYSQL_DSN%').verify_connectivity())" 2>nul
+    if not errorlevel 1 (
+        set DB_STATUS=MySQL
+        echo [OK] MySQL conectado
+        goto :db_check_done
+    )
+)
 
-REM Parse command line arguments
-set MODE=%1
-if "%MODE%"=="" set MODE=run
+:: Fallback to SQLite
+if not defined DATABASE_URL (
+    set DATABASE_URL=sqlite:///./data/reco_trading.db
+    if not exist "data" mkdir data
+    echo [INFO] Usando SQLite: %DATABASE_URL%
+)
 
-if "%MODE%"=="run" (
-    echo Running in LIVE mode...
-    python -m reco_trading.main
-) else if "%MODE%"=="dry" (
-    echo Running in DRY-RUN mode...
-    set DRY_RUN=true
-    python -m reco_trading.main
-) else if "%MODE%"=="backtest" (
-    echo Running BACKTEST...
-    python -m reco_trading.backtest %2 %3 %4
-) else if "%MODE%"=="dashboard" (
-    echo Starting WEB DASHBOARD on port 9000...
+set DB_STATUS=SQLite
+echo [OK] SQLite configurado
+
+:db_check_done
+
+:: Menu
+echo.
+echo Selecciona modo de ejecucion:
+echo   1) Testnet (Sandbox) - Recomendado
+echo   2) Produccion Real (Dinero real)
+echo   3) Dashboard Web
+echo.
+set /p MODE="Opcion [1]: "
+
+if "%MODE%"=="1" (
+    set BINANCE_TESTNET=true
+    set ENVIRONMENT=testnet
+    echo [OK] Modo Testnet
+) else if "%MODE%"=="2" (
+    echo [WARN] *** MODO PRODUCCION ***
+    set /p CONFIRM="Escribe 'CONFIRMAR' para operar con dinero real: "
+    if not "%CONFIRM%"=="CONFIRMAR" (
+        echo Cancelado
+        exit /b 1
+    )
+    set BINANCE_TESTNET=false
+    set ENVIRONMENT=production
+) else if "%MODE%"=="3" (
+    echo Iniciando Dashboard Web...
     python -m web_site.dashboard_server
+    exit /b 0
 ) else (
-    echo Unknown mode: %MODE%
-    echo.
-    echo Usage:
-    echo   run       - Run bot in live mode
-    echo   dry       - Run bot in dry-run mode
-    echo   backtest  - Run backtesting
-    echo   dashboard - Start web dashboard
-    echo.
-    echo Examples:
-    echo   reco.bat run
-    echo   reco.bat dry
-    echo   reco.bat backtest --pairs BTC/USDT ETH/USDT --days 30
-    echo   reco.bat dashboard
+    set BINANCE_TESTNET=true
+    set ENVIRONMENT=testnet
+    echo [OK] Modo Testnet
 )
+
+:: Update .env with mode
+if exist ".env" (
+    powershell -Command "(Get-Content '.env') -replace 'BINANCE_TESTNET=.*', 'BINANCE_TESTNET=%BINANCE_TESTNET%' -replace 'ENVIRONMENT=.*', 'ENVIRONMENT=%ENVIRONMENT%' | Set-Content '.env'" 2>nul
+)
+
+:: Start bot
+echo.
+echo ========================================
+echo   Iniciando Reco-Trading Bot...
+echo ========================================
+echo.
+
+python main.py
 
 if errorlevel 1 (
     echo.
-    echo ========================================
-    echo ERROR: Bot exited with error
-    echo ========================================
-    pause
+    echo [ERROR] El bot finalizo con error
 )
 
-REM Deactivate virtual environment
-deactivate
+pause

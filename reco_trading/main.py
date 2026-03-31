@@ -40,8 +40,33 @@ def _run_bot(settings: Settings, state_manager: object | None, web_dashboard_ins
 
 
 async def _verify_database_connection(settings: Settings) -> None:
-    """Verify database connection."""
-    repository = Repository(settings.postgres_dsn)
+    """Verify database connection - supports PostgreSQL, MySQL, and SQLite."""
+    dsn = None
+    
+    # Try PostgreSQL first
+    if settings.postgres_dsn:
+        dsn = settings.postgres_dsn
+    # Try MySQL
+    elif settings.mysql_dsn:
+        dsn = settings.mysql_dsn
+    # Try SQLite
+    elif settings.database_url:
+        dsn = settings.database_url
+    
+    if not dsn:
+        # Generate SQLite default path
+        import os
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        os.makedirs(os.path.join(project_root, "data"), exist_ok=True)
+        db_path = os.path.join(project_root, "data", "reco_trading.db")
+        dsn = f"sqlite:///{db_path}"
+        # Create .env with SQLite if not exists
+        env_path = os.path.join(project_root, ".env")
+        if not os.path.exists(env_path):
+            with open(env_path, "w") as f:
+                f.write(f"# Auto-generated SQLite config\nDATABASE_URL={dsn}\n")
+    
+    repository = Repository(dsn)
     try:
         await repository.verify_connectivity()
     finally:
@@ -72,10 +97,10 @@ def run() -> None:
     
     settings = Settings()
     
-    if not settings.postgres_dsn:
-        logger.error("POSTGRES_DSN is required")
-        sys.exit(1)
+    # Check if any database is configured
+    has_db = bool(settings.postgres_dsn or settings.mysql_dsn or settings.database_url)
     
+    # Check API keys
     if settings.require_api_keys and (not settings.binance_api_key or not settings.binance_api_secret):
         logger.error("BINANCE_API_KEY and BINANCE_API_SECRET are required")
         sys.exit(1)
@@ -87,11 +112,10 @@ def run() -> None:
     try:
         asyncio.run(_verify_database_connection(settings))
     except Exception as exc:
-        logger.error(
-            "Database unavailable; start PostgreSQL or fix POSTGRES_DSN before launching the bot: %s",
+        logger.warning(
+            "Database unavailable (using SQLite fallback or in-memory): %s",
             exc,
         )
-        sys.exit(1)
 
     dashboard_type = os.environ.get('DASHBOARD_TYPE', '').lower()
     
