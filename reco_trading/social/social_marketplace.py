@@ -366,7 +366,7 @@ class SocialTradingMarketplace:
         
         # Get top copiers
         top_copiers = sorted(
-            [(f"{c.user_id}_{c.strategy_id}": c.allocation_percentage) 
+            [(f"{c.user_id}_{c.strategy_id}", c.allocation_percentage) 
              for c in self.copy_traders.values() if c.strategy_id == strategy_id],
             key=lambda x: x[1], reverse=True
         )[:5]
@@ -379,7 +379,7 @@ class SocialTradingMarketplace:
                 "copy_count": strategy.copy_count
             },
             "top_copiers": top_copiers,
-            "latest_signals": [s.dict() for s in self._get_strategy_signals(strategy_id, limit=5)]
+            "latest_signals": [s.dict() for s in await self._get_strategy_signals(strategy_id, limit=5)]
         }
         
     async def _get_strategy_signals(self, strategy_id: str, limit: int = 10) -> List[TradingSignal]:
