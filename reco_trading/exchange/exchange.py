@@ -6,8 +6,7 @@ Provides a unified interface for exchange operations.
 import logging
 from typing import Any
 
-from reco_trading.exchange.binance_client import BinanceClient
-from reco_trading.constants import Config
+from reco_trading.exchange.binance_client import BinanceClient as RobustBinanceClient
 
 
 logger = logging.getLogger(__name__)
@@ -19,108 +18,95 @@ class Exchange:
     Supports multiple exchanges through CCXT.
     """
     
-    def __init__(self, config: Config) -> None:
-        """
-        Initialize Exchange with configuration.
+    def __init__(
+        self,
+        api_key: str = "",
+        api_secret: str = "",
+        exchange_name: str = "binance",
+        testnet: bool = True,
+        trading_mode: str = "spot",
+    ) -> None:
+        self.logger = logging.getLogger(__name__)
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.exchange_name = exchange_name.lower()
+        self.testnet = testnet
+        self.trading_mode = trading_mode
+        self._exchange_client: RobustBinanceClient | None = None
+        self._connected = False
         
-        Args:
-            config: Configuration dictionary
-        """
-        self._config = config
-        self._exchange_client: BinanceClient | None = None
-        self._name = config.get("exchange", {}).get("name", "binance")
-        self._dry_run = config.get("dry_run", True)
-        
-    async def initialize(self) -> None:
+    async def initialize(self) -> bool:
         """Initialize the exchange client."""
-        exchange_config = self._config.get("exchange", {})
-        
-        if self._name.lower() == "binance":
-            api_key = exchange_config.get("key", "")
-            api_secret = exchange_config.get("secret", "")
-            testnet = self._dry_run
-            
-            self._exchange_client = BinanceClient(api_key, api_secret, testnet)
-            
-            await self._exchange_client.load_markets()
-            await self._exchange_client.sync_time()
-            
-            logger.info(f"Exchange '{self._name}' initialized (testnet={testnet})")
-        else:
-            raise ValueError(f"Unsupported exchange: {self._name}")
+        try:
+            if self.exchange_name == "binance":
+                self._exchange_client = RobustBinanceClient(
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    testnet=self.testnet,
+                    trading_mode=self.trading_mode,
+                )
+                
+                await self._exchange_client.connect()
+                self._connected = True
+                
+                self.logger.info(
+                    f"Exchange '{self.exchange_name}' initialized "
+                    f"(testnet={self.testnet}, mode={self.trading_mode})"
+                )
+                return True
+            else:
+                raise ValueError(f"Unsupported exchange: {self.exchange_name}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to initialize exchange: {e}")
+            self._connected = False
+            raise
     
     @property
     def name(self) -> str:
         """Get exchange name."""
-        return self._name
+        return self.exchange_name
     
     @property
-    def client(self) -> BinanceClient | None:
+    def client(self) -> RobustBinanceClient | None:
         """Get exchange client."""
         return self._exchange_client
     
     @property
+    def connected(self) -> bool:
+        """Check if connected."""
+        return self._connected
+    
+    @property
     def dry_run(self) -> bool:
-        """Check if running in dry-run mode."""
-        return self._dry_run
+        """Check if running in testnet mode."""
+        return self.testnet
     
     async def fetch_ohlcv(
         self, 
         symbol: str, 
         timeframe: str = "5m", 
         limit: int = 300
-    ) -> list:
-        """
-        Fetch OHLCV data.
-        
-        Args:
-            symbol: Trading pair
-            timeframe: Timeframe
-            limit: Number of candles
-            
-        Returns:
-            List of OHLCV data
-        """
+    ) -> list[list[float]]:
+        """Fetch OHLCV data."""
         if self._exchange_client:
             return await self._exchange_client.fetch_ohlcv(symbol, timeframe, limit)
         return []
     
-    async def fetch_ticker(self, symbol: str) -> dict | None:
-        """
-        Fetch ticker data.
-        
-        Args:
-            symbol: Trading pair
-            
-        Returns:
-            Ticker data dictionary
-        """
+    async def fetch_ticker(self, symbol: str) -> dict[str, Any] | None:
+        """Fetch ticker data."""
         if self._exchange_client:
             return await self._exchange_client.fetch_ticker(symbol)
         return None
     
-    async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict | None:
-        """
-        Fetch order book.
-        
-        Args:
-            symbol: Trading pair
-            limit: Order book depth
-            
-        Returns:
-            Order book dictionary
-        """
+    async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any] | None:
+        """Fetch order book."""
         if self._exchange_client:
             return await self._exchange_client.fetch_order_book(symbol, limit)
         return None
     
-    async def fetch_balance(self) -> dict | None:
-        """
-        Fetch account balance.
-        
-        Returns:
-            Balance dictionary
-        """
+    async def fetch_balance(self) -> dict[str, Any] | None:
+        """Fetch account balance."""
         if self._exchange_client:
             return await self._exchange_client.fetch_balance()
         return None
@@ -131,21 +117,10 @@ class Exchange:
         side: str,
         amount: float,
         client_order_id: str | None = None
-    ) -> dict | None:
-        """
-        Create a market order.
-        
-        Args:
-            symbol: Trading pair
-            side: Order side ("buy" or "sell")
-            amount: Order amount
-            client_order_id: Optional client order ID
-            
-        Returns:
-            Order result dictionary
-        """
-        if self._dry_run:
-            logger.info(f"[DRY RUN] Market order: {side} {amount} {symbol}")
+    ) -> dict[str, Any] | None:
+        """Create a market order."""
+        if self.testnet:
+            self.logger.info(f"[DRY RUN] Market order: {side} {amount} {symbol}")
             return {
                 "id": f"dry_run_{side}_{symbol}",
                 "symbol": symbol,
@@ -168,22 +143,10 @@ class Exchange:
         amount: float,
         price: float,
         client_order_id: str | None = None
-    ) -> dict | None:
-        """
-        Create a limit order.
-        
-        Args:
-            symbol: Trading pair
-            side: Order side ("buy" or "sell")
-            amount: Order amount
-            price: Limit price
-            client_order_id: Optional client order ID
-            
-        Returns:
-            Order result dictionary
-        """
-        if self._dry_run:
-            logger.info(f"[DRY RUN] Limit order: {side} {amount} {symbol} @ {price}")
+    ) -> dict[str, Any] | None:
+        """Create a limit order."""
+        if self.testnet:
+            self.logger.info(f"[DRY RUN] Limit order: {side} {amount} {symbol} @ {price}")
             return {
                 "id": f"dry_run_limit_{side}_{symbol}",
                 "symbol": symbol,
@@ -199,95 +162,76 @@ class Exchange:
             )
         return None
     
-    async def cancel_order(self, order_id: str, symbol: str) -> dict | None:
-        """
-        Cancel an order.
-        
-        Args:
-            order_id: Order ID
-            symbol: Trading pair
-            
-        Returns:
-            Cancellation result
-        """
-        if self._dry_run:
-            logger.info(f"[DRY RUN] Cancel order: {order_id}")
+    async def cancel_order(self, order_id: str, symbol: str) -> dict[str, Any] | None:
+        """Cancel an order."""
+        if self.testnet:
+            self.logger.info(f"[DRY RUN] Cancel order: {order_id}")
             return {"id": order_id, "status": "cancelled"}
         
         if self._exchange_client:
             return await self._exchange_client.cancel_order(order_id, symbol)
         return None
     
-    async def fetch_order(self, order_id: str, symbol: str) -> dict | None:
-        """
-        Fetch order status.
-        
-        Args:
-            order_id: Order ID
-            symbol: Trading pair
-            
-        Returns:
-            Order status dictionary
-        """
+    async def fetch_order(self, order_id: str, symbol: str) -> dict[str, Any] | None:
+        """Fetch order status."""
         if self._exchange_client:
             return await self._exchange_client.fetch_order(order_id, symbol)
         return None
     
-    async def fetch_open_orders(self, symbol: str | None = None) -> list:
-        """
-        Fetch open orders.
-        
-        Args:
-            symbol: Optional trading pair filter
-            
-        Returns:
-            List of open orders
-        """
+    async def fetch_open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        """Fetch open orders."""
         if self._exchange_client:
             return await self._exchange_client.fetch_open_orders(symbol)
         return []
     
+    async def fetch_my_trades(self, symbol: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch trade history."""
+        if self._exchange_client:
+            return await self._exchange_client.fetch_my_trades(symbol, limit)
+        return []
+    
     def get_pair_quote_currency(self, pair: str) -> str:
-        """
-        Get quote currency for a pair.
-        
-        Args:
-            pair: Trading pair (e.g., "BTC/USDT")
-            
-        Returns:
-            Quote currency
-        """
+        """Get quote currency for a pair."""
         if "/" in pair:
             return pair.split("/")[1]
         return ""
     
     def get_pair_base_currency(self, pair: str) -> str:
-        """
-        Get base currency for a pair.
-        
-        Args:
-            pair: Trading pair (e.g., "BTC/USDT")
-            
-        Returns:
-            Base currency
-        """
+        """Get base currency for a pair."""
         if "/" in pair:
             return pair.split("/")[0]
         return ""
     
+    def get_status(self) -> dict[str, Any]:
+        """Get exchange status."""
+        if self._exchange_client:
+            return self._exchange_client.get_status()
+        return {
+            "exchange": self.exchange_name,
+            "connected": self._connected,
+            "testnet": self.testnet,
+        }
+    
     async def close(self) -> None:
         """Close exchange connection."""
-        logger.info(f"Closing exchange: {self._name}")
+        if self._exchange_client:
+            await self._exchange_client.close()
+            self._connected = False
+            self.logger.info(f"Exchange '{self.exchange_name}' closed")
 
 
-def create_exchange(config: Config) -> Exchange:
-    """
-    Factory function to create an exchange instance.
-    
-    Args:
-        config: Configuration dictionary
-        
-    Returns:
-        Exchange instance
-    """
-    return Exchange(config)
+def create_exchange(
+    api_key: str = "",
+    api_secret: str = "",
+    exchange_name: str = "binance",
+    testnet: bool = True,
+    trading_mode: str = "spot",
+) -> Exchange:
+    """Factory function to create an exchange instance."""
+    return Exchange(
+        api_key=api_key,
+        api_secret=api_secret,
+        exchange_name=exchange_name,
+        testnet=testnet,
+        trading_mode=trading_mode,
+    )

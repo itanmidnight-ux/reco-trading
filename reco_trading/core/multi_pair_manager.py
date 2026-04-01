@@ -77,23 +77,23 @@ class MultiPairManager:
         
         # Tier 6: Additional High Volume (12 pairs)
         tier6 = ["SHIB/USDT", "XEC/USDT", "PEOPLE/USDT", "LTC/USDT", "BCH/USDT",
-                 "TRX/USDT", "USDT/USDT", "BTT/USDT", "FIRO/USDT", "NEO/USDT",
-                 "KAVA/USDT", "ZEC/USDT"]
+                 "TRX/USDT", "BTT/USDT", "FIRO/USDT", "NEO/USDT",
+                 "KAVA/USDT", "ZEC/USDT", "XLM/USDT"]
         
         # Tier 7: Layer 2 & Scaling (10 pairs)
-        tier7 = ["BASE/USDT", "ZKSYNC/USDT", "STARKNET/USDT", "LINEA/USDT", "METIS/USDT",
-                 "MANTA/USDT", "ZRO/USDT", "ARB/USDT", "OP/USDT", "BNB Chain/BSC"]
+        tier7 = ["MATIC/USDT", "ARB/USDT", "OP/USDT", "METIS/USDT",
+                 "MANTA/USDT", "ZRO/USDT", "STRK/USDT", "TIA/USDT", "SEI/USDT", "SUI/USDT"]
         
         # Tier 8: Gaming/NFT (10 pairs)
         tier8 = ["AXS/USDT", "ENJ/USDT", "CHZ/USDT", "SAND/USDT", "MANA/USDT",
                  "GALA/USDT", "ILV/USDT", "MAGIC/USDT", "HIGH/USDT", "DEGO/USDT"]
         
         # Tier 9: AI/Tech (10 pairs)
-        tier9 = ["OCEAN/USDT", "CTXC/USDT", "ALI/USDT", "NUM/USDT", "ARPA/USDT",
+        tier9 = ["OCEAN/USDT", "CTXC/USDT", "RENDER/USDT", "NUM/USDT", "ARPA/USDT",
                  "BAND/USDT", "ANKR/USDT", "RLC/USDT", "COTI/USDT", "NKN/USDT"]
         
         # Tier 10: Stable/Major (6 pairs)
-        tier10 = ["USDC/USDT", "DAI/USDT", "BUSD/USDT", "TUSD/USDT", "USDP/USDT", "FRAX/USDT"]
+        tier10 = ["USDC/USDT", "DAI/USDT", "FDUSD/USDT", "TUSD/USDT", "USDP/USDT", "FRAX/USDT"]
         
         # Combine all tiers: 104 pairs total
         self.default_pairs = base_pairs or (tier1 + tier2 + tier3 + tier4 + tier5 + 
@@ -278,7 +278,7 @@ class MultiPairManager:
             return
         
         returns = np.diff(np.log(prices))
-        metrics.volatility = float(np.std(returns) * np.sqrt(1440))
+        metrics.volatility = float(np.std(returns) * np.sqrt(288))
         
         price_change_1h = (prices[-1] - prices[-6]) / prices[-6] if len(prices) >= 6 else 0
         price_change_4h = (prices[-1] - prices[-24]) / prices[-24] if len(prices) >= 24 else 0

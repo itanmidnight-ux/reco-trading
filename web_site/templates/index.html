@@ -271,6 +271,8 @@
                         <div class="card-body">
                             <div class="info-row"><span class="info-label">Total Equity</span><span class="info-value" id="equityValue">$0.00</span></div>
                             <div class="info-row"><span class="info-label">Balance</span><span class="info-value" id="balanceValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">BTC Balance</span><span class="info-value" id="btcBalanceValue">0.000000 BTC</span></div>
+                            <div class="info-row"><span class="info-label">BTC Value</span><span class="info-value" id="btcValueValue">$0.00</span></div>
                             <div class="info-row"><span class="info-label">Daily P&L</span><span class="info-value" id="dailyPnlValue">0.00%</span></div>
                             <div class="info-row"><span class="info-label">Session P&L</span><span class="info-value" id="sessionPnlValue">$0.00</span></div>
                             <div class="info-row"><span class="info-label">Unrealized P&L</span><span class="info-value" id="unrealizedPnlValue">$0.00</span></div>
@@ -327,14 +329,48 @@
                 <div class="card mt-3">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <span><i class="fas fa-history text-cyan"></i> Trade History</span>
-                        <button class="btn btn-primary btn-sm" onclick="loadAllTrades()"><i class="fas fa-sync"></i> Refresh</button>
+                        <div class="d-flex gap-2 align-items-center">
+                            <select class="form-select form-select-sm" id="tradeStatusFilter" onchange="loadAllTrades()" style="width: auto; background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border-color);">
+                                <option value="">All Status</option>
+                                <option value="CLOSED">Closed</option>
+                                <option value="OPEN">Open</option>
+                            </select>
+                            <select class="form-select form-select-sm" id="tradeSideFilter" onchange="loadAllTrades()" style="width: auto; background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border-color);">
+                                <option value="">All Sides</option>
+                                <option value="BUY">Buy</option>
+                                <option value="SELL">Sell</option>
+                            </select>
+                            <input type="text" class="form-control form-control-sm" id="tradePairFilter" placeholder="Filter pair..." onkeyup="loadAllTrades()" style="width: 120px; background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border-color);">
+                            <button class="btn btn-primary btn-sm" onclick="loadAllTrades()"><i class="fas fa-sync"></i> Refresh</button>
+                        </div>
                     </div>
+                    
+                    <!-- Trade Summary -->
+                    <div class="card-body border-bottom" style="border-color: var(--border-color) !important;">
+                        <div class="grid-4" id="tradeSummary">
+                            <div class="stat-card"><div class="stat-value text-cyan" id="summaryTotalTrades">0</div><div class="stat-label">Total Trades</div></div>
+                            <div class="stat-card"><div class="stat-value text-green" id="summaryWinRate">0%</div><div class="stat-label">Win Rate</div></div>
+                            <div class="stat-card"><div class="stat-value" id="summaryTotalPnl">$0.00</div><div class="stat-label">Total P&L</div></div>
+                            <div class="stat-card"><div class="stat-value text-purple" id="summaryProfitFactor">0</div><div class="stat-label">Profit Factor</div></div>
+                        </div>
+                    </div>
+                    
                     <div class="card-body p-0">
                         <div class="table-responsive">
                             <table class="table table-hover" id="allTradesTable">
-                                <thead><tr><th>ID</th><th>Time</th><th>Pair</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>P&L ($)</th><th>P&L (%)</th><th>Status</th></tr></thead>
+                                <thead><tr><th>ID</th><th>Date/Time</th><th>Pair</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>SL</th><th>TP</th><th>P&L ($)</th><th>P&L (%)</th><th>Duration</th><th>Status</th></tr></thead>
                                 <tbody id="allTradesTableBody"></tbody>
                             </table>
+                        </div>
+                    </div>
+                    
+                    <!-- Pagination -->
+                    <div class="card-body border-top d-flex justify-content-between align-items-center" style="border-color: var(--border-color) !important;">
+                        <span class="text-muted small" id="tradePaginationInfo">Showing 0 trades</span>
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-sm btn-primary" onclick="changeTradePage(-1)" id="tradePrevBtn" disabled><i class="fas fa-chevron-left"></i></button>
+                            <span class="text-muted small align-self-center" id="tradePageInfo">Page 1</span>
+                            <button class="btn btn-sm btn-primary" onclick="changeTradePage(1)" id="tradeNextBtn" disabled><i class="fas fa-chevron-right"></i></button>
                         </div>
                     </div>
                 </div>
@@ -424,6 +460,8 @@
                             <div class="info-row"><span class="info-label">Consecutive Wins</span><span class="info-value text-green" id="consecutiveWins">0</span></div>
                             <div class="info-row"><span class="info-label">Signal Quality</span><span class="info-value" id="signalQualityScore">0%</span></div>
                             <div class="info-row"><span class="info-label">Raw Signal</span><span class="info-value" id="rawSignalValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Adaptive Multiplier</span><span class="info-value" id="adaptiveMultiplierValue">1.0x</span></div>
+                            <div class="info-row"><span class="info-label">Advanced Multiplier</span><span class="info-value" id="advancedMultiplierValue">1.0x</span></div>
                         </div>
                     </div>
                 </div>
@@ -456,6 +494,8 @@
                             <div class="info-row"><span class="info-label">Risk Per Trade</span><span class="info-value" id="riskPerTradeValue2">1%</span></div>
                             <div class="info-row"><span class="info-label">Capital Limit</span><span class="info-value" id="capitalLimitValue">$0</span></div>
                             <div class="info-row"><span class="info-label">Cash Buffer</span><span class="info-value" id="cashBufferValue">$0</span></div>
+                            <div class="info-row"><span class="info-label">Current Exposure</span><span class="info-value" id="currentExposureValue">0%</span></div>
+                            <div class="info-row"><span class="info-label">Capital Reserve</span><span class="info-value" id="capitalReserveValue2">0%</span></div>
                         </div>
                     </div>
                     <div class="card">
@@ -593,10 +633,15 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         let updateInterval = null;
+        let tradePage = 1;
+        let tradePerPage = 20;
+        let tradeTotalPages = 1;
+        let tradeSummary = null;
         
         function fmt(n, d=2) { return (n===null||n===undefined)?'-':typeof n==='number'?n.toFixed(d):n; }
         function fmtPct(n) { return n===null||n===undefined?'-':(n*100).toFixed(1)+'%'; }
         function fmtCur(n) { return '$'+fmt(n,2); }
+        function fmtPctNum(n) { return n===null||n===undefined?'-':n.toFixed(2)+'%'; }
         
         function getSignalClass(s) { return s==='BUY'?'signal-buy':s==='SELL'?'signal-sell':'signal-hold'; }
         function getStatusClass(s) {
@@ -616,9 +661,62 @@
         
         async function loadAllTrades() {
             try {
-                const r = await fetch('/api/all_trades');
-                updateTradesTable(await r.json());
+                const statusFilter = document.getElementById('tradeStatusFilter').value;
+                const sideFilter = document.getElementById('tradeSideFilter').value;
+                const pairFilter = document.getElementById('tradePairFilter').value;
+                
+                let url = `/api/db_trades?page=${tradePage}&per_page=${tradePerPage}`;
+                if (statusFilter) url += `&status=${statusFilter}`;
+                if (sideFilter) url += `&side=${sideFilter}`;
+                if (pairFilter) url += `&pair=${pairFilter}`;
+                
+                const r = await fetch(url);
+                const data = await r.json();
+                
+                tradeTotalPages = data.total_pages || 1;
+                tradeSummary = data.summary || null;
+                
+                updateTradesTable(data.trades || []);
+                updateTradeSummary(data.summary);
+                updateTradePagination(data);
             } catch(e) { console.error('Error loading trades:',e); }
+        }
+        
+        function changeTradePage(delta) {
+            const newPage = tradePage + delta;
+            if (newPage >= 1 && newPage <= tradeTotalPages) {
+                tradePage = newPage;
+                loadAllTrades();
+            }
+        }
+        
+        function updateTradeSummary(summary) {
+            if (!summary) return;
+            
+            document.getElementById('summaryTotalTrades').textContent = summary.total_trades || 0;
+            document.getElementById('summaryWinRate').textContent = fmtPctNum(summary.win_rate || 0);
+            
+            const pnlEl = document.getElementById('summaryTotalPnl');
+            const pnl = summary.total_pnl || 0;
+            pnlEl.textContent = (pnl>=0?'+$':'$') + fmt(pnl, 2);
+            pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
+            
+            document.getElementById('summaryProfitFactor').textContent = fmt(summary.profit_factor || 0, 2);
+        }
+        
+        function updateTradePagination(data) {
+            const total = data.total || 0;
+            const page = data.page || 1;
+            const perPage = data.per_page || tradePerPage;
+            const totalPages = data.total_pages || 1;
+            
+            const start = (page - 1) * perPage + 1;
+            const end = Math.min(page * perPage, total);
+            
+            document.getElementById('tradePaginationInfo').textContent = total > 0 ? `Showing ${start}-${end} of ${total} trades` : 'No trades found';
+            document.getElementById('tradePageInfo').textContent = `Page ${page} of ${totalPages}`;
+            document.getElementById('tradePrevBtn').disabled = page <= 1;
+            document.getElementById('tradeNextBtn').disabled = page >= totalPages;
         }
         
         function updateDashboard(d) {
@@ -643,6 +741,8 @@
             // Account
             document.getElementById('equityValue').textContent = fmtCur(d.total_equity||d.equity);
             document.getElementById('balanceValue').textContent = fmtCur(d.balance);
+            document.getElementById('btcBalanceValue').textContent = (d.btc_balance || 0).toFixed(6) + ' BTC';
+            document.getElementById('btcValueValue').textContent = fmtCur(d.btc_value);
             
             const pnl = d.daily_pnl||0;
             const pnlEl = document.getElementById('dailyPnlValue');
@@ -710,7 +810,14 @@
             document.getElementById('signalVolatility').textContent = signals.volatility||'-';
             document.getElementById('signalStructure').textContent = signals.structure||'-';
             document.getElementById('signalQualityScore').textContent = fmtPct(d.signal_quality_score);
-            document.getElementById('rawSignalValue').textContent = d.raw_signal||'-';
+            document.getElementById('rawSignalValue').textContent = d.raw_signal || d.signal || '-';
+            
+            // Auto-Improver multipliers
+            document.getElementById('adaptiveMultiplierValue').textContent = (riskMetrics.adaptive_size_multiplier || 1.0).toFixed(2) + 'x';
+            document.getElementById('advancedMultiplierValue').textContent = (riskMetrics.advanced_size_multiplier || 1.0).toFixed(2) + 'x';
+            document.getElementById('autoImproveEnabled').textContent = d.auto_improver_enabled !== false ? 'Yes' : 'No';
+            document.getElementById('consecutiveLosses').textContent = d.consecutive_losses || 0;
+            document.getElementById('consecutiveWins').textContent = d.consecutive_wins || 0;
             
             // Exit Intelligence
             document.getElementById('exitScoreValue').textContent = fmt(d.exit_intelligence_score,3);
@@ -719,19 +826,26 @@
             document.getElementById('decisionReasonValue').textContent = d.decision_reason||'-';
             document.getElementById('cooldownGateValue').textContent = d.cooldown_complete?'Complete':'Active';
             
-            // Risk
+            // Risk metrics
+            const riskMetrics = d.risk_metrics || {};
             document.getElementById('riskPerTradeValue').textContent = fmtPct(d.live_trade_risk_fraction);
             document.getElementById('riskPerTradeValue2').textContent = fmtPct(d.live_trade_risk_fraction);
             document.getElementById('capitalLimitValue').textContent = fmtCur(d.capital_limit_usdt);
             document.getElementById('cashBufferValue').textContent = fmtCur(d.min_cash_buffer_usdt);
-            document.getElementById('circuitBreakerTripsValue').textContent = (d.circuit_breaker_trips||0)+' trips';
-            document.getElementById('emergencyStopValue').textContent = d.emergency_stop_active?'Active':'Inactive';
-            document.getElementById('reconnectionsValue').textContent = d.exchange_reconnections||0;
-            document.getElementById('dynamicExitValue').textContent = d.dynamic_exit_enabled?'Enabled':'Disabled';
-            document.getElementById('investmentModeValue').textContent = d.investment_mode||'-';
-            document.getElementById('capitalReserveValue').textContent = fmtPct(d.capital_reserve_ratio);
+            document.getElementById('currentExposureValue').textContent = fmtPct(riskMetrics.current_exposure || 0);
+            document.getElementById('maxDrawdownValue').textContent = fmtPct(riskMetrics.max_drawdown || 0);
+            document.getElementById('capitalReserveValue2').textContent = fmtPct(d.capital_reserve_ratio);
+            document.getElementById('circuitBreakerTripsValue').textContent = (d.circuit_breaker_trips || 0) + ' trips';
+            document.getElementById('emergencyStopValue').textContent = d.emergency_stop_active ? 'Active' : 'Inactive';
+            document.getElementById('emergencyStopValue').className = 'info-value ' + (d.emergency_stop_active ? 'text-red' : 'text-green');
+            document.getElementById('reconnectionsValue').textContent = d.exchange_reconnections || 0;
+            document.getElementById('dynamicExitValue').textContent = d.dynamic_exit_enabled ? 'Enabled' : 'Disabled';
+            
+            // Runtime settings
+            const runtimeSettings = d.runtime_settings || {};
+            document.getElementById('investmentModeValue').textContent = runtimeSettings.investment_mode || d.investment_mode || '-';
             document.getElementById('optimizedRiskValue').textContent = fmtPct(d.optimized_risk_per_trade_fraction);
-            document.getElementById('optimizationReasonValue').textContent = d.optimization_reason||'-';
+            document.getElementById('optimizationReasonValue').textContent = d.optimization_reason || runtimeSettings.optimization_reason || '-';
             
             // Health
             document.getElementById('exchangeIcon').className = 'fas fa-'+(exc==='CONNECTED'?'check-circle text-green':'times-circle text-red')+' fa-2x mb-2';
@@ -753,20 +867,27 @@
         
         function updateTradesTable(trades) {
             const tbody = document.getElementById('allTradesTableBody');
-            if(!trades.length) { tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No trades yet</td></tr>'; return; }
-            tbody.innerHTML = trades.slice(0,30).map(t => {
-                const p = t.pnl||0, pp = t.pnl_percent||((t.exit-t.entry)/t.entry*100)||0;
+            if(!trades.length) { tbody.innerHTML = '<tr><td colspan="13" class="text-center text-muted">No trades yet</td></tr>'; return; }
+            tbody.innerHTML = trades.map(t => {
+                const p = t.pnl||0, pp = t.pnl_percent||0;
+                const sideClass = t.side==='BUY'?'text-green':t.side==='SELL'?'text-red':'';
+                const pnlClass = p>=0?'text-green':'text-red';
+                const statusClass = t.status==='CLOSED'?'badge-green':'badge-blue';
+                const duration = t.duration || '-';
                 return `<tr>
                     <td>${t.trade_id||'-'}</td>
-                    <td>${t.time||t.exit_time||'-'}</td>
+                    <td>${t.time||'-'}</td>
                     <td>${t.pair||'-'}</td>
-                    <td class="${t.side==='BUY'?'text-green':t.side==='SELL'?'text-red':''}">${t.side||'-'}</td>
+                    <td class="${sideClass}">${t.side||'-'}</td>
                     <td>${fmt(t.entry,4)}</td>
                     <td>${fmt(t.exit,4)}</td>
                     <td>${fmt(t.size||t.quantity,4)}</td>
-                    <td class="${p>=0?'text-green':'text-red'}">${p>=0?'+':''}${fmt(p,2)}</td>
-                    <td class="${pp>=0?'text-green':'text-red'}">${pp>=0?'+':''}${pp.toFixed(2)}%</td>
-                    <td><span class="badge ${t.status==='closed'?'badge-green':'badge-blue'}">${t.status||'closed'}</span></td>
+                    <td>${fmt(t.stop_loss,4)}</td>
+                    <td>${fmt(t.take_profit,4)}</td>
+                    <td class="${pnlClass}">${p>=0?'+':''}${fmt(p,2)}</td>
+                    <td class="${pnlClass}">${pp>=0?'+':''}${pp.toFixed(2)}%</td>
+                    <td>${duration}</td>
+                    <td><span class="badge ${statusClass}">${t.status||'closed'}</span></td>
                 </tr>`;
             }).join('');
         }
@@ -899,6 +1020,7 @@
             fetchAIMLData();
             setInterval(fetchSnapshot, 1500);
             setInterval(fetchAIMLData, 5000);
+            setInterval(loadAllTrades, 10000);
         });
     </script>
 </body>

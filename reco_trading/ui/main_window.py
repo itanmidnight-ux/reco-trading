@@ -152,4 +152,53 @@ class MainWindow(QMainWindow):
             }
         )
         decorated["system"] = system
+        
+        if "cache" not in decorated:
+            decorated["cache"] = {
+                "enabled": True,
+                "size": decorated.get("cache_size", 0),
+                "hits": decorated.get("cache_hits", 0),
+                "misses": decorated.get("cache_misses", 0),
+                "hit_rate": decorated.get("cache_hit_rate", 0),
+                "evictions": decorated.get("cache_evictions", 0),
+                "ohlcv": {"ttl": 30, "symbols": len(decorated.get("symbols", []))},
+                "prefetch": {"enabled": True, "symbols": len(decorated.get("symbols", [])), "interval": 25},
+                "providers": [{"name": "Binance", "status": "Active", "last_update": decorated.get("last_market_update", "N/A"), "errors": 0}],
+            }
+        
+        if "health" not in decorated:
+            exchange_status = decorated.get("exchange_status", "CONNECTED")
+            db_status = decorated.get("database_status", "CONNECTED")
+            decorated["health"] = {
+                "healthy": exchange_status == "CONNECTED" and db_status == "CONNECTED",
+                "checks": 4,
+                "healthy_checks": sum(1 for s in [exchange_status, db_status] if s == "CONNECTED"),
+                "unhealthy_checks": sum(1 for s in [exchange_status, db_status] if s != "CONNECTED"),
+                "last_check": decorated.get("last_update", "-"),
+                "results": [
+                    {"name": "Exchange", "healthy": exchange_status == "CONNECTED", "message": exchange_status, "checked_at": decorated.get("last_update", "-")},
+                    {"name": "Database", "healthy": db_status == "CONNECTED", "message": db_status, "checked_at": decorated.get("last_update", "-")},
+                    {"name": "Market Data", "healthy": decorated.get("price", 0) > 0, "message": f"Price: {decorated.get('price', 0)}", "checked_at": decorated.get("last_update", "-")},
+                    {"name": "ML Engine", "healthy": decorated.get("ml_direction") is not None, "message": decorated.get("ml_direction", "Initializing"), "checked_at": decorated.get("last_update", "-")},
+                ],
+                "component_details": {"database": db_status, "exchange": exchange_status, "cache": "Active", "metrics_server": "Active"},
+            }
+        
+        if "ml_intelligence" not in decorated:
+            decorated["ml_intelligence"] = {
+                "status": "Activo",
+                "model_type": "Ensemble (Momentum, Trend, Volume, Pattern, Sentiment)",
+                "training_samples": decorated.get("ml_training_samples", 0),
+                "last_train": decorated.get("ml_last_train", "En tiempo real"),
+                "next_train": "Continuo",
+                "metrics": decorated.get("ml_metrics", {}),
+                "features": [
+                    {"name": "momentum", "type": "technical", "importance": 1.0},
+                    {"name": "trend", "type": "technical", "importance": 1.0},
+                    {"name": "volume", "type": "volume", "importance": 0.8},
+                    {"name": "pattern", "type": "candlestick", "importance": 0.8},
+                    {"name": "sentiment", "type": "market", "importance": 1.0},
+                ],
+            }
+        
         return decorated

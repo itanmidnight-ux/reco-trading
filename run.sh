@@ -54,6 +54,11 @@ else
   }
 fi
 
+# Force non-interactive mode if not in a tty (e.g., cron, Docker, automated)
+if [[ ! -t 0 ]]; then
+  export DASHBOARD_TYPE="${DASHBOARD_TYPE:-none}"
+fi
+
 # ============================================
 # CHECK VIRTUAL ENVIRONMENT
 # ============================================
@@ -74,8 +79,8 @@ if [[ "$IN_VENV" != "yes" ]]; then
   source "${ROOT_DIR}/.venv/bin/activate"
 fi
 
-# Verify Python environment
-PYTHON_BIN=$(which python)
+# Use venv Python directly
+PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 echo -e "${GREEN}Python: $($PYTHON_BIN --version 2>&1)${NC}"
 
 # ============================================
@@ -137,8 +142,10 @@ fi
 echo -e "${GREEN}✓ API Keys configuradas${NC}"
 
 # ============================================
-# MENU - SELECT MODE
+# MENU - SELECT MODE (skip if DASHBOARD_TYPE set)
 # ============================================
+
+if [[ -z "${DASHBOARD_TYPE:-}" ]]; then
 
 echo ""
 echo "Seleccione modo de ejecución:"
@@ -170,6 +177,10 @@ if [[ -f "${ROOT_DIR}/.env" ]]; then
   sed -i "s|^BINANCE_TESTNET=.*|BINANCE_TESTNET=${BINANCE_TESTNET}|" "${ROOT_DIR}/.env" 2>/dev/null || true
   sed -i "s|^CONFIRM_MAINNET=.*|CONFIRM_MAINNET=${CONFIRM_MAINNET}|" "${ROOT_DIR}/.env" 2>/dev/null || true
   sed -i "s|^ENVIRONMENT=.*|ENVIRONMENT=${ENVIRONMENT}|" "${ROOT_DIR}/.env" 2>/dev/null || true
+fi
+
+else
+  echo -e "${CYAN}ℹ️  Modo no-interactivo (Docker/automático)${NC}"
 fi
 
 # ============================================
@@ -247,7 +258,16 @@ if [[ "$DB_STATUS" == "unknown" ]]; then
     log_warn "Sin base de datos configurada"
     echo "  El programa usará SQLite automáticamente"
     DB_STATUS="sqlite_fallback"
+    export DATABASE_URL="sqlite:///${ROOT_DIR}/data/reco_trading.db"
+    mkdir -p "${ROOT_DIR}/data"
   fi
+fi
+
+# Export DATABASE_URL if PostgreSQL or MySQL failed
+if [[ "$DB_STATUS" == "postgresql" ]]; then
+  export DATABASE_URL="${POSTGRES_DSN}"
+elif [[ "$DB_STATUS" == "mysql" ]]; then
+  export DATABASE_URL="${MYSQL_DSN}"
 fi
 
 # ============================================
@@ -272,17 +292,64 @@ for port in 8000 8080 9000; do
 done
 
 # ============================================
+# SELECT DASHBOARD TYPE (skip if non-interactive)
+# ============================================
+
+if [[ -t 0 ]] && [[ -z "${DASHBOARD_TYPE:-}" ]]; then
+  echo ""
+  echo -e "${CYAN}========================================${NC}"
+  echo -e "${CYAN}  SELECT DASHBOARD TYPE${NC}"
+  echo -e "${CYAN}========================================${NC}"
+  echo ""
+  echo "Seleccione el tipo de dashboard:"
+  echo "1) App Dashboard (PySide6 GUI) - Interfaz de escritorio"
+  echo "2) Web Dashboard (Navegador) - Acceso en http://localhost:9000"
+  echo "3) Headless (Sin dashboard) - Solo terminal"
+  echo ""
+  
+  while true; do
+    read -p "Elija opción [1-3]: " DASH_CHOICE
+    case $DASH_CHOICE in
+      1)
+        export DASHBOARD_TYPE="app"
+        echo -e "${GREEN}✓ App Dashboard seleccionado${NC}"
+        break
+        ;;
+      2)
+        export DASHBOARD_TYPE="web"
+        echo -e "${GREEN}✓ Web Dashboard seleccionado${NC}"
+        break
+        ;;
+      3)
+        export DASHBOARD_TYPE="none"
+        echo -e "${GREEN}✓ Modo Headless seleccionado${NC}"
+        break
+        ;;
+      *)
+        echo -e "${YELLOW}Opción inválida. Elija 1, 2 o 3.${NC}"
+        ;;
+    esac
+  done
+elif [[ -n "${DASHBOARD_TYPE:-}" ]]; then
+  echo -e "${CYAN}ℹ️  Dashboard type prefijado: ${DASHBOARD_TYPE}${NC}"
+else
+  export DASHBOARD_TYPE="none"
+  echo -e "${CYAN}ℹ️  Modo no-interactivo (sin dashboard)${NC}"
+fi
+
+# ============================================
 # START BOT
 # ============================================
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  ✅ INICIANDO BOT${NC}"
+echo -e "${GREEN}  ✅ INICIANDO BOT v3.0${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 echo "Modo: ${ENVIRONMENT}"
 echo "Base de datos: ${DB_STATUS}"
+echo "Dashboard: ${DASHBOARD_TYPE}"
 echo ""
 
-# Run the bot
-python main.py "$@"
+# Run the bot using venv Python
+$PYTHON_BIN main.py "$@"

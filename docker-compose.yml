@@ -6,6 +6,18 @@ services:
       context: .
       dockerfile: Dockerfile
     env_file: .env
+    environment:
+      # AI/ML Configuration
+      - ENABLE_AUTO_IMPROVER=true
+      - ENABLE_ML_ENGINE=true
+      - ENABLE_CONTINUAL_LEARNING=true
+      - ENABLE_META_LEARNING=true
+      - ENABLE_TFT=true
+      - ENABLE_NBEATS=true
+      - ENABLE_ADVANCED_META_LEARNING=true
+      - ENABLE_REINFORCEMENT_LEARNING=true
+      - DRIFT_DETECTION=true
+      - ONCHAIN_ANALYSIS=true
     ports:
       - "8080:8080"
       - "5432:5432"

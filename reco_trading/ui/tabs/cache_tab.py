@@ -91,25 +91,48 @@ class CacheTab(QWidget):
 
     def update_state(self, state: dict) -> None:
         cache_data = state.get("cache", {})
+        
+        if not cache_data:
+            cache_data = {
+                "enabled": True,
+                "size": state.get("cache_size", 0),
+                "hits": state.get("cache_hits", 0),
+                "misses": state.get("cache_misses", 0),
+                "hit_rate": state.get("cache_hit_rate", 0),
+                "evictions": state.get("cache_evictions", 0),
+                "ohlcv": {
+                    "ttl": 30,
+                    "symbols": len(state.get("symbols", [])),
+                },
+                "prefetch": {
+                    "enabled": True,
+                    "symbols": len(state.get("symbols", [])),
+                    "interval": 25,
+                },
+                "providers": [
+                    {"name": "Binance", "status": "Active", "last_update": state.get("last_market_update", "N/A"), "errors": 0},
+                ],
+            }
 
-        if cache_data:
-            self.cache_enabled_label.setText("Enabled" if cache_data.get("enabled", True) else "Disabled")
-            self.cache_size_label.setText(str(cache_data.get("size", 0)))
-            self.cache_hits_label.setText(str(cache_data.get("hits", 0)))
-            self.cache_misses_label.setText(str(cache_data.get("misses", 0)))
-            self.cache_hit_rate_label.setText(f"{cache_data.get('hit_rate', 0):.1%}")
-            self.cache_evictions_label.setText(str(cache_data.get("evictions", 0)))
+        self.cache_enabled_label.setText("Enabled" if cache_data.get("enabled", True) else "Disabled")
+        self.cache_size_label.setText(str(cache_data.get("size", 0)))
+        self.cache_hits_label.setText(str(cache_data.get("hits", 0)))
+        self.cache_misses_label.setText(str(cache_data.get("misses", 0)))
+        hit_rate = cache_data.get("hit_rate", 0)
+        self.cache_hit_rate_label.setText(f"{hit_rate:.1%}" if hit_rate > 0 else "N/A")
+        self.cache_evictions_label.setText(str(cache_data.get("evictions", 0)))
 
-            ohlcv = cache_data.get("ohlcv", {})
-            self.ohlcv_ttl_label.setText(f"{ohlcv.get('ttl', 30)}s")
-            self.ohlcv_symbols_label.setText(str(ohlcv.get("symbols", 0)))
+        ohlcv = cache_data.get("ohlcv", {})
+        self.ohlcv_ttl_label.setText(f"{ohlcv.get('ttl', 30)}s")
+        self.ohlcv_symbols_label.setText(str(ohlcv.get("symbols", 0)))
 
-            prefetch = cache_data.get("prefetch", {})
-            self.prefetch_enabled_label.setText("Enabled" if prefetch.get("enabled", True) else "Disabled")
-            self.prefetch_symbols_label.setText(str(prefetch.get("symbols", 0)))
-            self.prefetch_interval_label.setText(f"{prefetch.get('interval', 25)}s")
+        prefetch = cache_data.get("prefetch", {})
+        self.prefetch_enabled_label.setText("Enabled" if prefetch.get("enabled", True) else "Disabled")
+        self.prefetch_symbols_label.setText(str(prefetch.get("symbols", 0)))
+        self.prefetch_interval_label.setText(f"{prefetch.get('interval', 25)}s")
 
-            providers = cache_data.get("providers", [])
+        providers = cache_data.get("providers", [])
+        if providers:
             self.data_table.setRowCount(len(providers))
             for i, provider in enumerate(providers):
                 self.data_table.setItem(i, 0, QTableWidgetItem(provider.get("name", "")))

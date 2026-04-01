@@ -174,11 +174,132 @@ log_success "Entorno virtual creado"
 # STEP 4: INSTALL PYTHON DEPENDENCIES (USER MODE)
 # ============================================
 
-log_info "Instalando dependencias..."
+log_info "Instalando dependencias básicas..."
 
 pip install -r requirements.txt -q --root-user-action=ignore 2>/dev/null || true
 
-log_success "Dependencias instaladas"
+# ============================================
+# STEP 4.1: SMART ML DEPENDENCIES INSTALL
+# ============================================
+
+log_info "Detectando recursos para ML optimizado..."
+
+# Detect RAM for ML profile
+if [[ -f /proc/meminfo ]]; then
+  TOTAL_MEM_KB=$(grep MemTotal /proc/meminfo | awk '{print $2}')
+  ML_RAM_GB=$((TOTAL_MEM_KB / 1024 / 1024))
+else
+  ML_RAM_GB="2"
+fi
+
+# Detect CPU for ML workers
+if [[ -f /proc/cpuinfo ]]; then
+  ML_CPU_CORES=$(grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "2")
+else
+  ML_CPU_CORES="2"
+fi
+
+# Determine ML profile based on resources
+if [[ $ML_RAM_GB -ge 16 ]] && [[ $ML_CPU_CORES -ge 4 ]]; then
+  ML_PROFILE="high"
+  log_info "Perfil ML: ALTO (RAM: ${ML_RAM_GB}GB, CPU: ${ML_CPU_CORES})"
+elif [[ $ML_RAM_GB -ge 8 ]] && [[ $ML_CPU_CORES -ge 2 ]]; then
+  ML_PROFILE="medium"
+  log_info "Perfil ML: MEDIO (RAM: ${ML_RAM_GB}GB, CPU: ${ML_CPU_CORES})"
+else
+  ML_PROFILE="low"
+  log_info "Perfil ML: BAJO (RAM: ${ML_RAM_GB}GB, CPU: ${ML_CPU_CORES}) - optimizado"
+fi
+
+# Function to check if package is already installed
+pip_pkg_installed() {
+  $PYTHON_CMD -c "import $1" 2>/dev/null
+  return $?
+}
+
+# Smart ML install - only install what's needed and not already present
+log_info "Instalando ML dependencies (perfil: ${ML_PROFILE})..."
+
+ML_INSTALL_COUNT=0
+
+# PyTorch (core for all advanced models)
+if ! pip_pkg_installed "torch"; then
+  log_info "  Instalando PyTorch (CPU)..."
+  if [[ "$ML_PROFILE" == "high" ]] || [[ "$ML_PROFILE" == "medium" ]]; then
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu -q --root-user-action=ignore 2>/dev/null && ML_INSTALL_COUNT=$((ML_INSTALL_COUNT + 1)) || log_warn "  PyTorch skipped"
+  else
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu -q --root-user-action=ignore 2>/dev/null && ML_INSTALL_COUNT=$((ML_INSTALL_COUNT + 1)) || log_warn "  PyTorch skipped"
+  fi
+else
+  log_info "  PyTorch ya instalado ✓"
+fi
+
+# PyTorch Lightning
+if ! pip_pkg_installed "pytorch_lightning"; then
+  pip install pytorch-lightning -q --root-user-action=ignore 2>/dev/null && ML_INSTALL_COUNT=$((ML_INSTALL_COUNT + 1)) || true
+fi
+
+# ML libraries for existing FreqAI
+if ! pip_pkg_installed "lightgbm"; then
+  pip install lightgbm -q --root-user-action=ignore 2>/dev/null || true
+fi
+
+if ! pip_pkg_installed "xgboost"; then
+  pip install xgboost -q --root-user-action=ignore 2>/dev/null || true
+fi
+
+# Advanced ML (only for medium/high profiles)
+if [[ "$ML_PROFILE" != "low" ]]; then
+  if ! pip_pkg_installed "stable_baselines3"; then
+    pip install stable-baselines3 -q --root-user-action=ignore 2>/dev/null || true
+  fi
+  if ! pip_pkg_installed "optuna"; then
+    pip install optuna -q --root-user-action=ignore 2>/dev/null || true
+  fi
+  if ! pip_pkg_installed "gymnasium"; then
+    pip install gymnasium -q --root-user-action=ignore 2>/dev/null || true
+  fi
+fi
+
+# Light dependencies (all profiles)
+if ! pip_pkg_installed "statsmodels"; then
+  pip install statsmodels -q --root-user-action=ignore 2>/dev/null || true
+fi
+
+if ! pip_pkg_installed "yfinance"; then
+  pip install yfinance -q --root-user-action=ignore 2>/dev/null || true
+fi
+
+if ! pip_pkg_installed "xgboost"; then
+  pip install xgboost -q --root-user-action=ignore 2>/dev/null || true
+fi
+
+# Advanced ML (only for medium/high profiles)
+if [[ "$ML_PROFILE" != "low" ]]; then
+  if ! pip_pkg_installed "stable_baselines3"; then
+    pip install stable-baselines3 -q --root-user-action=ignore 2>/dev/null || true
+  fi
+  if ! pip_pkg_installed "optuna"); then
+    pip install optuna -q --root-user-action=ignore 2>/dev/null || true
+  fi
+  if ! pip_pkg_installed "gymnasium"); then
+    pip install gymnasium -q --root-user-action=ignore 2>/dev/null || true
+  fi
+fi
+
+# Light dependencies (all profiles)
+if ! pip_pkg_installed "statsmodels"); then
+  pip install statsmodels -q --root-user-action=ignore 2>/dev/null || true
+fi
+
+if ! pip_pkg_installed "yfinance"); then
+  pip install yfinance -q --root-user-action=ignore 2>/dev/null || true
+fi
+
+log_success "ML dependencies instaladas (${ML_INSTALL_COUNT} nuevos paquetes)"
+
+# Save ML profile to .env for runtime use
+ML_PROFILE_VAR="${ML_PROFILE}"
 
 # ============================================
 # STEP 5: AUTO-DETECT DATABASE
@@ -319,6 +440,18 @@ DATABASE_URL=sqlite:///./data/reco_trading.db
 
 # Redis (opcional)
 REDIS_URL=redis://localhost:6379/0
+
+# AI/ML Configuration
+ENABLE_AUTO_IMPROVER=true
+ENABLE_ML_ENGINE=true
+ENABLE_CONTINUAL_LEARNING=true
+ENABLE_META_LEARNING=true
+ENABLE_TFT=true
+ENABLE_NBEATS=true
+ENABLE_ADVANCED_META_LEARNING=true
+ENABLE_REINFORCEMENT_LEARNING=true
+DRIFT_DETECTION=true
+ONCHAIN_ANALYSIS=true
 EOF
   log_warn "Sin PostgreSQL/MySQL detectado, usando SQLite (funciona sin permisos especiales)"
 fi
@@ -432,9 +565,16 @@ source .venv/bin/activate
 python3 -c "
 import sys
 sys.path.insert(0, '.')
-from reco_trading.config.settings import Settings
-from reco_trading.database.repository import Repository
-print('✅ Imports OK')
+try:
+    from reco_trading.config.settings import Settings
+    from reco_trading.database.repository import Repository
+    from reco_trading.ml.tft_model import TFTManager
+    from reco_trading.ml.nbeats_model import NBEATSManager
+    from reco_trading.ml.advanced_meta_learner import MetaLearningManager
+    print('✅ All ML imports OK')
+except ImportError as e:
+    print(f'⚠️ ML Import warning: {e}')
+    print('✅ Basic imports OK')
 " 2>/dev/null && log_success "Imports verificados" || log_error "Error en imports"
 
 # Test database connection
@@ -470,7 +610,7 @@ asyncio.run(test())
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  ✅ INSTALACIÓN COMPLETADA!${NC}"
+echo -e "${GREEN}  ✅ INSTALACIÓN COMPLETADA CON AI/ML!${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 

@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     observability_port: int = 9108
     api_latency_window_size: int = 200
     stale_market_data_max_age_seconds: int = 180
-    feature_multi_symbol_enabled: bool = False
+    feature_multi_symbol_enabled: bool = True
     trading_symbols: list[str] = Field(default_factory=lambda: [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
         "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT",
@@ -108,7 +108,35 @@ class Settings(BaseSettings):
     max_global_exposure_fraction: float = 0.7
     max_symbol_correlation: float = 0.85
     symbol_capital_limits: dict[str, float] = Field(default_factory=dict, validation_alias=AliasChoices("SYMBOL_CAPITAL_LIMITS"))
-    feature_multi_symbol_enabled: bool = True
+
+    # =========================
+    # FUTURES TRADING
+    # =========================
+    futures_enabled: bool = False
+    futures_max_leverage: int = 50
+    default_leverage: int = 10
+    enable_position_hedging: bool = False
+
+    # =========================
+    # MOBILE APP
+    # =========================
+    mobile_api_enabled: bool = False
+    mobile_ws_enabled: bool = False
+    mobile_push_notifications: bool = False
+
+    # =========================
+    # SOCIAL TRADING
+    # =========================
+    social_trading_enabled: bool = False
+    strategy_marketplace: bool = False
+    copy_trading_enabled: bool = False
+
+    # =========================
+    # GRID TRADING
+    # =========================
+    grid_trading_enabled: bool = False
+    atr_grid_spacing: bool = True
+    dynamic_rebalancing: bool = True
 
     @property
     def symbol(self) -> str:
@@ -182,4 +210,5 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
+        case_sensitive=False,
     )

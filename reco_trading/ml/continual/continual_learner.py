@@ -131,7 +131,9 @@ class ContinualLearner:
         next_states = np.array([e.next_state for e in batch])
         dones = np.array([e.done for e in batch])
         
-        current_q = self._forward(states)
+        h1 = np.tanh(states @ self._model_weights["W1"] + self._model_weights["b1"])
+        h2 = np.tanh(h1 @ self._model_weights["W2"] + self._model_weights["b2"])
+        current_q = softmax(h2 @ self._model_weights["W3"] + self._model_weights["b3"])
         next_q = self._forward(next_states)
         
         target_q = rewards + self.config.discount_factor * np.max(next_q, axis=1) * (1 - dones)
@@ -142,18 +144,14 @@ class ContinualLearner:
         grad_output = np.zeros_like(current_q)
         grad_output[np.arange(len(actions)), actions] = error
         
-        grad_h2 = grad_output @ self._model_weights["W3"].T * (1 - np.tanh(
-            states @ self._model_weights["W1"] + self._model_weights["b1"]
-        ) ** 2)
+        grad_h2 = grad_output @ self._model_weights["W3"].T * (1 - h2 ** 2)
         
-        grad_W3 = (current_q * 0).T @ grad_output
+        grad_W3 = h2.T @ grad_output
         grad_b3 = np.sum(grad_output, axis=0)
         
-        grad_h1 = grad_h2 @ self._model_weights["W2"].T * (1 - np.tanh(
-            states @ self._model_weights["W1"] + self._model_weights["b1"]
-        ) ** 2)
+        grad_h1 = grad_h2 @ self._model_weights["W2"].T * (1 - h1 ** 2)
         
-        grad_W2 = (current_q * 0).T @ grad_h2
+        grad_W2 = h1.T @ grad_h2
         grad_b2 = np.sum(grad_h2, axis=0)
         
         grad_W1 = states.T @ grad_h1

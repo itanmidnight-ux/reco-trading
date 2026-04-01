@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class FreqAIConfig:
     """Configuration for FreqAI - ML-based trading."""
-    enabled: bool = False
+    enabled: bool = True
     model_type: str = "lightgbm"
     model_classifier: bool = True
     train_period: int = 30
@@ -223,6 +223,9 @@ class FreqAIManager:
             
             model.fit(X_train, y_train)
             
+            # Store the trained model in memory for predictions
+            setattr(self, f"_trained_model_{pair}", model)
+            
             accuracy = model.score(X_test, y_test)
             
             model_id = f"{pair}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -266,16 +269,22 @@ class FreqAIManager:
             feature_cols = self.models[pair].features
             X = features_df[feature_cols].iloc[-1:].values
             
-            model = self.model_class(
-                n_estimators=100,
-                max_depth=6,
-                learning_rate=0.1,
-                random_state=42,
-            )
+            # Use the TRAINED model stored in memory, NOT create a new one
+            trained_model = getattr(self, f"_trained_model_{pair}", None)
+            if trained_model is None:
+                self.logger.warning(f"No trained model in memory for {pair}, prediction unavailable")
+                return None
             
-            model.fit([[0] * len(feature_cols)], [0])
-            
-            probability = 0.5
+            # Get prediction from the actual trained model
+            if hasattr(trained_model, "predict_proba"):
+                probabilities = trained_model.predict_proba(X)
+                probability = float(probabilities[0][1]) if probabilities.shape[1] > 1 else 0.5
+            elif hasattr(trained_model, "predict"):
+                prediction = trained_model.predict(X)
+                probability = float(prediction[0])
+            else:
+                self.logger.warning(f"Model for {pair} has no predict method")
+                return None
             
             threshold = self.config.prediction_threshold
             

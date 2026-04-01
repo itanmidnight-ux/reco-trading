@@ -37,8 +37,38 @@ from reco_trading.strategy.signal_engine import SignalBundle, SignalEngine
 from reco_trading.ui.dashboard import TerminalDashboard
 from reco_trading.core.resilience import ResilienceManager, ResilienceConfig, NetworkResilience
 from reco_trading.core.intelligent_auto_improver import IntelligentAutoImprover
+from reco_trading.core.self_analyzer import SelfAnalyzer
+from reco_trading.core.autonomous_optimizer import AutonomousOptimizer
+from reco_trading.core.loop_manager import LoopManager
 from reco_trading.core.multi_pair_manager import MultiPairManager
 from reco_trading.ml.enhanced_ml_engine import EnhancedMLEngine
+
+# Optional ML models - only loaded if dependencies are available
+try:
+    from reco_trading.ml.tft_model import TFTManager, TFTConfig
+    _TFT_AVAILABLE = True
+except ImportError:
+    TFTManager = None
+    TFTConfig = None
+    _TFT_AVAILABLE = False
+
+try:
+    from reco_trading.ml.nbeats_model import NBEATSManager, NBEATSConfig
+    _NBEATS_AVAILABLE = True
+except ImportError:
+    NBEATSManager = None
+    NBEATSConfig = None
+    _NBEATS_AVAILABLE = False
+
+try:
+    from reco_trading.ml.advanced_meta_learner import MetaLearningManager, MetaLearningConfig
+    _META_LEARNING_AVAILABLE = True
+except ImportError:
+    MetaLearningManager = None
+    MetaLearningConfig = None
+    _META_LEARNING_AVAILABLE = False
+
+from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
 from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
 from reco_trading.core.integrations import initialize_all_modules, get_system_status, create_default_config
 from reco_trading.core.autonomous_brain import AutonomousTradingBrain, create_autonomous_brain
@@ -62,8 +92,27 @@ except ImportError:
                 for line in f:
                     if line.startswith("VmRSS:"):
                         return float(line.split()[1]) / 1024.0
-        except OSError:
-            return 0.0
+        except (OSError, IndexError, ValueError):
+            pass
+        return 0.0
+
+
+def _get_database_dsn(settings: Settings) -> str:
+    """Get best available database DSN with fallback."""
+    if settings.postgres_dsn:
+        return settings.postgres_dsn
+    if settings.mysql_dsn:
+        return settings.mysql_dsn
+    if settings.database_url:
+        # Convert sqlite:// to sqlite+aiosqlite:// for async support
+        if settings.database_url.startswith("sqlite://"):
+            return settings.database_url.replace("sqlite://", "sqlite+aiosqlite://")
+        return settings.database_url
+    import os
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    os.makedirs(os.path.join(project_root, "data"), exist_ok=True)
+    db_path = os.path.join(project_root, "data", "reco_trading.db")
+    return f"sqlite+aiosqlite:///{db_path}"
 
 
 class BotEngine:
@@ -79,7 +128,10 @@ class BotEngine:
         self.symbols = [normalize_symbol(sym) for sym in (settings.trading_symbols or [])] or [self.symbol]
         self.order_manager = OrderManager(self.client, self.symbol)
         self.market_stream = MarketStream(self.client, self.symbol, settings.history_limit)
-        self.repository = Repository(settings.postgres_dsn)
+        
+        dsn = _get_database_dsn(settings)
+        self.logger.info(f"Using database: {dsn[:30]}...")
+        self.repository = Repository(dsn)
         self.signal_engine = SignalEngine()
         self.confidence_model = ConfidenceModel()
         self.risk_manager = RiskManager(settings.daily_loss_limit_fraction, settings.max_trades_per_day)
@@ -152,6 +204,10 @@ class BotEngine:
         self.auto_improver = IntelligentAutoImprover(enabled=True)
         self._auto_improver_initialized = False
 
+        self.self_analyzer = SelfAnalyzer(enabled=True)
+        self.autonomous_optimizer = AutonomousOptimizer(enabled=True)
+        self.loop_manager = LoopManager(enabled=True)
+
         self.multi_pair_manager = MultiPairManager(self.client, self.symbols)
         self.enhanced_ml = EnhancedMLEngine()
         self.enhanced_ml.add_model("momentum", 1.0)
@@ -160,6 +216,48 @@ class BotEngine:
         self.enhanced_ml.add_model("pattern", 0.8)
         self.enhanced_ml.add_model("sentiment", 1.0)
         self._ml_enabled = True
+        
+        # Initialize advanced ML models (optional - only if dependencies available)
+        if _TFT_AVAILABLE:
+            self.tft_manager = TFTManager(TFTConfig(hidden_size=128, sequence_length=60, prediction_horizon=5))
+            self.logger.info("TFT model initialized")
+        else:
+            self.tft_manager = None
+            self.logger.info("TFT model skipped (torch not available)")
+            
+        if _NBEATS_AVAILABLE:
+            self.nbeats_manager = NBEATSManager(NBEATSConfig(hidden_size=256, sequence_length=60, prediction_horizon=5))
+            self.logger.info("NBEATS model initialized")
+        else:
+            self.nbeats_manager = None
+            self.logger.info("NBEATS model skipped (torch not available)")
+        
+        # Meta-learning (optional)
+        if _META_LEARNING_AVAILABLE:
+            try:
+                self.meta_learning_manager = MetaLearningManager(MetaLearningConfig(
+                    maml_inner_lr=0.01,
+                    maml_outer_lr=0.001,
+                    adaptation_steps=5,
+                    task_batch_size=4,
+                    max_tasks=50
+                ))
+                self.logger.info("Meta-learning manager initialized")
+            except Exception as e:
+                self.logger.warning(f"Meta-learning init failed: {e}")
+                self.meta_learning_manager = None
+        else:
+            self.meta_learning_manager = None
+            self.logger.info("Meta-learning skipped (dependencies not available)")
+        
+        try:
+            from reco_trading.ml.meta_learner import MarketMetaLearner as OriginalMarketMetaLearner
+            self.market_meta_learner = OriginalMarketMetaLearner()
+        except Exception as e:
+            self.logger.warning(f"MarketMetaLearner init failed: {e}")
+            self.market_meta_learner = None
+        
+        self.logger.info("Advanced ML models initialized")
         
         self.trading_mode_manager = TradingModeManager(self.client)
         self.ws_manager = WebSocketManager(self.client)
@@ -257,9 +355,24 @@ class BotEngine:
     async def run(self) -> None:
         try:
             await self._set_state(BotState.INITIALIZING, "initialize_settings")
-            await self.repository.setup()
-            self.snapshot["database_status"] = "CONNECTED"
-            self.observability.update_health(db_healthy=True)
+            
+            try:
+                await self.repository.setup()
+                self.snapshot["database_status"] = "CONNECTED"
+                self.observability.update_health(db_healthy=True)
+            except Exception as db_err:
+                self.logger.warning(f"Database setup failed: {db_err}, falling back to SQLite")
+                import os
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                os.makedirs(os.path.join(project_root, "data"), exist_ok=True)
+                db_path = os.path.join(project_root, "data", "reco_trading.db")
+                fallback_dsn = f"sqlite+aiosqlite:///{db_path}"
+                self.logger.info(f"Using fallback SQLite: {fallback_dsn}")
+                from reco_trading.database.repository import Repository
+                self.repository = Repository(fallback_dsn)
+                await self.repository.setup()
+                self.snapshot["database_status"] = "SQLITE_FALLBACK"
+                self.observability.update_health(db_healthy=True)
             if self.settings.observability_enabled and not self._metrics_server_started:
                 start_metrics_server(self.observability, self.settings.observability_bind_host, self.settings.observability_port)
                 self._metrics_server_started = True
@@ -268,6 +381,7 @@ class BotEngine:
             if isinstance(runtime_settings, dict) and runtime_settings:
                 await self._apply_runtime_settings(runtime_settings, persist=False)
             await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
+            await self.client.connect()
             await self.client.sync_time()
             await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
             await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
@@ -278,11 +392,24 @@ class BotEngine:
             
             await self.resilience.start()
             await self.auto_improver.start()
+            await self.self_analyzer.start()
+            await self.autonomous_optimizer.start()
+            
+            await self.loop_manager.initialize(
+                auto_improver=self.auto_improver,
+                self_analyzer=self.self_analyzer,
+                autonomous_optimizer=self.autonomous_optimizer,
+            )
+            await self.loop_manager.start()
+            
             await self.multi_pair_manager.start()
             self.autonomous_brain.set_bot_engine(self)
             await self.autonomous_brain.start()
             self._auto_improver_initialized = True
-            self.logger.info("Resilience, Auto-Improver, Multi-Pair Manager, and Autonomous Brain started")
+            self.logger.info("All auto-improvement systems started: AutoImprover, SelfAnalyzer, AutonomousOptimizer, LoopManager")
+            
+            # Auto-train ML models with historical data (non-blocking, runs in background)
+            self._start_ml_auto_training()
             
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -418,6 +545,12 @@ class BotEngine:
             self.market_stream.fetch_frame(self.settings.primary_timeframe),
             self.market_stream.fetch_frame(self.settings.confirmation_timeframe),
         )
+        
+        # Handle empty frames gracefully
+        if raw_frame5.empty or raw_frame15.empty:
+            await self._log("WARNING", f"empty_market_data frame5_empty={raw_frame5.empty} frame15_empty={raw_frame15.empty}")
+            await asyncio.sleep(5)
+            raise RuntimeError("Empty market data received, retrying...")
 
         latest_primary_ts = _timestamp_to_datetime(raw_frame5.iloc[-1].get("timestamp") if not raw_frame5.empty else None)
         latest_confirmation_ts = _timestamp_to_datetime(raw_frame15.iloc[-1].get("timestamp") if not raw_frame15.empty else None)
@@ -547,7 +680,7 @@ class BotEngine:
                     
                     self.snapshot["ml_intelligence"] = {
                         "status": "Activo",
-                        "model_type": "Ensemble (Momentum, Trend, Volume, Pattern, Sentiment)",
+                        "model_type": "Ensemble (Momentum, Trend, Volume, Pattern, Sentiment) + TFT + N-BEATS",
                         "training_samples": 1000,
                         "last_train": "En tiempo real",
                         "next_train": "Continuo",
@@ -593,6 +726,45 @@ class BotEngine:
             final_confidence = confidence * penalty
         if getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell():
             side = "HOLD"
+        
+        # TFT and NBEATS predictions (after signal is generated, non-blocking)
+        if self._ml_enabled and market_data.get("frame5") is not None:
+            try:
+                frame5 = market_data["frame5"]
+                if hasattr(frame5, "iloc") and len(frame5) >= 65:
+                    if hasattr(self, 'tft_manager') and self.tft_manager and self.symbol in self.tft_manager.models:
+                        try:
+                            tft_result = self.tft_manager.predict(frame5, self.symbol)
+                            if tft_result and tft_result.get("direction") != "HOLD":
+                                tft_conf = tft_result.get("confidence", 0.5)
+                                if tft_conf >= 0.6:
+                                    tft_boost = tft_conf * 0.15
+                                    if tft_result["direction"] == side:
+                                        final_confidence = min(final_confidence + tft_boost, 0.99)
+                                    elif tft_result["direction"] != side and side != "HOLD":
+                                        final_confidence = max(final_confidence * 0.7, 0.1)
+                                    self.snapshot["tft_direction"] = tft_result["direction"]
+                                    self.snapshot["tft_confidence"] = tft_conf
+                        except Exception as tft_exc:
+                            self.logger.debug(f"TFT prediction skipped: {tft_exc}")
+                    
+                    if hasattr(self, 'nbeats_manager') and self.nbeats_manager and self.symbol in self.nbeats_manager.models:
+                        try:
+                            nbeats_result = self.nbeats_manager.predict(frame5, self.symbol)
+                            if nbeats_result and nbeats_result.get("direction") != "HOLD":
+                                nb_conf = nbeats_result.get("confidence", 0.5)
+                                if nb_conf >= 0.6:
+                                    nb_boost = nb_conf * 0.10
+                                    if nbeats_result["direction"] == side:
+                                        final_confidence = min(final_confidence + nb_boost, 0.99)
+                                    elif nbeats_result["direction"] != side and side != "HOLD":
+                                        final_confidence = max(final_confidence * 0.75, 0.1)
+                                    self.snapshot["nbeats_direction"] = nbeats_result["direction"]
+                                    self.snapshot["nbeats_confidence"] = nb_conf
+                        except Exception as nb_exc:
+                            self.logger.debug(f"NBEATS prediction skipped: {nb_exc}")
+            except Exception as exc:
+                self.logger.debug(f"Advanced ML prediction failed: {exc}")
 
         setup_quality = self._build_setup_quality_score(
             bundle=bundle,
@@ -632,32 +804,11 @@ class BotEngine:
         consecutive_losses = self.auto_improver._performance.consecutive_losses if self.auto_improver.enabled else 0
         has_open_position = len(self.position_manager.positions) > 0
         
+        # Single unified pair-switching logic with proper cooldown and sync
         current_best_pair = self.multi_pair_manager.get_best_pair()
-        if current_best_pair != self.symbol and not has_open_position:
-            old_symbol = self.symbol
-            self.symbol = current_best_pair
-            self.order_manager = OrderManager(self.client, self.symbol)
-            self.market_stream = MarketStream(self.client, self.symbol, self.settings.history_limit)
-            self._cached_frame5 = None
-            self._cached_frame15 = None
-            self.logger.warning(f"Auto-switched to best pair: {old_symbol} -> {self.symbol}")
-            self.snapshot["pair_switch"] = self.symbol
-        
-        if not has_open_position and self.multi_pair_manager.should_switch_pair(consecutive_losses):
-            try:
-                new_pair = self.multi_pair_manager.get_alternative_pairs(1)
-                if new_pair and new_pair[0] != self.symbol:
-                    old_symbol = self.symbol
-                    self.symbol = new_pair[0]
-                    self.order_manager = OrderManager(self.client, self.symbol)
-                    self.market_stream = MarketStream(self.client, self.symbol, self.settings.history_limit)
-                    self._cached_frame5 = None
-                    self._cached_frame15 = None
-                    self.logger.warning(f"Switched pair: {old_symbol} -> {self.symbol} (consecutive_losses: {consecutive_losses})")
-                    self.snapshot["pair_switch"] = self.symbol
-            except Exception as exc:
-                self.logger.error(f"Failed to switch pair: {exc}")
-                self.snapshot["pair_switch_error"] = str(exc)
+        if (not has_open_position and current_best_pair and current_best_pair != self.symbol
+                and self.multi_pair_manager.should_switch_pair(consecutive_losses)):
+            await self._switch_to_pair(current_best_pair)
         
         if self.auto_improver.should_block_trading():
             self.logger.warning("Trading blocked by auto-improvement system due to poor performance")
@@ -1462,6 +1613,19 @@ class BotEngine:
                 "exit_reason": exit_reason,
             })
             self.logger.info(f"Trade recorded for auto-improvement: PnL={pnl:.4f}, Duration={duration_minutes:.1f}min")
+        
+        # Record trade for SelfAnalyzer
+        if self.self_analyzer.enabled:
+            self.self_analyzer.record_trade({
+                "timestamp": datetime.now(timezone.utc),
+                "side": position.side,
+                "entry": position.entry_price,
+                "exit": exit_price,
+                "size": position.quantity,
+                "pnl": pnl,
+                "duration_minutes": (datetime.now(timezone.utc) - entry_time).total_seconds() / 60,
+                "exit_reason": exit_reason,
+            })
 
         if pnl > 0:
             self.win_count += 1
@@ -1857,6 +2021,94 @@ class BotEngine:
             )
         )
         await self._log("INFO", f"reconciled_open_position trade_id={latest.id} quantity={min(latest.quantity, base_balance):.8f}")
+
+    async def _switch_to_pair(self, new_symbol: str) -> None:
+        """Switch to a new trading pair with proper cleanup and rule sync."""
+        try:
+            old_symbol = self.symbol
+            self.symbol = new_symbol
+            self.order_manager = OrderManager(self.client, self.symbol)
+            await self.order_manager.sync_rules()
+            self.market_stream = MarketStream(self.client, self.symbol, self.settings.history_limit)
+            self._cached_frame5 = None
+            self._cached_frame15 = None
+            self.multi_pair_manager.record_switch(old_symbol, new_symbol)
+            self.logger.warning(f"Auto-switched to best pair: {old_symbol} -> {self.symbol}")
+            self.snapshot["pair_switch"] = self.symbol
+        except Exception as exc:
+            self.logger.error(f"Failed to switch pair to {new_symbol}: {exc}")
+            self.snapshot["pair_switch_error"] = str(exc)
+            self.symbol = old_symbol
+
+    def _start_ml_auto_training(self) -> None:
+        """Start background auto-training of ML models with historical data."""
+        import threading
+        
+        def _train_models_in_background():
+            try:
+                import pandas as pd
+                
+                # Get historical data for training
+                self.logger.info("Starting ML auto-training with historical data...")
+                
+                # Train TFT model
+                if hasattr(self, 'tft_manager') and self.tft_manager:
+                    try:
+                        import ccxt.async_support as ccxt_async
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            exchange = ccxt_async.binance({"enableRateLimit": True})
+                            ohlcv = loop.run_until_complete(
+                                exchange.fetch_ohlcv(self.symbol, "5m", limit=500)
+                            )
+                            loop.run_until_complete(exchange.close())
+                            
+                            if ohlcv:
+                                df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+                                df.set_index("timestamp", inplace=True)
+                                
+                                result = self.tft_manager.train(df, self.symbol)
+                                self.logger.info(f"TFT model trained: {result}")
+                        finally:
+                            loop.close()
+                    except Exception as tft_exc:
+                        self.logger.debug(f"TFT auto-training skipped: {tft_exc}")
+                
+                # Train NBEATS model
+                if hasattr(self, 'nbeats_manager') and self.nbeats_manager:
+                    try:
+                        import ccxt.async_support as ccxt_async
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            exchange = ccxt_async.binance({"enableRateLimit": True})
+                            ohlcv = loop.run_until_complete(
+                                exchange.fetch_ohlcv(self.symbol, "5m", limit=500)
+                            )
+                            loop.run_until_complete(exchange.close())
+                            
+                            if ohlcv:
+                                df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+                                df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+                                df.set_index("timestamp", inplace=True)
+                                
+                                result = self.nbeats_manager.train(df, self.symbol)
+                                self.logger.info(f"NBEATS model trained: {result}")
+                        finally:
+                            loop.close()
+                    except Exception as nb_exc:
+                        self.logger.debug(f"NBEATS auto-training skipped: {nb_exc}")
+                
+                self.logger.info("ML auto-training complete")
+            except Exception as exc:
+                self.logger.warning(f"ML auto-training failed: {exc}")
+        
+        # Run in background thread to not block startup
+        thread = threading.Thread(target=_train_models_in_background, daemon=True, name="ml-auto-training")
+        thread.start()
+        self.logger.info("ML auto-training started in background")
 
     async def _process_control_requests(self) -> None:
         if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):

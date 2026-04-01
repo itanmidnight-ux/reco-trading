@@ -82,14 +82,19 @@ if defined MYSQL_DSN (
 )
 
 :: Fallback to SQLite
-if not defined DATABASE_URL (
-    set DATABASE_URL=sqlite:///./data/reco_trading.db
-    if not exist "data" mkdir data
-    echo [INFO] Usando SQLite: %DATABASE_URL%
+if "%DB_STATUS%"=="unknown" (
+    if not defined DATABASE_URL (
+        set DATABASE_URL=sqlite:///./data/reco_trading.db
+        if not exist "data" mkdir data
+        echo [INFO] Usando SQLite: %DATABASE_URL%
+    )
+    set DB_STATUS=SQLite
+    echo [OK] SQLite configurado
+) else if "%DB_STATUS%"=="PostgreSQL" (
+    set DATABASE_URL=%POSTGRES_DSN%
+) else if "%DB_STATUS%"=="MySQL" (
+    set DATABASE_URL=%MYSQL_DSN%
 )
-
-set DB_STATUS=SQLite
-echo [OK] SQLite configurado
 
 :db_check_done
 
@@ -129,6 +134,9 @@ if "%MODE%"=="1" (
 if exist ".env" (
     powershell -Command "(Get-Content '.env') -replace 'BINANCE_TESTNET=.*', 'BINANCE_TESTNET=%BINANCE_TESTNET%' -replace 'ENVIRONMENT=.*', 'ENVIRONMENT=%ENVIRONMENT%' | Set-Content '.env'" 2>nul
 )
+
+:: Set non-interactive mode for Docker/automated execution
+set DASHBOARD_TYPE=none
 
 :: Start bot
 echo.

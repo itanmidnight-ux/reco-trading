@@ -73,6 +73,9 @@ class HyperoptTab(QWidget):
         self.start_button = QPushButton("Iniciar Optimización")
         self.stop_button = QPushButton("Detener")
         self.export_button = QPushButton("Exportar Resultados")
+        self.start_button.clicked.connect(self._on_start_clicked)
+        self.stop_button.clicked.connect(self._on_stop_clicked)
+        self.export_button.clicked.connect(self._on_export_clicked)
         buttons_layout.addWidget(self.start_button)
         buttons_layout.addWidget(self.stop_button)
         buttons_layout.addWidget(self.export_button)
@@ -80,23 +83,53 @@ class HyperoptTab(QWidget):
 
         layout.addStretch()
 
+    def _on_start_clicked(self) -> None:
+        if self.state_manager:
+            self.state_manager.trigger_hyperopt_start()
+
+    def _on_stop_clicked(self) -> None:
+        if self.state_manager:
+            self.state_manager.trigger_hyperopt_stop()
+
+    def _on_export_clicked(self) -> None:
+        if self.state_manager:
+            self.state_manager.trigger_hyperopt_export()
+
     def update_state(self, state: dict) -> None:
         hyperopt_data = state.get("hyperopt", {})
 
-        if hyperopt_data:
-            self.optimizer_status_label.setText(hyperopt_data.get("status", "Inactivo"))
-            self.current_trial_label.setText(str(hyperopt_data.get("current_trial", 0)))
-            self.total_trials_label.setText(str(hyperopt_data.get("total_trials", 0)))
-            self.best_score_label.setText(f"{hyperopt_data.get('best_score', 0):.4f}")
-            self.elapsed_time_label.setText(f"{hyperopt_data.get('elapsed_seconds', 0):.1f}s")
+        if not hyperopt_data:
+            hyperopt_data = {
+                "status": "Listo para optimizar",
+                "current_trial": 0,
+                "total_trials": 0,
+                "best_score": 0,
+                "elapsed_seconds": 0,
+                "best_params": {},
+                "trials": [],
+            }
 
-            best_params = hyperopt_data.get("best_params", {})
+        self.optimizer_status_label.setText(hyperopt_data.get("status", "Inactivo"))
+        self.current_trial_label.setText(str(hyperopt_data.get("current_trial", 0)))
+        self.total_trials_label.setText(str(hyperopt_data.get("total_trials", 0)))
+        best_score = hyperopt_data.get("best_score", 0)
+        self.best_score_label.setText(f"{best_score:.4f}" if best_score else "N/A")
+        self.elapsed_time_label.setText(f"{hyperopt_data.get('elapsed_seconds', 0):.1f}s")
+
+        best_params = hyperopt_data.get("best_params", {})
+        if best_params:
             self.risk_fraction_label.setText(f"{best_params.get('risk_fraction', 0):.4f}")
             self.confidence_threshold_label.setText(f"{best_params.get('confidence_threshold', 0):.2f}")
             self.maker_fee_label.setText(f"{best_params.get('maker_fee_rate', 0):.4f}")
             self.taker_fee_label.setText(f"{best_params.get('taker_fee_rate', 0):.4f}")
+        else:
+            self.risk_fraction_label.setText("N/A")
+            self.confidence_threshold_label.setText("N/A")
+            self.maker_fee_label.setText("N/A")
+            self.taker_fee_label.setText("N/A")
 
-            trials = hyperopt_data.get("trials", [])
+        trials = hyperopt_data.get("trials", [])
+        if trials:
             self.trials_table.setRowCount(len(trials))
             for i, trial in enumerate(trials):
                 self.trials_table.setItem(i, 0, QTableWidgetItem(str(trial.get("id", i))))

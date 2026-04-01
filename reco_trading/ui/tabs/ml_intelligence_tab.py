@@ -89,12 +89,27 @@ class MLIntelligenceTab(QWidget):
         self.train_button = QPushButton("Entrenar Modelo")
         self.predict_button = QPushButton("Nueva Predicción")
         self.save_button = QPushButton("Guardar Modelo")
+        self.train_button.clicked.connect(self._on_train_clicked)
+        self.predict_button.clicked.connect(self._on_predict_clicked)
+        self.save_button.clicked.connect(self._on_save_clicked)
         buttons_layout.addWidget(self.train_button)
         buttons_layout.addWidget(self.predict_button)
         buttons_layout.addWidget(self.save_button)
         layout.addLayout(buttons_layout)
 
         layout.addStretch()
+
+    def _on_train_clicked(self) -> None:
+        if self.state_manager:
+            self.state_manager.trigger_ml_train()
+
+    def _on_predict_clicked(self) -> None:
+        if self.state_manager:
+            self.state_manager.trigger_ml_predict()
+
+    def _on_save_clicked(self) -> None:
+        if self.state_manager:
+            self.state_manager.trigger_ml_save()
 
     def update_state(self, state: dict) -> None:
         ml_data = state.get("ml_intelligence", {})
@@ -123,10 +138,10 @@ class MLIntelligenceTab(QWidget):
             self.recall_label.setText(f"{metrics.get('recall', 0):.4f}")
             self.f1_label.setText(f"{metrics.get('f1', 0):.4f}")
         else:
-            self.accuracy_label.setText("0.75")
-            self.precision_label.setText("0.72")
-            self.recall_label.setText("0.70")
-            self.f1_label.setText("0.71")
+            self.accuracy_label.setText("N/A (entrenando)")
+            self.precision_label.setText("N/A (entrenando)")
+            self.recall_label.setText("N/A (entrenando)")
+            self.f1_label.setText("N/A (entrenando)")
 
         features = ml_data.get("features", [])
         if features:

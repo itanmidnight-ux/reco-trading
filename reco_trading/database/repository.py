@@ -42,16 +42,22 @@ class Repository:
     async def setup(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("trades")})
-            if "close_timestamp" not in columns:
-                await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP WITH TIME ZONE"))
-            if "entry_slippage_ratio" not in columns:
-                await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_slippage_ratio DOUBLE PRECISION"))
-            if "exit_slippage_ratio" not in columns:
-                await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_slippage_ratio DOUBLE PRECISION"))
-            await self._migrate_signals_columns(conn)
-            await self._migrate_market_data_columns(conn)
-            await self._migrate_orders_columns(conn)
+            # Only run PostgreSQL-specific migrations for PostgreSQL
+            dsn = str(self.engine.url)
+            if "postgresql" in dsn or "postgres" in dsn:
+                try:
+                    columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("trades")})
+                    if "close_timestamp" not in columns:
+                        await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS close_timestamp TIMESTAMP WITH TIME ZONE"))
+                    if "entry_slippage_ratio" not in columns:
+                        await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_slippage_ratio DOUBLE PRECISION"))
+                    if "exit_slippage_ratio" not in columns:
+                        await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_slippage_ratio DOUBLE PRECISION"))
+                    await self._migrate_signals_columns(conn)
+                    await self._migrate_market_data_columns(conn)
+                    await self._migrate_orders_columns(conn)
+                except Exception as e:
+                    self.logger.warning(f"Column migration skipped: {e}")
 
     async def verify_connectivity(self) -> None:
         async with self.engine.connect() as conn:

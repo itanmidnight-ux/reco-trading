@@ -59,9 +59,108 @@ echo [OK] Entorno virtual creado
 python -m pip install --upgrade pip -q 2>nul
 
 :: Install dependencies
-echo [INFO] Instalando dependencias...
+echo [INFO] Instalando dependencias basicas...
 python -m pip install -r requirements.txt -q 2>nul
-echo [OK] Dependencias instaladas
+
+:: ============================================
+:: SMART ML DEPENDENCIES INSTALL
+:: ============================================
+
+echo [INFO] Detectando recursos para ML optimizado...
+
+:: Detect RAM (approximate)
+for /f "tokens=2 delims==" %%A in ('wmic OS get TotalVisibleMemorySize /value ^| find "="') do set TOTAL_MEM_KB=%%A
+set /a ML_RAM_GB=%TOTAL_MEM_KB% / 1024 / 1024
+
+:: Detect CPU cores
+for /f %%A in ('wmic cpu get NumberOfCores ^| findstr [0-9]') do set ML_CPU_CORES=%%A
+
+:: Determine ML profile
+if %ML_RAM_GB% GEQ 16 (
+    if %ML_CPU_CORES% GEQ 4 (
+        set ML_PROFILE=high
+        echo [INFO] Perfil ML: ALTO (RAM: %ML_RAM_GB%GB, CPU: %ML_CPU_CORES%)
+    ) else (
+        set ML_PROFILE=medium
+        echo [INFO] Perfil ML: MEDIO (RAM: %ML_RAM_GB%GB, CPU: %ML_CPU_CORES%)
+    )
+) else if %ML_RAM_GB% GEQ 8 (
+    if %ML_CPU_CORES% GEQ 2 (
+        set ML_PROFILE=medium
+        echo [INFO] Perfil ML: MEDIO (RAM: %ML_RAM_GB%GB, CPU: %ML_CPU_CORES%)
+    ) else (
+        set ML_PROFILE=low
+        echo [INFO] Perfil ML: BAJO (RAM: %ML_RAM_GB%GB, CPU: %ML_CPU_CORES%) - optimizado
+    )
+) else (
+    set ML_PROFILE=low
+    echo [INFO] Perfil ML: BAJO (RAM: %ML_RAM_GB%GB, CPU: %ML_CPU_CORES%) - optimizado
+)
+
+:: Function to check if package is installed
+echo [INFO] Instalando ML dependencies (perfil: %ML_PROFILE%)...
+
+:: PyTorch (core for all models)
+python -c "import torch" 2>nul
+if errorlevel 1 (
+    echo [INFO]   Instalando PyTorch (CPU)...
+    python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu -q 2>nul
+    if not errorlevel 1 (
+        echo [OK]   PyTorch instalado
+    ) else (
+        echo [WARN] PyTorch installation failed, continuing
+    )
+) else (
+    echo [OK]   PyTorch ya instalado
+)
+
+:: PyTorch Lightning
+python -c "import pytorch_lightning" 2>nul
+if errorlevel 1 (
+    python -m pip install pytorch-lightning -q 2>nul
+)
+
+:: LightGBM and XGBoost for existing FreqAI
+python -c "import lightgbm" 2>nul
+if errorlevel 1 (
+    python -m pip install lightgbm -q 2>nul
+)
+
+python -c "import xgboost" 2>nul
+if errorlevel 1 (
+    python -m pip install xgboost -q 2>nul
+)
+
+:: Advanced ML (only for medium/high profiles)
+if not "%ML_PROFILE%"=="low" (
+    python -c "import stable_baselines3" 2>nul
+    if errorlevel 1 (
+        python -m pip install stable-baselines3 -q 2>nul
+    )
+
+    python -c "import optuna" 2>nul
+    if errorlevel 1 (
+        python -m pip install optuna -q 2>nul
+    )
+
+    python -c "import gymnasium" 2>nul
+    if errorlevel 1 (
+        python -m pip install gymnasium -q 2>nul
+    )
+)
+
+:: Light dependencies (all profiles)
+python -c "import statsmodels" 2>nul
+if errorlevel 1 (
+    python -m pip install statsmodels -q 2>nul
+)
+
+python -c "import yfinance" 2>nul
+if errorlevel 1 (
+    python -m pip install yfinance -q 2>nul
+)
+
+echo [OK] ML dependencies instaladas
 
 :: Create directories
 if not exist "data" mkdir data
@@ -122,6 +221,18 @@ if "%DB_TYPE%"=="postgresql" (
         echo.
         echo # Redis
         echo REDIS_URL=redis://localhost:6379/0
+        echo.
+        echo # AI/ML Configuration
+        echo ENABLE_AUTO_IMPROVER=true
+        echo ENABLE_ML_ENGINE=true
+        echo ENABLE_CONTINUAL_LEARNING=true
+        echo ENABLE_META_LEARNING=true
+        echo ENABLE_TFT=true
+        echo ENABLE_NBEATS=true
+        echo ENABLE_ADVANCED_META_LEARNING=true
+        echo ENABLE_REINFORCEMENT_LEARNING=true
+        echo DRIFT_DETECTION=true
+        echo ONCHAIN_ANALYSIS=true
     ) > .env
     echo [OK] PostgreSQL configurado
 ) else if "%DB_TYPE%"=="mysql" (
@@ -144,6 +255,18 @@ if "%DB_TYPE%"=="postgresql" (
         echo.
         echo # Redis
         echo REDIS_URL=redis://localhost:6379/0
+        echo.
+        echo # AI/ML Configuration
+        echo ENABLE_AUTO_IMPROVER=true
+        echo ENABLE_ML_ENGINE=true
+        echo ENABLE_CONTINUAL_LEARNING=true
+        echo ENABLE_META_LEARNING=true
+        echo ENABLE_TFT=true
+        echo ENABLE_NBEATS=true
+        echo ENABLE_ADVANCED_META_LEARNING=true
+        echo ENABLE_REINFORCEMENT_LEARNING=true
+        echo DRIFT_DETECTION=true
+        echo ONCHAIN_ANALYSIS=true
     ) > .env
     echo [OK] MySQL configurado
 ) else (
@@ -167,6 +290,18 @@ if "%DB_TYPE%"=="postgresql" (
         echo.
         echo # Redis
         echo REDIS_URL=redis://localhost:6379/0
+        echo.
+        echo # AI/ML Configuration
+        echo ENABLE_AUTO_IMPROVER=true
+        echo ENABLE_ML_ENGINE=true
+        echo ENABLE_CONTINUAL_LEARNING=true
+        echo ENABLE_META_LEARNING=true
+        echo ENABLE_TFT=true
+        echo ENABLE_NBEATS=true
+        echo ENABLE_ADVANCED_META_LEARNING=true
+        echo ENABLE_REINFORCEMENT_LEARNING=true
+        echo DRIFT_DETECTION=true
+        echo ONCHAIN_ANALYSIS=true
     ) > .env
     echo [OK] SQLite configurado (sin requerir servidor externo)
 )
@@ -193,9 +328,16 @@ echo [INFO] Verificando instalacion...
 
 python -c "import sys; sys.path.insert(0,'.'); from reco_trading.config.settings import Settings" 2>nul
 if errorlevel 1 (
-    echo [ERROR] Error en imports
+    echo [ERROR] Error en imports basicos
 ) else (
-    echo [OK] Modulos verificados
+    echo [OK] Modulos basicos verificados
+)
+
+python -c "import sys; sys.path.insert(0,'.'); from reco_trading.ml.tft_model import TFTManager; from reco_trading.ml.nbeats_model import NBEATSManager; from reco_trading.ml.advanced_meta_learner import MetaLearningManager" 2>nul
+if errorlevel 1 (
+    echo [WARN] Algunos modulos ML no disponibles (verifica pip install)
+) else (
+    echo [OK] Modulos ML avanzados verificados
 )
 
 :: Final

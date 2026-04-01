@@ -69,22 +69,34 @@ class MetaLearner:
         return np.mean(ce)
 
     def _gradient(self, x: np.ndarray, y: np.ndarray, weights: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
-        output = self._forward(x, weights)
+        """Compute gradients for backpropagation - FIXED dimension alignment."""
+        # Forward pass to get activations
+        z1 = x @ weights["input_weights"] + weights["input_bias"]
+        h1 = np.tanh(z1)
+        
+        z2 = h1 @ weights["hidden_weights"] + weights["hidden_bias"]
+        h2 = np.tanh(z2)
+        
+        output = h2 @ weights["output_weights"] + weights["output_bias"]
+        
+        # Compute error at output
         error = output - y
         
+        # Gradient for output layer
         grad_output = error / len(x)
-        grad_hidden = (error @ weights["output_weights"].T) * (1 - np.tanh(
-            x @ weights["input_weights"] + weights["input_bias"]
-        ) ** 2)
         
-        grad_input = (grad_hidden @ weights["hidden_weights"].T) * (1 - np.tanh(
-            x @ weights["input_weights"] + weights["input_bias"]
-        ) ** 2)
+        # Gradient for hidden layer - use h2 (hidden2 activation) NOT input
+        tanh_deriv_h2 = (1 - h2 ** 2)
+        grad_hidden = (grad_output @ weights["output_weights"].T) * tanh_deriv_h2
+        
+        # Gradient for input layer - use h1 (hidden1 activation)
+        tanh_deriv_h1 = (1 - h1 ** 2)
+        grad_input = (grad_hidden @ weights["hidden_weights"].T) * tanh_deriv_h1
         
         return {
-            "output_weights": grad_hidden.T @ output,
-            "hidden_weights": grad_input.T @ x,
-            "input_weights": grad_output.T @ x,
+            "output_weights": h2.T @ grad_output,
+            "hidden_weights": h1.T @ grad_hidden,
+            "input_weights": x.T @ grad_input,
             "output_bias": np.sum(grad_output, axis=0),
             "hidden_bias": np.sum(grad_hidden, axis=0),
             "input_bias": np.sum(grad_input, axis=0)
