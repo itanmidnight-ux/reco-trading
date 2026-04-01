@@ -50,9 +50,10 @@ class PositionManager:
         
         position.bars_held += 1
 
-        partial_tp_exit = self._check_partial_take_profit(position, current_price, atr)
-        if partial_tp_exit:
-            return partial_tp_exit
+        if not position.dynamic_exit_enabled:
+            partial_tp_exit = self._check_partial_take_profit(position, current_price, atr)
+            if partial_tp_exit:
+                return partial_tp_exit
 
         if position.side == "BUY":
             return self._check_exit_buy(position, current_price, atr, risk_distance)

@@ -51,8 +51,8 @@ class BinanceClient:
         trading_mode: str = "spot",
     ) -> None:
         self.logger = logging.getLogger(__name__)
-        self.api_key = api_key
-        self.api_secret = api_secret
+        self.api_key = self._normalize_secret(api_key)
+        self.api_secret = self._normalize_secret(api_secret)
         self.testnet = testnet
         self.trading_mode = trading_mode
         self.time_offset_ms = 0
@@ -68,7 +68,7 @@ class BinanceClient:
             "options": {
                 "defaultType": trading_mode,
                 "adjustForTimeDifference": True,
-                "recvWindow": 60000,
+                "recvWindow": 10000,
                 "timestamp": True,
             },
         })
@@ -296,7 +296,27 @@ class BinanceClient:
 
         raise RuntimeError(f"exchange_call_exhausted op={operation}")
 
+    async def safe_exchange_call(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        operation: str = "unknown",
+        retries: int = 3,
+        **kwargs: Any,
+    ) -> Any:
+        """Compatibility wrapper used in tests and older integrations."""
+        return await self._with_retry(fn, *args, retries=retries, operation=operation, **kwargs)
+
     @staticmethod
     def _is_timestamp_error(exc: Exception) -> bool:
         message = str(exc)
         return "-1021" in message or "outside of the recvwindow" in message.lower()
+
+    @staticmethod
+    def _normalize_secret(value: str | None) -> str:
+        if value is None:
+            return ""
+        sanitized = str(value).strip()
+        if sanitized.lower() in {"", "none", "null", "changeme", "your_api_key_here", "your_api_secret_here"}:
+            return ""
+        return sanitized

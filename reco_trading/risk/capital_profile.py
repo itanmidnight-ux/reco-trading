@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(slots=True)
@@ -160,6 +160,10 @@ class CapitalProfileManager:
         for profile in self._profiles:
             upper_ok = profile.max_equity is None or safe_equity < profile.max_equity
             if safe_equity >= profile.min_equity and upper_ok:
+                if profile.name == "NANO":
+                    return replace(self._profiles[1], min_equity=0.0, min_confidence=max(self._profiles[1].min_confidence, 0.70))
+                if profile.name == "PREMIUM":
+                    return replace(self._profiles[4], max_equity=None, max_trades_per_day=max(self._profiles[4].max_trades_per_day, 10))
                 return profile
         return self._profiles[-1]
 

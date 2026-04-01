@@ -155,6 +155,17 @@ class Settings(BaseSettings):
     def _normalize_symbol(cls, value: str) -> str:
         return str(value or "BTCUSDT").replace("/", "").upper()
 
+    @field_validator("binance_api_key", "binance_api_secret", mode="before")
+    @classmethod
+    def _sanitize_api_credentials(cls, value: object) -> str:
+        if value is None:
+            return ""
+        secret = str(value).strip()
+        lowered = secret.lower()
+        if lowered in {"", "none", "null", "changeme", "your_api_key_here", "your_api_secret_here"}:
+            return ""
+        return secret
+
     @field_validator("trading_symbols", mode="before")
     @classmethod
     def _parse_symbols(cls, value: object) -> list[str]:

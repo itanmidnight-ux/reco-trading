@@ -235,6 +235,7 @@ class MobileAppBackend:
                 if self.notification_queue:
                     # Here you could implement push notification services
                     # like Firebase, APNS, or SMS/email
+                    pass
                     
                 await asyncio.sleep(1)  # Check every second
                 

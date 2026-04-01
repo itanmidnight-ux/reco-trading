@@ -138,8 +138,8 @@ def run() -> None:
         dsn = asyncio.run(_verify_database_connection(settings))
         logger.info(f"Database connected: {dsn.split('://')[0]}")
     except Exception as exc:
-        logger.warning("Database unavailable (using SQLite fallback): %s", exc)
-        dsn = None
+        logger.error("Database unavailable: %s", exc)
+        sys.exit(1)
 
     # Get dashboard type
     dashboard_type = os.environ.get('DASHBOARD_TYPE', '').lower()

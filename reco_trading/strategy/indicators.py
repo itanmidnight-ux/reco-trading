@@ -126,4 +126,6 @@ def apply_indicators(frame: pd.DataFrame) -> pd.DataFrame:
     # Price position relative to BB
     df["bb_position"] = (df["close"] - df["bb_lower"]) / (df["bb_upper"] - df["bb_lower"])
     
-    return df.dropna().reset_index(drop=True)
+    df = df.replace([np.inf, -np.inf], np.nan)
+    df = df.ffill().bfill().fillna(0.0)
+    return df.reset_index(drop=True)

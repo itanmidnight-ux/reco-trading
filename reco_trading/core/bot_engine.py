@@ -644,7 +644,7 @@ class BotEngine:
         ml_prediction = None
         ml_confidence_boost = 0.0
         
-        if self._ml_enabled and market_data.get("frame5") is not None:
+        if getattr(self, "_ml_enabled", False) and hasattr(self, "enhanced_ml") and market_data.get("frame5") is not None:
             try:
                 frame5 = market_data["frame5"]
                 if hasattr(frame5, "iloc") and len(frame5) >= 20:
@@ -728,7 +728,7 @@ class BotEngine:
             side = "HOLD"
         
         # TFT and NBEATS predictions (after signal is generated, non-blocking)
-        if self._ml_enabled and market_data.get("frame5") is not None:
+        if getattr(self, "_ml_enabled", False) and hasattr(self, "enhanced_ml") and market_data.get("frame5") is not None:
             try:
                 frame5 = market_data["frame5"]
                 if hasattr(frame5, "iloc") and len(frame5) >= 65:
