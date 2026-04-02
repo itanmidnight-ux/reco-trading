@@ -52,79 +52,24 @@ class MultiPairManager:
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange_client
         
-        # Tier 1: Top Liquidity (10 pairs)
-        tier1 = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", 
-                 "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT"]
+        # Only Top 10 most popular pairs for faster scanning
+        self.default_pairs = base_pairs or [
+            "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", 
+            "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT"
+        ]
         
-        # Tier 2: Good Liquidity (10 pairs)
-        tier2 = ["MATIC/USDT", "ATOM/USDT", "UNI/USDT", "XLM/USDT", "ETC/USDT",
-                 "ALGO/USDT", "FIL/USDT", "HBAR/USDT", "NEAR/USDT", "APT/USDT"]
-        
-        # Tier 3: Mid-Cap Growth (12 pairs)
-        tier3 = ["ARB/USDT", "OP/USDT", "SUI/USDT", "INJ/USDT", "SEI/USDT",
-                 "TIA/USDT", "PEPE/USDT", "WIF/USDT", "SSV/USDT", "FTM/USDT",
-                 "JUP/USDT", "WLD/USDT"]
-        
-        # Tier 4: DeFi Tokens (12 pairs)
-        tier4 = ["AAVE/USDT", "LDO/USDT", "RUNE/USDT", "ENS/USDT", "CRV/USDT",
-                 "MKR/USDT", "SNX/USDT", "COMP/USDT", "SUSHI/USDT", "YFI/USDT",
-                 "BAL/USDT", "KP3R/USDT"]
-        
-        # Tier 5: Emerging/Growth (12 pairs)
-        tier5 = ["TRUMP/USDT", "MELANIA/USDT", "BONK/USDT", "IMX/USDT", "AR/USDT",
-                 "AGIX/USDT", "FET/USDT", "CFX/USDT", "RNDR/USDT", "GRT/USDT",
-                 "STX/USDT", "SATS/USDT"]
-        
-        # Tier 6: Additional High Volume (12 pairs)
-        tier6 = ["SHIB/USDT", "XEC/USDT", "PEOPLE/USDT", "LTC/USDT", "BCH/USDT",
-                 "TRX/USDT", "BTT/USDT", "FIRO/USDT", "NEO/USDT",
-                 "KAVA/USDT", "ZEC/USDT", "XLM/USDT"]
-        
-        # Tier 7: Layer 2 & Scaling (10 pairs)
-        tier7 = ["MATIC/USDT", "ARB/USDT", "OP/USDT", "METIS/USDT",
-                 "MANTA/USDT", "ZRO/USDT", "STRK/USDT", "TIA/USDT", "SEI/USDT", "SUI/USDT"]
-        
-        # Tier 8: Gaming/NFT (10 pairs)
-        tier8 = ["AXS/USDT", "ENJ/USDT", "CHZ/USDT", "SAND/USDT", "MANA/USDT",
-                 "GALA/USDT", "ILV/USDT", "MAGIC/USDT", "HIGH/USDT", "DEGO/USDT"]
-        
-        # Tier 9: AI/Tech (10 pairs)
-        tier9 = ["OCEAN/USDT", "CTXC/USDT", "RENDER/USDT", "NUM/USDT", "ARPA/USDT",
-                 "BAND/USDT", "ANKR/USDT", "RLC/USDT", "COTI/USDT", "NKN/USDT"]
-        
-        # Tier 10: Stable/Major (6 pairs)
-        tier10 = ["USDC/USDT", "DAI/USDT", "FDUSD/USDT", "TUSD/USDT", "USDP/USDT", "FRAX/USDT"]
-        
-        # Combine all tiers: 104 pairs total
-        self.default_pairs = base_pairs or (tier1 + tier2 + tier3 + tier4 + tier5 + 
-                                            tier6 + tier7 + tier8 + tier9 + tier10)
-        
-        # Tier configuration for priority scanning
+        # Single tier for top 10 pairs
         self.tier_pairs = {
-            1: tier1,   # Top priority - scanned most frequently
-            2: tier2,
-            3: tier3,
-            4: tier4,
-            5: tier5,
-            6: tier6,
-            7: tier7,
-            8: tier8,
-            9: tier9,
-            10: tier10,
+            1: self.default_pairs,
         }
         
         self.pairs_metrics: dict[str, PairMetrics] = {}
         self.active_pair: str = "BTC/USDT"
         self.pair_history: dict[str, list[dict]] = {}
         
-        # Tier-based scan intervals (in seconds)
+        # Scan every 10 seconds for top 10
         self.tier_scan_intervals = {
-            1: 10,   # Tier 1: Scan every 10 seconds
-            2: 15,   # Tier 2: Scan every 15 seconds
-            3: 20,   # Tier 3: Scan every 20 seconds
-            4: 30,   # Tier 4: Scan every 30 seconds
-            5: 45,   # Tier 5: Scan every 45 seconds
-            6: 60,   # Tier 6+: Scan every 60 seconds
+            1: 10,   # Scan every 10 seconds
         }
         
         # Dynamic scan interval based on bot state

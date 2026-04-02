@@ -73,6 +73,8 @@ class Settings(BaseSettings):
     enforce_fee_floor: bool = True
     estimated_fee_rate: float = 0.001
     min_expected_reward_risk: float = 1.8
+    stop_loss_pct: float = 2.0
+    take_profit_pct: float = 4.0
 
     # =========================
     # COOLDOWNS
@@ -103,7 +105,7 @@ class Settings(BaseSettings):
     trading_symbols: list[str] = Field(default_factory=lambda: [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
         "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT",
-        "DOT/USDT", "MATIC/USDT", "LINK/USDT", "ATOM/USDT"
+        "DOT/USDT", "LINK/USDT"
     ], validation_alias=AliasChoices("TRADING_SYMBOLS", "SYMBOLS"))
     max_global_exposure_fraction: float = 0.7
     max_symbol_correlation: float = 0.85

@@ -250,10 +250,10 @@ class AutonomousTradingBrain:
                 settings.min_signal_confidence = recommended['min_signal_confidence']
             
             if 'stop_loss' in recommended:
-                settings.stop_loss = recommended['stop_loss']
+                settings.stop_loss_pct = recommended['stop_loss']
             
             if 'take_profit' in recommended:
-                settings.take_profit = recommended['take_profit']
+                settings.take_profit_pct = recommended['take_profit']
             
             if 'position_size' in recommended:
                 self.position_sizer.config.risk_per_trade_percent = recommended['position_size']
@@ -324,11 +324,11 @@ class AutonomousTradingBrain:
                 self.logger.info(f"Applied optimized confidence: {new_confidence:.0%}")
             
             if 'stop_loss_percent' in params:
-                settings.stop_loss = params['stop_loss_percent']
+                settings.stop_loss_pct = params['stop_loss_percent']
                 self.logger.info(f"Applied optimized stop loss: {params['stop_loss_percent']}%")
             
             if 'take_profit_percent' in params:
-                settings.take_profit = params['take_profit_percent']
+                settings.take_profit_pct = params['take_profit_percent']
                 self.logger.info(f"Applied optimized take profit: {params['take_profit_percent']}%")
             
             if 'position_size_percent' in params:
