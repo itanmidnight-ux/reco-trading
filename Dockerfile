@@ -43,7 +43,7 @@ ENV PYTHONUNBUFFERED=1 \
     ENABLE_NBEATS=true \
     ENABLE_ADVANCED_META_LEARNING=true \
     ENABLE_REINFORCEMENT_LEARNING=true \
-    DATABASE_URL=sqlite:////app/data/reco_trading.db
+    DATABASE_URL=sqlite+aiosqlite:////app/data/reco_trading.db
 
 WORKDIR /app
 

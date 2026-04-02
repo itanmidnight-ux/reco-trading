@@ -241,9 +241,21 @@ def create_all_tables():
     dsn = settings.database_url or settings.postgres_dsn
     
     if dsn:
-        engine = create_engine(dsn.replace("+asyncpg", "").replace("postgresql", "postgresql+psycopg2"))
-        Base.metadata.create_all(engine)
-        print("✅ All new tables created successfully")
+        # Handle both async and sync PostgreSQL drivers
+        dsn_fixed = dsn.replace("+asyncpg", "").replace("postgresql://", "postgresql+psycopg2://").replace("postgresql+asyncpg://", "postgresql+psycopg2://")
+        
+        # Fallback to SQLite if psycopg2 is not available
+        try:
+            import psycopg2
+            engine = create_engine(dsn_fixed)
+            Base.metadata.create_all(engine)
+            print("✅ All new tables created successfully with PostgreSQL")
+        except ImportError:
+            # Fallback to SQLite
+            sqlite_dsn = "sqlite:///./data/reco_trading.db"
+            engine = create_engine(sqlite_dsn)
+            Base.metadata.create_all(engine)
+            print("✅ All new tables created successfully with SQLite (psycopg2 not available)")
 
 
 __all__ = [

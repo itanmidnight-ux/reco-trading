@@ -47,6 +47,8 @@ async def _verify_database_connection(settings: Settings) -> str:
         dsn = settings.mysql_dsn
     elif settings.database_url:
         dsn = settings.database_url
+        if dsn.startswith("sqlite://"):
+            dsn = dsn.replace("sqlite://", "sqlite+aiosqlite://", 1)
     
     if not dsn:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

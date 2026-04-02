@@ -97,14 +97,39 @@ for pkg in ccxt asyncpg sqlalchemy httpx; do
 done
 
 if [[ ${#MISSING_DEPS[@]} -gt 0 ]]; then
-  log_error "Faltan dependencias: ${MISSING_DEPS[*]}"
+  log_warn "Dependencias faltantes: ${MISSING_DEPS[*]}"
   echo ""
-  echo "Ejecuta:"
-  echo "  ./install.sh"
-  echo ""
-  echo "O instala manualmente:"
-  echo "  pip install ${MISSING_DEPS[*]}"
-  exit 1
+  log_info "Instalando dependencias automáticamente..."
+  
+  # Upgrade pip first
+  ${ROOT_DIR}/.venv/bin/pip install --upgrade pip -q 2>/dev/null || true
+  
+  # Install missing packages
+  for dep in "${MISSING_DEPS[@]}"; do
+    ${ROOT_DIR}/.venv/bin/pip install "$dep" -q 2>/dev/null || true
+    log_success "Instalado: $dep"
+  done
+  
+  # Also try requirements.txt
+  if [[ -f "${ROOT_DIR}/requirements.txt" ]]; then
+    ${ROOT_DIR}/.venv/bin/pip install -r "${ROOT_DIR}/requirements.txt" -q --ignore-installed 2>/dev/null || true
+  fi
+  
+  # Verify again
+  STILL_MISSING=()
+  for pkg in ccxt asyncpg sqlalchemy httpx; do
+    if ! $PYTHON_BIN -c "import $pkg" 2>/dev/null; then
+      STILL_MISSING+=("$pkg")
+    fi
+  done
+  
+  if [[ ${#STILL_MISSING[@]} -gt 0 ]]; then
+    log_error "No se pudieron instalar: ${STILL_MISSING[*]}"
+    echo ""
+    echo "Ejecuta:"
+    echo "  ./install-linux.sh"
+    exit 1
+  fi
 fi
 
 echo -e "${GREEN}✓ Dependencias OK${NC}"
@@ -258,7 +283,7 @@ if [[ "$DB_STATUS" == "unknown" ]]; then
     log_warn "Sin base de datos configurada"
     echo "  El programa usará SQLite automáticamente"
     DB_STATUS="sqlite_fallback"
-    export DATABASE_URL="sqlite:///${ROOT_DIR}/data/reco_trading.db"
+    export DATABASE_URL="sqlite+aiosqlite:///${ROOT_DIR}/data/reco_trading.db"
     mkdir -p "${ROOT_DIR}/data"
   fi
 fi
