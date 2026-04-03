@@ -86,6 +86,13 @@ class Settings(BaseSettings):
     min_expected_reward_risk: float = 1.8
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 4.0
+    auto_stop_enabled: bool = True
+    auto_stop_break_even_trigger_pct: float = 0.008
+    auto_stop_break_even_buffer_pct: float = 0.0005
+    auto_stop_trailing_activate_pct: float = 0.012
+    auto_stop_trailing_delta_low_vol_pct: float = 0.006
+    auto_stop_trailing_delta_high_vol_pct: float = 0.010
+    auto_stop_max_duration_minutes: int = 180
 
     # =========================
     # COOLDOWNS

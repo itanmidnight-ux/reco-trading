@@ -564,6 +564,17 @@ def create_app() -> Flask:
                     _global_bot_instance.emergency_stop_active = True
                 logger.warning("Emergency stop activated via web dashboard")
                 return jsonify({"success": True, "message": "Emergency stop activated"})
+            elif action in {'force_close', 'stop_trade'}:
+                state_manager = getattr(_global_bot_instance, "state_manager", None)
+                if state_manager and hasattr(state_manager, "request_force_close"):
+                    state_manager.request_force_close()
+                    logger.warning("Manual stop trade requested via web dashboard")
+                    return jsonify({"success": True, "message": "Stop Trade request sent"})
+                if hasattr(_global_bot_instance, "force_close_position"):
+                    _run_async(_global_bot_instance.force_close_position())
+                    logger.warning("Manual stop trade executed via web dashboard")
+                    return jsonify({"success": True, "message": "Stop Trade executed"})
+                return jsonify({"success": False, "error": "Stop Trade not available"})
             else:
                 return jsonify({"success": False, "error": "Unknown action"})
         except Exception as e:

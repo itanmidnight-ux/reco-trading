@@ -275,8 +275,8 @@ class DashboardTab(QWidget):
         self.resume_btn = AnimatedButton("Resume Bot")
         self.emergency_btn = AnimatedButton("Emergency Stop")
         self.emergency_btn.setStyleSheet("QPushButton { background:#ea3943; color:#e6e8ee; }")
-        self.close_active_trade_btn = AnimatedButton("CLOSE ACTIVE TRADE")
-        self.close_active_trade_btn.setStyleSheet("QPushButton { background:#f0b90b; color:#111827; font-weight:700; }")
+        self.close_active_trade_btn = AnimatedButton("STOP TRADE")
+        self.close_active_trade_btn.setStyleSheet("QPushButton { background:#ef4444; color:#ffffff; font-weight:700; }")
         self.close_active_trade_btn.setVisible(False)
 
         layout.addWidget(self.start_btn)

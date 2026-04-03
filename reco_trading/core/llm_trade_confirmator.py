@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+import requests
 
 @dataclass
 class TradeConfirmation:
@@ -44,6 +45,15 @@ class LLMTradeConfirmator:
         self.remote_endpoint = remote_endpoint
         self.remote_model = remote_model
         self.remote_api_key = remote_api_key
+        self._http_session = requests.Session()
+        self.local_timeout_seconds = float(os.getenv("LLM_LOCAL_TIMEOUT_SECONDS", "1.6"))
+        self.remote_timeout_seconds = float(os.getenv("LLM_REMOTE_TIMEOUT_SECONDS", "3.5"))
+        self.local_options = {
+            "temperature": 0,
+            "top_p": 0.9,
+            "num_ctx": int(os.getenv("LLM_LOCAL_NUM_CTX", "256")),
+            "num_predict": int(os.getenv("LLM_LOCAL_NUM_PREDICT", "4")),
+        }
 
     def confirm_trade(
         self,
@@ -176,6 +186,10 @@ class LLMTradeConfirmator:
         self._confirmation_count += 1
         if not confirmed:
             self._rejection_count += 1
+        if self._confirmation_count == 1:
+            self._avg_time_ms = analysis_time
+        else:
+            self._avg_time_ms = ((self._avg_time_ms * (self._confirmation_count - 1)) + analysis_time) / self._confirmation_count
 
         result = TradeConfirmation(
             symbol=symbol,
@@ -213,17 +227,21 @@ class LLMTradeConfirmator:
         default_confirmed: bool,
     ) -> tuple[bool, str]:
         try:
-            import requests
-
             prompt = (
-                f"Symbol={symbol} Side={side} Signal={signal} Confidence={confidence:.2f} "
-                f"RuleScore={score:.2f}. Return only APPROVE or REJECT."
+                f"Trade decision Symbol={symbol} Side={side} Signal={signal} "
+                f"Confidence={confidence:.2f} Score={score:.2f}. "
+                "Return exactly APPROVE or REJECT."
             )
-            payload = {"model": self.local_model, "prompt": prompt, "stream": False}
-            response = requests.post(
+            payload = {
+                "model": self.local_model,
+                "prompt": prompt,
+                "stream": False,
+                "options": self.local_options,
+            }
+            response = self._http_session.post(
                 f"{self.ollama_base_url}/api/generate",
                 json=payload,
-                timeout=4,
+                timeout=self.local_timeout_seconds,
             )
             response.raise_for_status()
             llm_text = str(response.json().get("response", "")).upper()
@@ -246,8 +264,6 @@ class LLMTradeConfirmator:
         default_confirmed: bool,
     ) -> tuple[bool, str]:
         try:
-            import requests
-
             prompt = (
                 f"Symbol={symbol} Side={side} Signal={signal} Confidence={confidence:.2f} "
                 f"RuleScore={score:.2f}. Return only APPROVE or REJECT."
@@ -261,7 +277,12 @@ class LLMTradeConfirmator:
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
             }
-            response = requests.post(self.remote_endpoint, headers=headers, json=payload, timeout=6)
+            response = self._http_session.post(
+                self.remote_endpoint,
+                headers=headers,
+                json=payload,
+                timeout=self.remote_timeout_seconds,
+            )
             response.raise_for_status()
             body = response.json()
             content = ""
@@ -281,11 +302,11 @@ class LLMTradeConfirmator:
 
     @property
     def stats(self) -> dict[str, Any]:
-        total = self._confirmation_count + self._rejection_count
+        total = self._confirmation_count
         return {
             "total_analyzed": total,
-            "confirmed": self._confirmation_count,
+            "confirmed": total - self._rejection_count,
             "rejected": self._rejection_count,
-            "confirmation_rate": (self._confirmation_count / total * 100) if total > 0 else 0,
+            "confirmation_rate": ((total - self._rejection_count) / total * 100) if total > 0 else 0,
             "avg_analysis_time_ms": self._avg_time_ms,
         }
