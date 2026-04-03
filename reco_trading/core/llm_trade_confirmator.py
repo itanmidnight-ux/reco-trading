@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+import requests
 
 @dataclass
 class TradeConfirmation:
@@ -31,9 +31,6 @@ class LLMTradeConfirmator:
         llm_mode: str = "base",
         local_model: str = "qwen2.5:0.5b",
         ollama_base_url: str = "http://localhost:11434",
-        local_timeout_seconds: float = 3.0,
-        remote_timeout_seconds: float = 5.0,
-        keep_alive: str = "10m",
         remote_endpoint: str = "https://api.openai.com/v1/chat/completions",
         remote_model: str = "gpt-4o-mini",
         remote_api_key: str = "",
@@ -45,12 +42,18 @@ class LLMTradeConfirmator:
         self.llm_mode = (llm_mode or "base").lower()
         self.local_model = local_model
         self.ollama_base_url = ollama_base_url.rstrip("/")
-        self.local_timeout_seconds = max(float(local_timeout_seconds), 0.5)
-        self.remote_timeout_seconds = max(float(remote_timeout_seconds), 0.5)
-        self.keep_alive = str(keep_alive or "10m")
         self.remote_endpoint = remote_endpoint
         self.remote_model = remote_model
         self.remote_api_key = remote_api_key
+        self._http_session = requests.Session()
+        self.local_timeout_seconds = float(os.getenv("LLM_LOCAL_TIMEOUT_SECONDS", "1.6"))
+        self.remote_timeout_seconds = float(os.getenv("LLM_REMOTE_TIMEOUT_SECONDS", "3.5"))
+        self.local_options = {
+            "temperature": 0,
+            "top_p": 0.9,
+            "num_ctx": int(os.getenv("LLM_LOCAL_NUM_CTX", "256")),
+            "num_predict": int(os.getenv("LLM_LOCAL_NUM_PREDICT", "4")),
+        }
 
     def confirm_trade(
         self,
@@ -151,8 +154,8 @@ class LLMTradeConfirmator:
             reasons.append(f"Significant daily loss: ${daily_pnl:.2f}")
 
         if self.llm_mode == "base":
-            confirmed = score >= 50
-            reasons.append("LLM_MODE=base (decisión por reglas)")
+            confirmed = True
+            reasons.append("LLM_MODE=base (sin confirmación LLM final)")
         elif self.llm_mode == "llm_remote":
             remote_confirmed, remote_reason = self._remote_confirm(
                 symbol=symbol,
@@ -186,6 +189,10 @@ class LLMTradeConfirmator:
             self._confirmation_count += 1
         else:
             self._rejection_count += 1
+        if self._confirmation_count == 1:
+            self._avg_time_ms = analysis_time
+        else:
+            self._avg_time_ms = ((self._avg_time_ms * (self._confirmation_count - 1)) + analysis_time) / self._confirmation_count
 
         result = TradeConfirmation(
             symbol=symbol,
@@ -223,32 +230,27 @@ class LLMTradeConfirmator:
         default_confirmed: bool,
     ) -> tuple[bool, str]:
         try:
-            import requests
-
             prompt = (
-                f"Symbol={symbol} Side={side} Signal={signal} Confidence={confidence:.2f} "
-                f"RuleScore={score:.2f}. Return JSON only with key decision: "
-                '{"decision":"APPROVE"} or {"decision":"REJECT"}.'
+                f"Trade decision Symbol={symbol} Side={side} Signal={signal} "
+                f"Confidence={confidence:.2f} Score={score:.2f}. "
+                "Return exactly APPROVE or REJECT."
             )
             payload = {
                 "model": self.local_model,
                 "prompt": prompt,
                 "stream": False,
-                "format": "json",
-                "keep_alive": self.keep_alive,
-                "options": {"temperature": 0},
+                "options": self.local_options,
             }
-            response = requests.post(
+            response = self._http_session.post(
                 f"{self.ollama_base_url}/api/generate",
                 json=payload,
                 timeout=self.local_timeout_seconds,
             )
             response.raise_for_status()
-            raw_response = str(response.json().get("response", "")).strip()
-            decision = self._extract_decision(raw_response)
-            if decision == "REJECT":
+            llm_text = str(response.json().get("response", "")).upper()
+            if "REJECT" in llm_text:
                 return False, "LLM local rechazó la operación"
-            if decision == "APPROVE":
+            if "APPROVE" in llm_text:
                 return True, "LLM local aprobó la operación"
             return default_confirmed, "LLM local ambiguo, fallback a reglas"
         except Exception as exc:
@@ -265,8 +267,6 @@ class LLMTradeConfirmator:
         default_confirmed: bool,
     ) -> tuple[bool, str]:
         try:
-            import requests
-
             prompt = (
                 f"Symbol={symbol} Side={side} Signal={signal} Confidence={confidence:.2f} "
                 f"RuleScore={score:.2f}. Return only APPROVE or REJECT."
@@ -280,7 +280,7 @@ class LLMTradeConfirmator:
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.0,
             }
-            response = requests.post(
+            response = self._http_session.post(
                 self.remote_endpoint,
                 headers=headers,
                 json=payload,
@@ -294,46 +294,22 @@ class LLMTradeConfirmator:
                 if choices:
                     content = str(choices[0].get("message", {}).get("content", ""))
             llm_text = content.upper()
-            decision = self._extract_decision(llm_text)
-            if decision == "REJECT":
+            if "REJECT" in llm_text:
                 return False, "LLM remoto rechazó la operación"
-            if decision == "APPROVE":
+            if "APPROVE" in llm_text:
                 return True, "LLM remoto aprobó la operación"
             return default_confirmed, "LLM remoto ambiguo, fallback a reglas"
         except Exception as exc:
             self.logger.warning(f"llm_remote_fallback reason={exc}")
             return default_confirmed, "LLM remoto no disponible, fallback a reglas"
 
-    @staticmethod
-    def _extract_decision(text: str) -> str | None:
-        raw = str(text or "").strip()
-        if not raw:
-            return None
-        try:
-            import json
-
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                candidate = str(parsed.get("decision", "")).strip().upper()
-                if candidate in {"APPROVE", "REJECT"}:
-                    return candidate
-        except Exception:
-            pass
-        normalized = raw.upper()
-        if not normalized:
-            return None
-        match = re.search(r"\b(APPROVE|REJECT)\b", normalized)
-        if not match:
-            return None
-        return match.group(1)
-
     @property
     def stats(self) -> dict[str, Any]:
-        total = self._confirmation_count + self._rejection_count
+        total = self._confirmation_count
         return {
             "total_analyzed": total,
-            "confirmed": self._confirmation_count,
+            "confirmed": total - self._rejection_count,
             "rejected": self._rejection_count,
-            "confirmation_rate": (self._confirmation_count / total * 100) if total > 0 else 0,
+            "confirmation_rate": ((total - self._rejection_count) / total * 100) if total > 0 else 0,
             "avg_analysis_time_ms": self._avg_time_ms,
         }

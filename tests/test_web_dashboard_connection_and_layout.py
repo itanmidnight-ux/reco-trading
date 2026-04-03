@@ -39,6 +39,7 @@ def test_web_dashboard_template_contains_app_like_tabs_and_brand() -> None:
     assert 'data-bs-target="#settings"' in html
     assert 'data-bs-target="#system"' in html
     assert 'data-bs-target="#intel-log"' in html
+    assert 'id="stopTradeBtn"' in html
 
 
 def test_web_dashboard_js_uses_risk_metrics_after_declaration() -> None:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Callable
 from typing import Any
 
 import ccxt
+import websockets
 
 
 # ============================================================
@@ -59,6 +61,9 @@ class BinanceClient:
         self._time_sync_lock = asyncio.Lock()
         self._last_time_sync_monotonic = 0.0
         self._markets_loaded = False
+        self._ticker_cache: dict[str, dict[str, Any]] = {}
+        self._ticker_stream_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._ticker_cache_ttl_seconds = 2.0
 
         # Create exchange immediately in __init__ (proven approach from backup)
         self.exchange = ccxt.binance({
@@ -189,10 +194,26 @@ class BinanceClient:
 
     async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
         """Fetch ticker data for a symbol."""
-        return await self._with_retry(
+        normalized = self._normalize_ws_symbol(symbol)
+        await self._ensure_ticker_stream(normalized)
+
+        cached = self._ticker_cache.get(normalized)
+        if cached:
+            age = time.monotonic() - float(cached.get("_received_monotonic", 0.0))
+            if age <= self._ticker_cache_ttl_seconds:
+                return dict(cached)
+
+        ticker = await self._with_retry(
             self.exchange.fetch_ticker, symbol,
             operation="fetch_ticker"
         )
+        if isinstance(ticker, dict):
+            self._ticker_cache[normalized] = {
+                **ticker,
+                "_received_monotonic": time.monotonic(),
+                "source": "rest_fallback",
+            }
+        return ticker
 
     async def fetch_tickers(self, symbols: list[str] | None = None) -> dict[str, Any]:
         """Fetch ticker data for all or specified symbols."""
@@ -262,6 +283,9 @@ class BinanceClient:
 
     async def close(self) -> None:
         """Close exchange connection."""
+        for task in list(self._ticker_stream_tasks.values()):
+            task.cancel()
+        self._ticker_stream_tasks.clear()
         close_fn = getattr(self.exchange, "close", None)
         if callable(close_fn):
             try:
@@ -318,6 +342,47 @@ class BinanceClient:
     def _is_timestamp_error(exc: Exception) -> bool:
         message = str(exc)
         return "-1021" in message or "outside of the recvwindow" in message.lower()
+
+    @staticmethod
+    def _normalize_ws_symbol(symbol: str) -> str:
+        return str(symbol or "").replace("/", "").replace("-", "").lower()
+
+    async def _ensure_ticker_stream(self, normalized_symbol: str) -> None:
+        if not normalized_symbol:
+            return
+        existing = self._ticker_stream_tasks.get(normalized_symbol)
+        if existing and not existing.done():
+            return
+        task = asyncio.create_task(self._run_ticker_stream(normalized_symbol))
+        self._ticker_stream_tasks[normalized_symbol] = task
+
+    async def _run_ticker_stream(self, normalized_symbol: str) -> None:
+        stream_url = f"wss://stream.binance.com:9443/ws/{normalized_symbol}@bookTicker"
+        reconnect_delay = 1.0
+        while True:
+            try:
+                async with websockets.connect(stream_url, ping_interval=15, ping_timeout=15, close_timeout=5) as ws:
+                    reconnect_delay = 1.0
+                    async for message in ws:
+                        payload = json.loads(message)
+                        bid = float(payload.get("b") or 0.0)
+                        ask = float(payload.get("a") or 0.0)
+                        midpoint = (bid + ask) / 2 if bid > 0 and ask > 0 else max(bid, ask)
+                        self._ticker_cache[normalized_symbol] = {
+                            "symbol": normalized_symbol.upper(),
+                            "bid": bid,
+                            "ask": ask,
+                            "last": midpoint,
+                            "timestamp": int(payload.get("T") or payload.get("E") or time.time() * 1000),
+                            "_received_monotonic": time.monotonic(),
+                            "source": "ws_book_ticker",
+                        }
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.logger.debug("ticker_ws_reconnect symbol=%s error=%s", normalized_symbol, exc)
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, 15.0)
 
     @staticmethod
     def _normalize_secret(value: str | None) -> str:

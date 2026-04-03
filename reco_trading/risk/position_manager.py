@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,7 +42,7 @@ class PositionManager:
         position.peak_price = position.entry_price
         position.partial_tp_triggered = []
         position.safety_orders_triggered = 0
-        position.entry_timestamp_ms = position.last_candle_ts_ms
+        position.entry_timestamp_ms = position.last_candle_ts_ms or int(time.time() * 1000)
         self.positions.append(position)
 
     def check_exit(self, position: Position, current_price: float, *, equity: float = 0.0) -> str | None:

@@ -55,6 +55,23 @@ Plataforma avanzada de trading algorítmico con ejecución multi-módulo, analí
 - Puertos ligados a `127.0.0.1` para reducir superficie de exposición.
 - Flujo listo para túnel Cloudflared sobre dashboard web.
 
+### 5) Optimización de latencia y datos en tiempo real
+- Integración de caché de ticker en tiempo real vía WebSocket de Binance (`bookTicker`) con fallback REST automático.
+- Menor overhead HTTP para precio bid/ask y mejor respuesta de dashboard.
+
+### 6) Control operativo unificado `Stop Trade`
+- Botón **Stop Trade** visible cuando existe una posición abierta en App y Web dashboard.
+- Endpoint web `/api/control/stop_trade` conectado a cierre forzado de posición.
+
+### 7) Perfil automático para `llm_local` (Ollama)
+- Ajuste automático de perfil de baja RAM y filtros mínimos al detectar `LLM_MODE=llm_local`.
+- Confirmación LLM local optimizada para respuestas más rápidas con timeouts y opciones de inferencia compacta.
+
+### 8) Auto Stop profesional (Break-even + Trailing + Time Stop)
+- Break-even automático configurable por porcentaje de beneficio.
+- Trailing Stop adaptativo por régimen de volatilidad (delta distinto en baja/alta volatilidad).
+- Cierre automático por tiempo máximo de operación para evitar exposición extendida.
+
 ---
 
 ## Arquitectura
@@ -205,7 +222,9 @@ Si necesitas exposición controlada, usa reverse proxy/TLS o túnel autenticado.
 - Barras de confianza y visuales de salud del sistema.
 - Diseñado para operación headless en VPS/servidor.
 
----
+### No conecta Ollama en modo local
+- Revisa `OLLAMA_BASE_URL`.
+- Verifica que el modelo exista (`ollama list`).
 
 ## Troubleshooting
 
@@ -226,7 +245,9 @@ Si necesitas exposición controlada, usa reverse proxy/TLS o túnel autenticado.
 docker logs reco-trading --tail 200
 ```
 
----
+```bash
+pytest -q tests/test_web_dashboard_connection_and_layout.py tests/test_web_dashboard_db_and_balance.py
+```
 
 ## Desarrollo y pruebas
 
@@ -244,7 +265,9 @@ bash -n install-linux.sh
 bash -n docker-build.sh
 ```
 
----
+- credenciales reales fuera de repositorio,
+- revisión de riesgos antes de habilitar mainnet,
+- y validación en testnet previo a producción.
 
 ## Nota final
 
@@ -253,4 +276,3 @@ Este proyecto está orientado a operación profesional y evolución continua. Ma
 - credenciales reales fuera de repositorio,
 - revisión de riesgos antes de habilitar mainnet,
 - y validación en testnet previo a producción.
-

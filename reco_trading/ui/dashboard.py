@@ -182,19 +182,6 @@ class TerminalDashboard:
             )
             exit_intel.add_row("latest_event", latest_event_text)
 
-            events = Table(title="Runtime Events (latest)", expand=True, box=ROUNDED)
-            events.add_column("Time", width=10)
-            events.add_column("Level", width=10)
-            events.add_column("Message", overflow="fold")
-            for entry in (snap.logs or [])[-6:]:
-                events.add_row(
-                    str(entry.get("time", "-")),
-                    str(entry.get("level", "-")),
-                    str(entry.get("message", "-"))[:220],
-                )
-            if not (snap.logs or []):
-                events.add_row("-", "-", "No runtime events in snapshot")
-
             footer = Align.center(
                 Text("Press Ctrl+C to stop • Reco Trading TUI Runtime", style="dim white"),
                 vertical="middle",
@@ -216,7 +203,6 @@ class TerminalDashboard:
                 Layout(Panel(signal_table, title="Signal Matrix", border_style="magenta"), ratio=4),
                 Layout(Panel(health, border_style="bright_green"), ratio=3),
                 Layout(Panel(exit_intel, border_style="bright_magenta"), ratio=3),
-                Layout(Panel(events, border_style="grey37"), ratio=3),
             )
             return Group(layout)
         except Exception as exc:  # noqa: BLE001
