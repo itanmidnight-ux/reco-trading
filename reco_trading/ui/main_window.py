@@ -12,12 +12,10 @@ from reco_trading.ui.tabs.dashboard_tab import DashboardTab
 from reco_trading.ui.tabs.logs_tab import LogsTab
 from reco_trading.ui.tabs.intel_log_tab import IntelLogTab
 from reco_trading.ui.tabs.market_tab import MarketTab
-from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
 from reco_trading.ui.tabs.strategy_tab import StrategyTab
 from reco_trading.ui.tabs.trades_tab import TradesTab
-from reco_trading.ui.tabs.market_analysis_tab import MarketAnalysisTab
 from reco_trading.ui.tabs.ai_monitor_tab import AIMonitorTab
 
 
@@ -42,10 +40,8 @@ class MainWindow(QMainWindow):
         self.strategy_tab = StrategyTab()
         self.logs_tab = LogsTab(state_manager=state_manager)
         self.intel_log_tab = IntelLogTab()
-        self.risk_tab = RiskTab()
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
-        self.market_analysis_tab = MarketAnalysisTab()
         self.ai_monitor_tab = AIMonitorTab()
 
         tabs.addTab(self.dashboard_tab, "Dashboard")
@@ -55,10 +51,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.strategy_tab, "Strategy")
         tabs.addTab(self.logs_tab, "Logs")
         tabs.addTab(self.intel_log_tab, "Intel Log")
-        tabs.addTab(self.risk_tab, "Risk")
         tabs.addTab(self.settings_tab, "Settings")
         tabs.addTab(self.system_tab, "System")
-        tabs.addTab(self.market_analysis_tab, "Market Analysis")
         tabs.addTab(self.ai_monitor_tab, "AI Monitor")
         self.setCentralWidget(tabs)
         self.tabs = tabs
@@ -70,7 +64,6 @@ class MainWindow(QMainWindow):
         state_manager.log_added.connect(self.logs_tab.add_log)
         state_manager.notification.connect(self._notify)
         self.settings_tab.settings_changed.connect(self._on_ui_settings)
-        self.market_analysis_tab.analysis_requested.connect(self._on_analysis_request)
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self._refresh_from_snapshot)
@@ -94,10 +87,8 @@ class MainWindow(QMainWindow):
             self.strategy_tab,
             self.logs_tab,
             self.intel_log_tab,
-            self.risk_tab,
             self.settings_tab,
             self.system_tab,
-            self.market_analysis_tab,
         ) if full_refresh_due else (
             self.dashboard_tab,
             self.trades_tab,
@@ -126,9 +117,6 @@ class MainWindow(QMainWindow):
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
         self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
         self.state_manager.push_runtime_settings(settings)
-
-    def _on_analysis_request(self, action: str) -> None:
-        self.state_manager.request_analysis(action)
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)

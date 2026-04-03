@@ -40,6 +40,62 @@ function Upsert-EnvKey {
     $updated | Set-Content -Path $Path -Encoding UTF8
 }
 
+function Test-OllamaModel {
+    param([string]$Model)
+    & ollama show $Model *> $null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Ensure-OllamaService {
+    param([string]$BaseUrl)
+
+    try {
+        Invoke-RestMethod -Uri "$BaseUrl/api/tags" -Method Get -TimeoutSec 3 | Out-Null
+        return $true
+    } catch { }
+
+    Write-Info "Iniciando servicio de Ollama..."
+    try {
+        Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden | Out-Null
+    } catch {
+        return $false
+    }
+
+    for ($i = 0; $i -lt 10; $i++) {
+        Start-Sleep -Seconds 1
+        try {
+            Invoke-RestMethod -Uri "$BaseUrl/api/tags" -Method Get -TimeoutSec 3 | Out-Null
+            return $true
+        } catch { }
+    }
+
+    return $false
+}
+
+function Test-Command {
+    param([string]$Name)
+    return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Install-WithFallback {
+    param(
+        [string[]]$Commands,
+        [string]$SuccessMessage,
+        [string]$WarnMessage
+    )
+    foreach ($cmd in $Commands) {
+        try {
+            Invoke-Expression $cmd | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                if ($SuccessMessage) { Write-Success $SuccessMessage }
+                return $true
+            }
+        } catch { }
+    }
+    if ($WarnMessage) { Write-Warn $WarnMessage }
+    return $false
+}
+
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  Reco-Trading Windows Installer v4.0" -ForegroundColor Cyan
@@ -57,6 +113,17 @@ Write-Host "  Admin: $(if($IsAdmin){'SI'}else{'NO'})"
 
 $OSVersion = [System.Environment]::OSVersion.Version
 Write-Host "  Windows: $($OSVersion.Major).$($OSVersion.Minor)"
+
+try {
+    $totalRamMb = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1MB)
+    $disk = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'"
+    $freeDiskGb = [math]::Round($disk.FreeSpace / 1GB, 1)
+    Write-Host "  RAM: $totalRamMb MB"
+    Write-Host "  Disco libre (C:): $freeDiskGb GB"
+    if ($totalRamMb -lt 2048) { Write-Warn "RAM baja detectada; se recomienda modo base." }
+} catch {
+    Write-Warn "No se pudieron detectar todos los recursos del sistema"
+}
 
 # ============================================
 # CHECK PYTHON
@@ -112,10 +179,10 @@ try {
 }
 
 # Upgrade pip
-& $PythonCmd -m pip install --upgrade pip -q 2>&1 | Out-Null
-if ($LASTEXITCODE -eq 0) {
-    Write-Success "pip actualizado"
-}
+Install-WithFallback -Commands @(
+    "& $PythonCmd -m pip install --upgrade pip -q",
+    "& $PythonCmd -m pip install --upgrade pip"
+) -SuccessMessage "pip actualizado" -WarnMessage "No se pudo actualizar pip" | Out-Null
 
 # ============================================
 # VIRTUAL ENVIRONMENT
@@ -159,11 +226,17 @@ Write-Success "Entorno virtual creado"
 Write-Info "Instalando dependencias de Python..."
 
 if (Test-Path "requirements.txt") {
-    pip install -r requirements.txt -q 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
-        Write-Success "Dependencias instaladas"
-    } else {
-        Write-Warn "Algunas dependencias no se instalaron correctamente"
+    $depsInstalled = Install-WithFallback -Commands @(
+        "pip install -r requirements.txt -q",
+        "python -m pip install -r requirements.txt -q",
+        "python -m pip install -r requirements.txt"
+    ) -SuccessMessage "Dependencias instaladas" -WarnMessage "Algunas dependencias no se instalaron correctamente"
+    if (-not $depsInstalled) {
+        Write-Info "Intentando instalar dependencias críticas..."
+        Install-WithFallback -Commands @(
+            "pip install ccxt pandas numpy sqlalchemy flask python-dotenv",
+            "python -m pip install ccxt pandas numpy sqlalchemy flask python-dotenv"
+        ) -SuccessMessage "Dependencias críticas instaladas" -WarnMessage "No se pudieron instalar dependencias críticas"
     }
 } else {
     Write-Warn "requirements.txt no encontrado"
@@ -210,6 +283,15 @@ switch ($LLMChoice) {
             $winget = Get-Command winget -ErrorAction SilentlyContinue
             if ($winget) {
                 winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements | Out-Null
+            } else {
+                Write-Info "winget no disponible, intentando instalar Ollama con instalador oficial..."
+                try {
+                    $tmpMsi = Join-Path $env:TEMP "ollama-installer.msi"
+                    Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile $tmpMsi -UseBasicParsing
+                    Start-Process -FilePath $tmpMsi -ArgumentList "/quiet" -Wait
+                } catch {
+                    Write-Warn "No se pudo ejecutar instalador alternativo de Ollama"
+                }
             }
         }
 
@@ -217,12 +299,17 @@ switch ($LLMChoice) {
         if (-not $ollama) {
             Write-Warn "No se pudo instalar/detectar Ollama. Se cambiará a modo base."
             $LLMMode = "base"
+        } elseif (-not (Ensure-OllamaService -BaseUrl $OllamaBaseUrl)) {
+            Write-Warn "Ollama está instalado pero su servicio no respondió en $OllamaBaseUrl. Se cambiará a modo base."
+            $LLMMode = "base"
         } else {
-            $hasModel = (& ollama list 2>$null) -match [regex]::Escape($LLMLocalModel)
+            $hasModel = Test-OllamaModel -Model $LLMLocalModel
             if (-not $hasModel) {
                 Write-Info "Descargando modelo $LLMLocalModel..."
                 & ollama pull $LLMLocalModel
-                if ($LASTEXITCODE -ne 0) {
+                if ($LASTEXITCODE -eq 0 -or (Test-OllamaModel -Model $LLMLocalModel)) {
+                    Write-Success "Modelo $LLMLocalModel disponible"
+                } else {
                     Write-Warn "No se pudo descargar $LLMLocalModel. Se cambiará a modo base."
                     $LLMMode = "base"
                 }
@@ -473,6 +560,17 @@ if exist .env (
 Set-Content -Path "scripts\lib\runtime_env.bat" -Value $runtimeBat -Encoding UTF8
 
 Write-Success "Estructura de directorios creada"
+
+if (-not (Test-Path "run-windows.bat")) {
+$runner = @"
+@echo off
+cd /d %~dp0
+call .venv\Scripts\activate.bat
+python main.py
+"@
+Set-Content -Path "run-windows.bat" -Value $runner -Encoding ASCII
+Write-Success "run-windows.bat generado"
+}
 
 # ============================================
 # VERIFY

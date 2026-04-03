@@ -103,6 +103,10 @@ if [[ -f /etc/os-release ]]; then
             SYSTEM_TYPE="alpine"
             SYSTEM_NAME="${PRETTY_NAME:-Alpine}"
             ;;
+        *suse*|opensuse*)
+            SYSTEM_TYPE="suse"
+            SYSTEM_NAME="${PRETTY_NAME:-openSUSE/SUSE}"
+            ;;
     esac
 fi
 
@@ -241,6 +245,9 @@ install_package() {
         alpine)
             ${RUN_CMD} apk add "$pkg" 2>/dev/null || handle_warning "No se pudo instalar $pkg"
             ;;
+        suse)
+            ${RUN_CMD} zypper --non-interactive install "$pkg" 2>/dev/null || handle_warning "No se pudo instalar $pkg"
+            ;;
         pi)
             ${RUN_CMD} apt-get update -qq 2>/dev/null
             ${RUN_CMD} apt-get install -y -qq "$pkg" 2>/dev/null || handle_warning "No se pudo instalar $pkg"
@@ -335,6 +342,30 @@ case "$REPLY" in
         ;;
 esac
 
+check_ollama_model() {
+    local model="$1"
+    ollama show "$model" >/dev/null 2>&1
+}
+
+ensure_ollama_service() {
+    if curl -fsS "${OLLAMA_BASE_URL}/api/tags" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    log_info "Iniciando servicio de Ollama..."
+    if command -v systemctl >/dev/null 2>&1; then
+        ${RUN_CMD} systemctl start ollama >/dev/null 2>&1 || true
+        sleep 2
+    fi
+
+    if ! curl -fsS "${OLLAMA_BASE_URL}/api/tags" >/dev/null 2>&1; then
+        nohup ollama serve >/tmp/reco-ollama-serve.log 2>&1 &
+        sleep 2
+    fi
+
+    curl -fsS "${OLLAMA_BASE_URL}/api/tags" >/dev/null 2>&1
+}
+
 if [[ "${LLM_MODE}" == "llm_local" ]]; then
     log_info "Configurando Ollama (idempotente)..."
     if command -v ollama >/dev/null 2>&1; then
@@ -362,11 +393,23 @@ if [[ "${LLM_MODE}" == "llm_local" ]]; then
     fi
 
     if command -v ollama >/dev/null 2>&1; then
-        if ollama list 2>/dev/null | awk '{print $1}' | grep -Fxq "${LLM_LOCAL_MODEL}"; then
-            log_success "Modelo ${LLM_LOCAL_MODEL} ya descargado"
+        if ensure_ollama_service; then
+            if check_ollama_model "${LLM_LOCAL_MODEL}"; then
+                log_success "Modelo ${LLM_LOCAL_MODEL} ya descargado"
+            else
+                log_info "Descargando modelo ${LLM_LOCAL_MODEL}..."
+                if ollama pull "${LLM_LOCAL_MODEL}" >/dev/null 2>&1; then
+                    log_success "Modelo ${LLM_LOCAL_MODEL} descargado"
+                elif check_ollama_model "${LLM_LOCAL_MODEL}"; then
+                    log_success "Modelo ${LLM_LOCAL_MODEL} ya descargado"
+                else
+                    handle_warning "No se pudo descargar ${LLM_LOCAL_MODEL}; verifica conexión o espacio en disco"
+                    LLM_MODE="base"
+                fi
+            fi
         else
-            log_info "Descargando modelo ${LLM_LOCAL_MODEL}..."
-            ollama pull "${LLM_LOCAL_MODEL}" 2>/dev/null || handle_warning "No se pudo descargar ${LLM_LOCAL_MODEL}"
+            handle_warning "Ollama instalado, pero el servicio no respondió en ${OLLAMA_BASE_URL}; se usará modo base"
+            LLM_MODE="base"
         fi
     else
         handle_warning "Ollama no disponible; se mantendrá modo base"

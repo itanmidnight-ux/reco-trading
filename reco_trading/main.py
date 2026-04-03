@@ -174,8 +174,8 @@ def run() -> None:
     state_manager = None
     bot_thread = None
 
-    # Prevent terminal dashboard rendering when GUI/Web dashboard is selected.
-    os.environ["BOT_TERMINAL_DASHBOARD"] = "1" if dashboard_type == "none" else "0"
+    # Terminal dashboard must always run regardless of selected dashboard mode.
+    os.environ["BOT_TERMINAL_DASHBOARD"] = "1"
     
     # Create state manager for App dashboard
     if dashboard_type == 'app':
