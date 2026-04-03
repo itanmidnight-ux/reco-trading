@@ -15,6 +15,30 @@ function Write-Info { param($Msg) Write-Host "[INFO] $Msg" -ForegroundColor Cyan
 function Write-Success { param($Msg) Write-Host "[OK] $Msg" -ForegroundColor Green }
 function Write-Warn { param($Msg); Write-Host "[WARN] $Msg" -ForegroundColor Yellow; $Script:WarnCount++ }
 function Write-Error { param($Msg); Write-Host "[ERROR] $Msg" -ForegroundColor Red; $Script:ErrorCount++ }
+function Upsert-EnvKey {
+    param(
+        [string]$Path,
+        [string]$Key,
+        [string]$Value
+    )
+    if (-not (Test-Path $Path)) {
+        "$Key=$Value" | Set-Content -Path $Path -Encoding UTF8
+        return
+    }
+    $lines = Get-Content -Path $Path
+    $found = $false
+    $pattern = '^' + [regex]::Escape($Key) + '='
+    $updated = foreach ($line in $lines) {
+        if ($line -match $pattern) {
+            $found = $true
+            "$Key=$Value"
+        } else {
+            $line
+        }
+    }
+    if (-not $found) { $updated += "$Key=$Value" }
+    $updated | Set-Content -Path $Path -Encoding UTF8
+}
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
@@ -143,6 +167,80 @@ if (Test-Path "requirements.txt") {
     }
 } else {
     Write-Warn "requirements.txt no encontrado"
+}
+
+# ============================================
+# LLM MODE SELECTION
+# ============================================
+
+$LLMMode = "base"
+$LLMLocalModel = "qwen2.5:0.5b"
+$OllamaBaseUrl = "http://localhost:11434"
+$LLMRemoteEndpoint = "https://api.openai.com/v1/chat/completions"
+$LLMRemoteModel = "gpt-4o-mini"
+$LLMRemoteApiKey = ""
+$DashboardAuthEnabled = "true"
+$DashboardAuthMode = "token"
+$DashboardUsername = "admin"
+$DashboardPassword = "admin"
+$DashboardApiToken = ""
+
+if (Test-Path ".env") {
+    $existingToken = (Select-String -Path ".env" -Pattern "^DASHBOARD_API_TOKEN=" -SimpleMatch:$false | Select-Object -First 1)
+    if ($existingToken) {
+        $DashboardApiToken = ($existingToken.Line -split "=", 2)[1]
+    }
+}
+if (-not $DashboardApiToken) {
+    $DashboardApiToken = [guid]::NewGuid().ToString("N")
+}
+
+Write-Info "Selecciona modo de decisión LLM..."
+Write-Host "  1) base (sin LLM para decisión final)"
+Write-Host "  2) llm_local (Ollama + $LLMLocalModel)"
+Write-Host "  3) llm_remote (API externa)"
+$LLMChoice = if ($NoConfirm) { "1" } else { Read-Host "Elige opción (1/2/3)" }
+
+switch ($LLMChoice) {
+    "2" {
+        $LLMMode = "llm_local"
+        $ollama = Get-Command ollama -ErrorAction SilentlyContinue
+        if (-not $ollama) {
+            Write-Info "Ollama no detectado. Intentando instalar con winget..."
+            $winget = Get-Command winget -ErrorAction SilentlyContinue
+            if ($winget) {
+                winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements | Out-Null
+            }
+        }
+
+        $ollama = Get-Command ollama -ErrorAction SilentlyContinue
+        if (-not $ollama) {
+            Write-Warn "No se pudo instalar/detectar Ollama. Se cambiará a modo base."
+            $LLMMode = "base"
+        } else {
+            $hasModel = (& ollama list 2>$null) -match [regex]::Escape($LLMLocalModel)
+            if (-not $hasModel) {
+                Write-Info "Descargando modelo $LLMLocalModel..."
+                & ollama pull $LLMLocalModel
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Warn "No se pudo descargar $LLMLocalModel. Se cambiará a modo base."
+                    $LLMMode = "base"
+                }
+            } else {
+                Write-Success "Modelo $LLMLocalModel ya descargado"
+            }
+        }
+    }
+    "3" {
+        $LLMMode = "llm_remote"
+        $inputEndpoint = Read-Host "Endpoint API remota [$LLMRemoteEndpoint]"
+        if ($inputEndpoint) { $LLMRemoteEndpoint = $inputEndpoint }
+        $inputModel = Read-Host "Modelo remoto [$LLMRemoteModel]"
+        if ($inputModel) { $LLMRemoteModel = $inputModel }
+        $inputApiKey = Read-Host "API Key remota (opcional)"
+        if ($inputApiKey) { $LLMRemoteApiKey = $inputApiKey }
+    }
+    default { $LLMMode = "base" }
 }
 
 # ============================================
@@ -315,6 +413,21 @@ ENABLE_ADVANCED_META_LEARNING=true
 ENABLE_REINFORCEMENT_LEARNING=true
 DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
+
+# LLM Mode
+LLM_MODE=$LLMMode
+LLM_LOCAL_MODEL=$LLMLocalModel
+OLLAMA_BASE_URL=$OllamaBaseUrl
+LLM_REMOTE_ENDPOINT=$LLMRemoteEndpoint
+LLM_REMOTE_MODEL=$LLMRemoteModel
+LLM_REMOTE_API_KEY=$LLMRemoteApiKey
+
+# Dashboard Security
+DASHBOARD_AUTH_ENABLED=$DashboardAuthEnabled
+DASHBOARD_AUTH_MODE=$DashboardAuthMode
+DASHBOARD_USERNAME=$DashboardUsername
+DASHBOARD_PASSWORD=$DashboardPassword
+DASHBOARD_API_TOKEN=$DashboardApiToken
 "@
     
     $envContent | Set-Content -Path ".env" -Encoding UTF8
@@ -324,6 +437,21 @@ ONCHAIN_ANALYSIS=true
     } else {
         Write-Success "$DBType configurado"
     }
+}
+
+if (Test-Path ".env") {
+    Upsert-EnvKey -Path ".env" -Key "LLM_MODE" -Value $LLMMode
+    Upsert-EnvKey -Path ".env" -Key "LLM_LOCAL_MODEL" -Value $LLMLocalModel
+    Upsert-EnvKey -Path ".env" -Key "OLLAMA_BASE_URL" -Value $OllamaBaseUrl
+    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_ENDPOINT" -Value $LLMRemoteEndpoint
+    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_MODEL" -Value $LLMRemoteModel
+    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_API_KEY" -Value $LLMRemoteApiKey
+    Upsert-EnvKey -Path ".env" -Key "DASHBOARD_AUTH_ENABLED" -Value $DashboardAuthEnabled
+    Upsert-EnvKey -Path ".env" -Key "DASHBOARD_AUTH_MODE" -Value $DashboardAuthMode
+    Upsert-EnvKey -Path ".env" -Key "DASHBOARD_USERNAME" -Value $DashboardUsername
+    Upsert-EnvKey -Path ".env" -Key "DASHBOARD_PASSWORD" -Value $DashboardPassword
+    Upsert-EnvKey -Path ".env" -Key "DASHBOARD_API_TOKEN" -Value $DashboardApiToken
+    Write-Success "Variables LLM actualizadas en .env"
 }
 
 # ============================================

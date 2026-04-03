@@ -39,7 +39,13 @@ def get_bot_instance() -> BotEngine | None:
 
 def _run_bot(settings: Settings, state_manager: object | None) -> None:
     """Run the bot in a separate thread."""
-    asyncio.run(BotEngine(settings, state_manager=state_manager).run())
+    global _bot_instance
+    bot = BotEngine(settings, state_manager=state_manager)
+    _bot_instance = bot
+    try:
+        asyncio.run(bot.run())
+    finally:
+        _bot_instance = None
 
 
 async def _verify_database_connection(settings: Settings) -> str:

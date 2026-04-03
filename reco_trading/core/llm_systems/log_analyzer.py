@@ -49,12 +49,16 @@ class LLMLogAnalyzer:
 
     def __init__(self, docs_dir: str | None = None) -> None:
         self.logger = logging.getLogger(__name__)
-        self.docs_dir = docs_dir or os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "docs"
+        project_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
+        self.docs_dir = docs_dir or os.path.join(project_root, "docs")
         self.analisis_path = os.path.join(self.docs_dir, "analisis.txt")
         self._error_counter = 0
         self._last_cleanup = datetime.now(timezone.utc)
+        existing_errors = self._read_existing_errors()
+        if existing_errors:
+            self._error_counter = max((e["number"] for e in existing_errors), default=0)
 
     def _ensure_docs_dir(self) -> None:
         os.makedirs(self.docs_dir, exist_ok=True)
@@ -102,6 +106,7 @@ class LLMLogAnalyzer:
     def analyze_logs(self, logs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Analyze log entries and extract errors."""
         existing_errors = self._read_existing_errors()
+        self._error_counter = max((e["number"] for e in existing_errors), default=0)
         existing_descriptions = {e["description"] for e in existing_errors}
         new_errors = []
 

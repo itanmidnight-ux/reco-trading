@@ -4,8 +4,108 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${ROOT_DIR}"
 
+RUNTIME_ENV_LIB="${ROOT_DIR}/scripts/lib/runtime_env.sh"
+ensure_runtime_env_lib_exists() {
+  if [[ -f "${RUNTIME_ENV_LIB}" ]]; then
+    return 0
+  fi
+
+  mkdir -p "$(dirname "${RUNTIME_ENV_LIB}")"
+  cat > "${RUNTIME_ENV_LIB}" <<'RUNTIME_LIB'
+#!/usr/bin/env bash
+
+load_dotenv_file() {
+  local dotenv_file="${1:-.env}"
+  if [[ -f "${dotenv_file}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "${dotenv_file}"
+    set +a
+  fi
+}
+
+upsert_env_var() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  touch "${env_file}"
+  if command -v awk >/dev/null 2>&1; then
+    awk -v k="$key" -v v="$value" '
+      BEGIN { done=0 }
+      $0 ~ ("^" k "=") { print k "=" v; done=1; next }
+      { print }
+      END { if (done==0) print k "=" v }
+    ' "${env_file}" > "${env_file}.tmp" && mv "${env_file}.tmp" "${env_file}"
+  else
+    if grep -qE "^${key}=" "${env_file}" 2>/dev/null; then
+      sed "s|^${key}=.*|${key}=${value}|" "${env_file}" > "${env_file}.tmp"
+      mv "${env_file}.tmp" "${env_file}"
+    else
+      printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
+    fi
+  fi
+}
+
+build_postgres_dsn_from_config() {
+  local pg_user="${POSTGRES_USER:-${DB_USER:-postgres}}"
+  local pg_pass="${POSTGRES_PASSWORD:-${DB_PASSWORD:-postgres}}"
+  local pg_host="${POSTGRES_HOST:-${DB_HOST:-localhost}}"
+  local pg_port="${POSTGRES_PORT:-${DB_PORT:-5432}}"
+  local pg_db="${POSTGRES_DB:-${DB_NAME:-reco_trading}}"
+  local dsn="postgresql+asyncpg://${pg_user}:${pg_pass}@${pg_host}:${pg_port}/${pg_db}"
+  export POSTGRES_DSN="${dsn}"
+}
+RUNTIME_LIB
+  chmod +x "${RUNTIME_ENV_LIB}"
+}
+
+ensure_runtime_env_lib_exists
 # shellcheck disable=SC1091
-source "${ROOT_DIR}/scripts/lib/runtime_env.sh"
+source "${RUNTIME_ENV_LIB}"
+
+load_dotenv_file() {
+  local dotenv_file="$1"
+  if [[ ! -f "${dotenv_file}" ]]; then
+    return 0
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  source "${dotenv_file}"
+  set +a
+}
+
+upsert_env_var() {
+  local env_file="$1"
+  local key="$2"
+  local value="$3"
+  touch "${env_file}"
+  if command -v awk >/dev/null 2>&1; then
+    awk -v k="${key}" -v v="${value}" '
+      BEGIN { done=0 }
+      $0 ~ ("^" k "=") { print k "=" v; done=1; next }
+      { print }
+      END { if (done==0) print k "=" v }
+    ' "${env_file}" > "${env_file}.tmp" && mv "${env_file}.tmp" "${env_file}"
+  else
+    if grep -qE "^${key}=" "${env_file}" 2>/dev/null; then
+      sed "s|^${key}=.*|${key}=${value}|" "${env_file}" > "${env_file}.tmp"
+      mv "${env_file}.tmp" "${env_file}"
+    else
+      printf '%s=%s\n' "${key}" "${value}" >> "${env_file}"
+    fi
+  fi
+}
+
+build_postgres_dsn_from_config() {
+  local pg_user="${POSTGRES_USER:-${DB_USER:-postgres}}"
+  local pg_pass="${POSTGRES_PASSWORD:-${DB_PASSWORD:-postgres}}"
+  local pg_host="${POSTGRES_HOST:-${DB_HOST:-localhost}}"
+  local pg_port="${POSTGRES_PORT:-${DB_PORT:-5432}}"
+  local pg_db="${POSTGRES_DB:-${DB_NAME:-reco_trading}}"
+  local dsn="postgresql+asyncpg://${pg_user}:${pg_pass}@${pg_host}:${pg_port}/${pg_db}"
+  export POSTGRES_DSN="${dsn}"
+  upsert_env_var ".env" "POSTGRES_DSN" "${dsn}"
+}
 
 if [[ ! -f config/database.env ]]; then
   cat > config/database.env <<'ENV_TEMPLATE'

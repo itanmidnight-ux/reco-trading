@@ -4,9 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from rich.console import Console, Group
+from rich.align import Align
+from rich.box import ROUNDED, SIMPLE_HEAVY
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 
 @dataclass
@@ -46,6 +49,7 @@ class DashboardSnapshot:
     exit_intelligence_reason: str | None = None
     exit_intelligence_codes: list[str] = field(default_factory=list)
     exit_intelligence_events: list[dict[str, Any]] = field(default_factory=list)
+    logs: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DashboardSnapshot":
@@ -85,11 +89,12 @@ class DashboardSnapshot:
             exit_intelligence_reason=_to_text(data.get("exit_intelligence_reason")),
             exit_intelligence_codes=[str(item) for item in (data.get("exit_intelligence_codes") or [])],
             exit_intelligence_events=[dict(item) for item in (data.get("exit_intelligence_log") or []) if isinstance(item, Mapping)],
+            logs=[dict(item) for item in (data.get("logs") or []) if isinstance(item, Mapping)],
         )
 
 
 class TerminalDashboard:
-    """Renderable Rich dashboard component."""
+    """Advanced Rich-based TUI dashboard component."""
 
     def __init__(self) -> None:
         self.console = Console()
@@ -98,30 +103,26 @@ class TerminalDashboard:
         try:
             snap = DashboardSnapshot.from_mapping(snapshot) if isinstance(snapshot, Mapping) else snapshot
 
-            headline = Table.grid(expand=True)
-            headline.add_column(ratio=3)
-            headline.add_column(ratio=2, justify="right")
-            headline.add_row(
-                f"[bold cyan]{snap.pair or '-'}[/bold cyan]  •  [white]{snap.timeframe or '-'}[/white]",
-                f"[bold]{snap.state}[/bold]",
-            )
-            headline.add_row(
-                f"Signal [bold]{snap.signal or '-'}[/bold]  •  Trend [bold]{snap.trend or '-'}[/bold]",
-                f"Confidence [bold green]{_fmt_pct(snap.confidence)}[/bold green]",
-            )
+            header = Table.grid(expand=True)
+            header.add_column(ratio=4)
+            header.add_column(ratio=2, justify="right")
+            title = Text("Reco Trading Terminal TUI", style="bold bright_cyan")
+            subtitle = Text(f"{snap.pair or '-'}  •  {snap.timeframe or '-'}", style="cyan")
+            header.add_row(title, _status_badge(snap.state))
+            header.add_row(subtitle, _signal_badge(snap.signal))
 
             status = Table.grid(expand=True)
             status.add_column()
             status.add_column()
-            status.add_row("Bot Status", snap.state)
+            status.add_row("Bot Status", _status_badge(snap.state))
             status.add_row("Pair", snap.pair or "-")
             status.add_row("Timeframe", snap.timeframe or "-")
-            status.add_row("Price", _fmt_num(snap.price, 2))
+            status.add_row("Price", f"[bold]{_fmt_num(snap.price, 2)}[/bold]")
             status.add_row("Spread", _fmt_num(snap.spread, 6))
-            status.add_row("Trend", snap.trend or "-")
+            status.add_row("Trend", _trend_badge(snap.trend))
             status.add_row("ADX", _fmt_num(snap.adx, 2))
-            status.add_row("Signal", snap.signal or "-")
-            status.add_row("Confidence", _fmt_pct(snap.confidence))
+            status.add_row("Signal", _signal_badge(snap.signal))
+            status.add_row("Confidence", _confidence_bar(snap.confidence))
             status.add_row("Volatility Regime", snap.volatility_regime or "-")
             status.add_row("Order Flow", snap.order_flow or "-")
 
@@ -132,29 +133,30 @@ class TerminalDashboard:
             portfolio.add_row("Equity", f"{_fmt_num(snap.equity, 4)} USDT")
             portfolio.add_row("Operable Capital", f"{_fmt_num(snap.operable_capital_usdt, 4)} USDT")
             portfolio.add_row("Capital Profile", snap.capital_profile or "-")
-            portfolio.add_row("Daily PnL", f"{_fmt_num(snap.daily_pnl, 4)} USDT")
+            pnl_style = "green" if (snap.daily_pnl or 0) >= 0 else "red"
+            portfolio.add_row("Daily PnL", f"[{pnl_style}]{_fmt_num(snap.daily_pnl, 4)} USDT[/{pnl_style}]")
             portfolio.add_row("Trades Today", str(snap.trades_today))
             portfolio.add_row("Win Rate", _fmt_pct(snap.win_rate))
             portfolio.add_row("Last Trade", snap.last_trade or "-")
             portfolio.add_row("Cooldown", snap.cooldown or "-")
 
-            signal_table = Table(title="Signal Engines", expand=True)
+            signal_table = Table(title="Signal Engines", expand=True, box=ROUNDED)
             signal_table.add_column("Engine")
             signal_table.add_column("Signal")
             for key in ["trend", "momentum", "volume", "volatility", "structure", "order_flow"]:
-                signal_table.add_row(key, str(snap.signals.get(key, "-")))
+                signal_table.add_row(key.upper(), _signal_value_style(str(snap.signals.get(key, "-"))))
 
-            health = Table(title="System Health", expand=True)
+            health = Table(title="System Health", expand=True, box=ROUNDED)
             health.add_column("Metric")
             health.add_column("Value")
             health.add_row("API latency p95", f"{_fmt_num(snap.api_latency_p95_ms, 2)} ms")
-            health.add_row("Stale market data", _fmt_pct(snap.stale_market_data_ratio))
+            health.add_row("Stale market data", _confidence_bar(1.0 - (snap.stale_market_data_ratio or 0.0)))
             health.add_row("Reconnections", str(snap.exchange_reconnections))
             health.add_row("Circuit breaker trips", str(snap.circuit_breaker_trips))
             health.add_row("DB", snap.database_status or "-")
             health.add_row("Exchange", snap.exchange_status or "-")
 
-            decision = Table(title="Decision Trace", expand=True)
+            decision = Table(title="Decision Trace", expand=True, box=SIMPLE_HEAVY)
             decision.add_column("Field")
             decision.add_column("Value")
             for factor, score in (snap.decision_trace.get("factor_scores") or {}).items():
@@ -180,15 +182,41 @@ class TerminalDashboard:
             )
             exit_intel.add_row("latest_event", latest_event_text)
 
-            layout = Layout()
+            events = Table(title="Runtime Events (latest)", expand=True, box=ROUNDED)
+            events.add_column("Time", width=10)
+            events.add_column("Level", width=10)
+            events.add_column("Message", overflow="fold")
+            for entry in (snap.logs or [])[-6:]:
+                events.add_row(
+                    str(entry.get("time", "-")),
+                    str(entry.get("level", "-")),
+                    str(entry.get("message", "-"))[:220],
+                )
+            if not (snap.logs or []):
+                events.add_row("-", "-", "No runtime events in snapshot")
+
+            footer = Align.center(
+                Text("Press Ctrl+C to stop • Reco Trading TUI Runtime", style="dim white"),
+                vertical="middle",
+            )
+
+            layout = Layout(name="root")
             layout.split_column(
-                Layout(Panel(headline, title="Executive Snapshot", border_style="bright_blue"), ratio=1),
-                Layout(Panel(status, title="Reco Trading Bot", border_style="cyan"), ratio=2),
-                Layout(Panel(portfolio, title="Portfolio & Risk"), ratio=2),
-                Layout(Panel(signal_table, border_style="magenta"), ratio=3),
-                Layout(Panel(exit_intel, border_style="bright_magenta"), ratio=2),
-                Layout(Panel(health, border_style="green"), ratio=2),
-                Layout(Panel(decision, border_style="yellow"), ratio=3),
+                Layout(Panel(header, border_style="bright_blue"), ratio=1),
+                Layout(name="main", ratio=10),
+                Layout(Panel(footer, border_style="grey37"), ratio=1),
+            )
+            layout["main"].split_row(
+                Layout(Panel(status, title="Market", border_style="cyan"), ratio=3),
+                Layout(name="center", ratio=3),
+                Layout(Panel(decision, title="Decision", border_style="yellow"), ratio=4),
+            )
+            layout["main"]["center"].split_column(
+                Layout(Panel(portfolio, title="Portfolio & Risk", border_style="green"), ratio=3),
+                Layout(Panel(signal_table, title="Signal Matrix", border_style="magenta"), ratio=4),
+                Layout(Panel(health, border_style="bright_green"), ratio=3),
+                Layout(Panel(exit_intel, border_style="bright_magenta"), ratio=3),
+                Layout(Panel(events, border_style="grey37"), ratio=3),
             )
             return Group(layout)
         except Exception as exc:  # noqa: BLE001
@@ -214,3 +242,51 @@ def _fmt_num(value: float | None, digits: int) -> str:
 
 def _fmt_pct(value: float | None) -> str:
     return "-" if value is None else f"{value:.2%}"
+
+
+def _status_badge(state: str | None) -> str:
+    value = (state or "UNKNOWN").upper()
+    if value in {"RUNNING", "READY"}:
+        return f"[bold black on green] {value} [/bold black on green]"
+    if value in {"ERROR", "CRASHED"}:
+        return f"[bold white on red] {value} [/bold white on red]"
+    if value in {"PAUSED", "USER_PAUSED"}:
+        return f"[bold black on yellow] {value} [/bold black on yellow]"
+    return f"[bold black on cyan] {value} [/bold black on cyan]"
+
+
+def _signal_badge(signal: str | None) -> str:
+    value = (signal or "HOLD").upper()
+    if value == "BUY":
+        return "[bold black on green] BUY [/bold black on green]"
+    if value == "SELL":
+        return "[bold white on red] SELL [/bold white on red]"
+    return "[bold black on yellow] HOLD [/bold black on yellow]"
+
+
+def _trend_badge(trend: str | None) -> str:
+    value = (trend or "NEUTRAL").upper()
+    if value == "BULLISH":
+        return "[green]BULLISH[/green]"
+    if value == "BEARISH":
+        return "[red]BEARISH[/red]"
+    return "[yellow]NEUTRAL[/yellow]"
+
+
+def _signal_value_style(value: str) -> str:
+    upper = (value or "").upper()
+    if "BUY" in upper or "BULL" in upper:
+        return f"[green]{value}[/green]"
+    if "SELL" in upper or "BEAR" in upper:
+        return f"[red]{value}[/red]"
+    return f"[yellow]{value}[/yellow]"
+
+
+def _confidence_bar(value: float | None, width: int = 18) -> str:
+    if value is None:
+        return "-"
+    clamped = max(0.0, min(1.0, float(value)))
+    filled = int(clamped * width)
+    empty = width - filled
+    color = "green" if clamped >= 0.7 else "yellow" if clamped >= 0.45 else "red"
+    return f"[{color}]{'█' * filled}{'░' * empty}[/{color}] {clamped * 100:5.1f}%"
