@@ -375,8 +375,7 @@ mkdir -p data logs
 docker run -d \
     --name reco-trading \
     --hostname reco-trading-bot \
-    -p 9000:9000 \
-    -p 8080:8080 \
+    -p 127.0.0.1:9000:9000 \
     -v "${ROOT_DIR}/.env:/app/.env:ro" \
     -v "${ROOT_DIR}/data:/app/data" \
     -v "${ROOT_DIR}/logs:/app/logs" \
@@ -404,6 +403,11 @@ docker run -d \
     -e POSTGRES_DSN="${POSTGRES_DSN:-}" \
     -e MYSQL_DSN="${MYSQL_DSN:-}" \
     -e REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}" \
+    -e DASHBOARD_AUTH_ENABLED="${DASHBOARD_AUTH_ENABLED:-true}" \
+    -e DASHBOARD_AUTH_MODE="${DASHBOARD_AUTH_MODE:-token}" \
+    -e DASHBOARD_USERNAME="${DASHBOARD_USERNAME:-admin}" \
+    -e DASHBOARD_PASSWORD="${DASHBOARD_PASSWORD:-admin}" \
+    -e DASHBOARD_API_TOKEN="${DASHBOARD_API_TOKEN:-}" \
     --restart unless-stopped \
     --memory="${RAM_GB}g" \
     --cpus="${CPU_CORES}" \

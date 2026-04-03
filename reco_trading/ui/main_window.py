@@ -78,12 +78,15 @@ class MainWindow(QMainWindow):
         self._last_state_event_at = 0.0
         self._last_ui_render_ms = 0.0
         self._ui_lag_detected = False
+        self._last_full_render_at = 0.0
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
         enriched_state = self._decorate_state(state)
         started_at = time.perf_counter()
-        for tab in (
+        active_tab = self.tabs.currentWidget()
+        full_refresh_due = (time.monotonic() - self._last_full_render_at) >= 1.0
+        tabs_to_update = (
             self.dashboard_tab,
             self.trades_tab,
             self.market_tab,
@@ -95,11 +98,21 @@ class MainWindow(QMainWindow):
             self.settings_tab,
             self.system_tab,
             self.market_analysis_tab,
-        ):
+        ) if full_refresh_due else (
+            self.dashboard_tab,
+            self.trades_tab,
+            self.logs_tab,
+            active_tab,
+        )
+        for tab in tabs_to_update:
+            if tab is None:
+                continue
             try:
                 tab.update_state(enriched_state)
             except Exception:
                 continue
+        if full_refresh_due:
+            self._last_full_render_at = time.monotonic()
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         self._last_ui_render_ms = elapsed_ms
         self._ui_lag_detected = elapsed_ms >= max(120.0, self.refresh_timer.interval() * 0.8)

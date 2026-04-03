@@ -168,6 +168,78 @@ if exist "requirements.txt" (
 )
 
 :: ============================================
+:: LLM MODE SELECTION
+:: ============================================
+
+set LLM_MODE=base
+set LLM_LOCAL_MODEL=qwen2.5:0.5b
+set OLLAMA_BASE_URL=http://localhost:11434
+set LLM_REMOTE_ENDPOINT=https://api.openai.com/v1/chat/completions
+set LLM_REMOTE_MODEL=gpt-4o-mini
+set LLM_REMOTE_API_KEY=
+set DASHBOARD_AUTH_ENABLED=true
+set DASHBOARD_AUTH_MODE=token
+set DASHBOARD_USERNAME=admin
+set DASHBOARD_PASSWORD=admin
+set DASHBOARD_API_TOKEN=
+
+if exist ".env" (
+    for /f "tokens=1,* delims==" %%A in ('findstr /b "DASHBOARD_API_TOKEN=" ".env"') do (
+        if /I "%%A"=="DASHBOARD_API_TOKEN" set DASHBOARD_API_TOKEN=%%B
+    )
+)
+if "!DASHBOARD_API_TOKEN!"=="" (
+    for /f %%A in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "[guid]::NewGuid().ToString(\"N\")"') do set DASHBOARD_API_TOKEN=%%A
+)
+
+echo.
+echo [INFO] Selecciona modo de decision LLM:
+echo   1^) base ^(sin LLM para decision final^)
+echo   2^) llm_local ^(Ollama + !LLM_LOCAL_MODEL!^)
+echo   3^) llm_remote ^(API externa^)
+set /p LLM_CHOICE="Elige una opcion (1/2/3): "
+
+if "!LLM_CHOICE!"=="2" (
+    set LLM_MODE=llm_local
+    where ollama >nul 2>nul
+    if errorlevel 1 (
+        echo [INFO] Ollama no detectado. Intentando instalar con winget...
+        where winget >nul 2>nul
+        if not errorlevel 1 (
+            winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements >nul 2>&1
+        )
+    )
+
+    where ollama >nul 2>nul
+    if errorlevel 1 (
+        echo [WARN] No se pudo instalar/detectar Ollama. Se cambia a modo base.
+        set /a WARN_COUNT+=1
+        set LLM_MODE=base
+    ) else (
+        ollama list 2>nul | findstr /I /C:"!LLM_LOCAL_MODEL!" >nul
+        if errorlevel 1 (
+            echo [INFO] Descargando modelo !LLM_LOCAL_MODEL!...
+            ollama pull !LLM_LOCAL_MODEL!
+            if errorlevel 1 (
+                echo [WARN] No se pudo descargar !LLM_LOCAL_MODEL!
+                set /a WARN_COUNT+=1
+                set LLM_MODE=base
+            )
+        ) else (
+            echo [OK] Modelo !LLM_LOCAL_MODEL! ya descargado
+        )
+    )
+) else if "!LLM_CHOICE!"=="3" (
+    set LLM_MODE=llm_remote
+    set /p INPUT_REMOTE_ENDPOINT="Endpoint API remota [!LLM_REMOTE_ENDPOINT!]: "
+    if not "!INPUT_REMOTE_ENDPOINT!"=="" set LLM_REMOTE_ENDPOINT=!INPUT_REMOTE_ENDPOINT!
+    set /p INPUT_REMOTE_MODEL="Modelo remoto [!LLM_REMOTE_MODEL!]: "
+    if not "!INPUT_REMOTE_MODEL!"=="" set LLM_REMOTE_MODEL=!INPUT_REMOTE_MODEL!
+    set /p INPUT_REMOTE_API_KEY="API key remota (opcional): "
+    if not "!INPUT_REMOTE_API_KEY!"=="" set LLM_REMOTE_API_KEY=!INPUT_REMOTE_API_KEY!
+)
+
+:: ============================================
 :: DETECT DATABASE
 :: ============================================
 
@@ -312,6 +384,21 @@ if "%ENV_EXISTS%"=="false" (
             echo ENABLE_REINFORCEMENT_LEARNING=true
             echo DRIFT_DETECTION=true
             echo ONCHAIN_ANALYSIS=true
+            echo.
+            echo # LLM Mode
+            echo LLM_MODE=!LLM_MODE!
+            echo LLM_LOCAL_MODEL=!LLM_LOCAL_MODEL!
+            echo OLLAMA_BASE_URL=!OLLAMA_BASE_URL!
+            echo LLM_REMOTE_ENDPOINT=!LLM_REMOTE_ENDPOINT!
+            echo LLM_REMOTE_MODEL=!LLM_REMOTE_MODEL!
+            echo LLM_REMOTE_API_KEY=!LLM_REMOTE_API_KEY!
+            echo.
+            echo # Dashboard Security
+            echo DASHBOARD_AUTH_ENABLED=!DASHBOARD_AUTH_ENABLED!
+            echo DASHBOARD_AUTH_MODE=!DASHBOARD_AUTH_MODE!
+            echo DASHBOARD_USERNAME=!DASHBOARD_USERNAME!
+            echo DASHBOARD_PASSWORD=!DASHBOARD_PASSWORD!
+            echo DASHBOARD_API_TOKEN=!DASHBOARD_API_TOKEN!
         ) > .env
         echo [OK] PostgreSQL configurado
     ) else if "%DB_TYPE%"=="mysql" (
@@ -346,6 +433,21 @@ if "%ENV_EXISTS%"=="false" (
             echo ENABLE_REINFORCEMENT_LEARNING=true
             echo DRIFT_DETECTION=true
             echo ONCHAIN_ANALYSIS=true
+            echo.
+            echo # LLM Mode
+            echo LLM_MODE=!LLM_MODE!
+            echo LLM_LOCAL_MODEL=!LLM_LOCAL_MODEL!
+            echo OLLAMA_BASE_URL=!OLLAMA_BASE_URL!
+            echo LLM_REMOTE_ENDPOINT=!LLM_REMOTE_ENDPOINT!
+            echo LLM_REMOTE_MODEL=!LLM_REMOTE_MODEL!
+            echo LLM_REMOTE_API_KEY=!LLM_REMOTE_API_KEY!
+            echo.
+            echo # Dashboard Security
+            echo DASHBOARD_AUTH_ENABLED=!DASHBOARD_AUTH_ENABLED!
+            echo DASHBOARD_AUTH_MODE=!DASHBOARD_AUTH_MODE!
+            echo DASHBOARD_USERNAME=!DASHBOARD_USERNAME!
+            echo DASHBOARD_PASSWORD=!DASHBOARD_PASSWORD!
+            echo DASHBOARD_API_TOKEN=!DASHBOARD_API_TOKEN!
         ) > .env
         echo [OK] MySQL configurado
     ) else (
@@ -380,9 +482,39 @@ if "%ENV_EXISTS%"=="false" (
             echo ENABLE_REINFORCEMENT_LEARNING=true
             echo DRIFT_DETECTION=true
             echo ONCHAIN_ANALYSIS=true
+            echo.
+            echo # LLM Mode
+            echo LLM_MODE=!LLM_MODE!
+            echo LLM_LOCAL_MODEL=!LLM_LOCAL_MODEL!
+            echo OLLAMA_BASE_URL=!OLLAMA_BASE_URL!
+            echo LLM_REMOTE_ENDPOINT=!LLM_REMOTE_ENDPOINT!
+            echo LLM_REMOTE_MODEL=!LLM_REMOTE_MODEL!
+            echo LLM_REMOTE_API_KEY=!LLM_REMOTE_API_KEY!
+            echo.
+            echo # Dashboard Security
+            echo DASHBOARD_AUTH_ENABLED=!DASHBOARD_AUTH_ENABLED!
+            echo DASHBOARD_AUTH_MODE=!DASHBOARD_AUTH_MODE!
+            echo DASHBOARD_USERNAME=!DASHBOARD_USERNAME!
+            echo DASHBOARD_PASSWORD=!DASHBOARD_PASSWORD!
+            echo DASHBOARD_API_TOKEN=!DASHBOARD_API_TOKEN!
         ) > .env
         echo [OK] SQLite configurado (funciona sin permisos especiales)
     )
+)
+
+if exist ".env" (
+    call :upsert_env_key ".env" "LLM_MODE" "!LLM_MODE!"
+    call :upsert_env_key ".env" "LLM_LOCAL_MODEL" "!LLM_LOCAL_MODEL!"
+    call :upsert_env_key ".env" "OLLAMA_BASE_URL" "!OLLAMA_BASE_URL!"
+    call :upsert_env_key ".env" "LLM_REMOTE_ENDPOINT" "!LLM_REMOTE_ENDPOINT!"
+    call :upsert_env_key ".env" "LLM_REMOTE_MODEL" "!LLM_REMOTE_MODEL!"
+    call :upsert_env_key ".env" "LLM_REMOTE_API_KEY" "!LLM_REMOTE_API_KEY!"
+    call :upsert_env_key ".env" "DASHBOARD_AUTH_ENABLED" "!DASHBOARD_AUTH_ENABLED!"
+    call :upsert_env_key ".env" "DASHBOARD_AUTH_MODE" "!DASHBOARD_AUTH_MODE!"
+    call :upsert_env_key ".env" "DASHBOARD_USERNAME" "!DASHBOARD_USERNAME!"
+    call :upsert_env_key ".env" "DASHBOARD_PASSWORD" "!DASHBOARD_PASSWORD!"
+    call :upsert_env_key ".env" "DASHBOARD_API_TOKEN" "!DASHBOARD_API_TOKEN!"
+    echo [OK] Variables LLM actualizadas en .env
 )
 
 :: ============================================
@@ -455,3 +587,19 @@ echo.
 
 endlocal
 pause
+goto :eof
+
+:upsert_env_key
+setlocal
+set "_ENV_FILE=%~1"
+set "_KEY=%~2"
+set "_VALUE=%~3"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$f='%_ENV_FILE%'; $k='%_KEY%'; $v='%_VALUE%';" ^
+    "if (!(Test-Path $f)) { Set-Content -Path $f -Value ($k + '=' + $v) -Encoding UTF8; exit 0 };" ^
+    "$lines = Get-Content -Path $f;" ^
+    "$found = $false;" ^
+    "$newLines = foreach($line in $lines){ if($line -match ('^' + [regex]::Escape($k) + '=')){ $found = $true; $k + '=' + $v } else { $line } };" ^
+    "if(-not $found){ $newLines += ($k + '=' + $v) };" ^
+    "Set-Content -Path $f -Value $newLines -Encoding UTF8;"
+endlocal & exit /b 0

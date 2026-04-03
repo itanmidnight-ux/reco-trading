@@ -39,7 +39,13 @@ def get_bot_instance() -> BotEngine | None:
 
 def _run_bot(settings: Settings, state_manager: object | None) -> None:
     """Run the bot in a separate thread."""
-    asyncio.run(BotEngine(settings, state_manager=state_manager).run())
+    global _bot_instance
+    bot = BotEngine(settings, state_manager=state_manager)
+    _bot_instance = bot
+    try:
+        asyncio.run(bot.run())
+    finally:
+        _bot_instance = None
 
 
 async def _verify_database_connection(settings: Settings) -> str:
@@ -189,7 +195,9 @@ def run() -> None:
     
     # Start bot in background thread
     import threading
-    bot_thread = threading.Thread(target=_run_bot, args=(settings, state_manager), daemon=True, name="bot-engine")
+    # Non-daemon thread avoids abrupt interpreter shutdown that can break asyncio.to_thread
+    # with "cannot schedule new futures after shutdown".
+    bot_thread = threading.Thread(target=_run_bot, args=(settings, state_manager), daemon=False, name="bot-engine")
     bot_thread.start()
     
     # Run GUI in main thread (or start web dashboard)
