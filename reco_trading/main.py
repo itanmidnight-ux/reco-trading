@@ -26,7 +26,7 @@ def configure_logging() -> None:
         level=logging.INFO, 
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
-            logging.StreamHandler(sys.stdout)
+            logging.StreamHandler(sys.stderr)
         ]
     )
 
@@ -173,6 +173,9 @@ def run() -> None:
     
     state_manager = None
     bot_thread = None
+
+    # Terminal dashboard must always run regardless of selected dashboard mode.
+    os.environ["BOT_TERMINAL_DASHBOARD"] = "1"
     
     # Create state manager for App dashboard
     if dashboard_type == 'app':

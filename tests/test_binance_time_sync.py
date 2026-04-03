@@ -56,3 +56,17 @@ def test_safe_exchange_call_raises_if_timestamp_error_repeats() -> None:
 
     # Only one forced resync/retry for timestamp errors.
     assert calls["sync"] == 1
+
+
+def test_safe_exchange_call_cancels_when_thread_executor_is_shutdown() -> None:
+    client = BinanceClient(api_key="", api_secret="", testnet=True)
+
+    def executor_shutdown() -> None:
+        raise RuntimeError("cannot schedule new futures after shutdown")
+
+    try:
+        asyncio.run(client.safe_exchange_call(executor_shutdown, operation="unit_test", retries=3))
+    except asyncio.CancelledError as exc:
+        assert str(exc) == "executor_shutdown"
+    else:
+        raise AssertionError("Expected asyncio.CancelledError")

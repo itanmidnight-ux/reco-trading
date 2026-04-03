@@ -152,14 +152,8 @@ async def get_status():
 async def get_balance():
     """Get account balance."""
     snapshot = _resolve_snapshot()
-    total = float(
-        snapshot.get(
-            "total_equity_usdt",
-            snapshot.get("total_equity", snapshot.get("equity", snapshot.get("balance", 0.0))),
-        )
-        or 0.0
-    )
-    free = float(snapshot.get("operable_capital_usdt", snapshot.get("balance", 0.0)) or 0.0)
+    total = float(snapshot.get("total_equity", snapshot.get("equity", snapshot.get("balance", 0.0))) or 0.0)
+    free = float(snapshot.get("balance", 0.0) or 0.0)
     locked = max(total - free, 0.0)
     return {
         "total": total,

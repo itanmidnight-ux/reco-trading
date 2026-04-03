@@ -88,6 +88,22 @@ def test_position_manager_dynamic_exit_closes_on_peak_retrace() -> None:
     assert manager.check_exit(position, 104.1) in {"PEAK_RETRACE_EXIT", "TRAILING_STOP_HIT"}
 
 
+def test_position_manager_sets_entry_timestamp_when_missing() -> None:
+    manager = PositionManager()
+    position = Position(
+        trade_id=2,
+        side="BUY",
+        quantity=0.1,
+        entry_price=100.0,
+        stop_loss=98.0,
+        take_profit=120.0,
+        atr=1.0,
+    )
+    manager.open(position)
+    assert position.entry_timestamp_ms is not None
+    assert position.entry_timestamp_ms > 0
+
+
 def test_per_trade_investment_controls_adjust_to_confidence_and_volatility() -> None:
     engine = BotEngine.__new__(BotEngine)
     engine.runtime_investment_mode = "Auto-Optimized"

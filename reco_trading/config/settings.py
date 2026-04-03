@@ -34,17 +34,11 @@ class Settings(BaseSettings):
     low_ram_mode: bool = True
     max_ram_mb: int = 500
     ui_state_emit_on_each_log: bool = False
-    terminal_tui_enabled: bool = True
-    terminal_tui_quiet_logs: bool = True
-    terminal_tui_refresh_per_second: int = 4
     llm_fix_cycle_interval_seconds: int = 3600
     llm_cleanup_interval_seconds: int = 86400
     llm_mode: str = "base"
     llm_local_model: str = "qwen2.5:0.5b"
     ollama_base_url: str = "http://localhost:11434"
-    llm_local_timeout_seconds: float = 3.0
-    llm_remote_timeout_seconds: float = 5.0
-    llm_keep_alive: str = "10m"
     llm_remote_endpoint: str = "https://api.openai.com/v1/chat/completions"
     llm_remote_model: str = "gpt-4o-mini"
     llm_remote_api_key: str = ""
@@ -92,6 +86,13 @@ class Settings(BaseSettings):
     min_expected_reward_risk: float = 1.8
     stop_loss_pct: float = 2.0
     take_profit_pct: float = 4.0
+    auto_stop_enabled: bool = True
+    auto_stop_break_even_trigger_pct: float = 0.008
+    auto_stop_break_even_buffer_pct: float = 0.0005
+    auto_stop_trailing_activate_pct: float = 0.012
+    auto_stop_trailing_delta_low_vol_pct: float = 0.006
+    auto_stop_trailing_delta_high_vol_pct: float = 0.010
+    auto_stop_max_duration_minutes: int = 180
 
     # =========================
     # COOLDOWNS
