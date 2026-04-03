@@ -101,6 +101,7 @@ def _validate_login_payload(payload: dict[str, Any]) -> tuple[bool, str]:
     if not _is_dashboard_auth_enabled():
         return True, "auth_disabled"
 
+    mode = str(os.getenv("DASHBOARD_AUTH_MODE", "hybrid")).strip().lower()
     provided_user = str(payload.get("user", "")).strip()
     provided_password = str(payload.get("password", "")).strip()
     provided_token = str(payload.get("token", "")).strip()
@@ -109,12 +110,20 @@ def _validate_login_payload(payload: dict[str, Any]) -> tuple[bool, str]:
     configured_password = _dashboard_password()
     configured_token = _dashboard_token()
 
-    if configured_user and not (provided_user and hmac.compare_digest(provided_user, configured_user)):
-        return False, "Invalid user"
-    if configured_password and not (provided_password and hmac.compare_digest(provided_password, configured_password)):
-        return False, "Invalid password"
-    if configured_token and not (provided_token and hmac.compare_digest(provided_token, configured_token)):
-        return False, "Invalid token"
+    needs_basic = mode in {"basic", "hybrid"} and bool(configured_user or configured_password)
+    needs_token = mode in {"token", "hybrid"} and bool(configured_token)
+
+    if needs_basic:
+        if not configured_user or not configured_password:
+            return False, "Dashboard basic auth misconfigured"
+        if not provided_user or not hmac.compare_digest(provided_user, configured_user):
+            return False, "Invalid user"
+        if not provided_password or not hmac.compare_digest(provided_password, configured_password):
+            return False, "Invalid password"
+
+    if needs_token:
+        if not provided_token or not hmac.compare_digest(provided_token, configured_token):
+            return False, "Invalid token"
 
     return True, "ok"
 

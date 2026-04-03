@@ -90,3 +90,38 @@ def test_web_dashboard_stop_trade_control_queues_force_close() -> None:
     assert response.status_code == 200
     assert payload["success"] is True
     assert bot.state_manager.called is True
+
+
+def test_dashboard_login_token_mode_accepts_token_without_basic(monkeypatch) -> None:
+    _reset_dashboard_globals()
+    monkeypatch.setenv("DASHBOARD_AUTH_ENABLED", "true")
+    monkeypatch.setenv("DASHBOARD_AUTH_MODE", "token")
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "abc123")
+    monkeypatch.delenv("DASHBOARD_PASSWORD", raising=False)
+    monkeypatch.delenv("DASHBOARD_USERNAME", raising=False)
+
+    app = dashboard_server.create_app()
+    client = app.test_client()
+
+    response = client.post("/api/auth/login", json={"token": "abc123"})
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+
+
+def test_dashboard_login_token_mode_rejects_invalid_token(monkeypatch) -> None:
+    _reset_dashboard_globals()
+    monkeypatch.setenv("DASHBOARD_AUTH_ENABLED", "true")
+    monkeypatch.setenv("DASHBOARD_AUTH_MODE", "token")
+    monkeypatch.setenv("DASHBOARD_API_TOKEN", "abc123")
+
+    app = dashboard_server.create_app()
+    client = app.test_client()
+
+    response = client.post("/api/auth/login", json={"token": "wrong-token"})
+    payload = response.get_json()
+
+    assert response.status_code == 401
+    assert payload["success"] is False
+    assert payload["error"] == "Invalid token"
