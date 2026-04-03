@@ -101,11 +101,9 @@ class Settings(BaseSettings):
     observability_port: int = 9108
     api_latency_window_size: int = 200
     stale_market_data_max_age_seconds: int = 180
-    feature_multi_symbol_enabled: bool = True
+    feature_multi_symbol_enabled: bool = False
     trading_symbols: list[str] = Field(default_factory=lambda: [
-        "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", 
-        "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT",
-        "DOT/USDT", "LINK/USDT"
+        "BTC/USDT", "ETH/USDT"
     ], validation_alias=AliasChoices("TRADING_SYMBOLS", "SYMBOLS"))
     max_global_exposure_fraction: float = 0.7
     max_symbol_correlation: float = 0.85

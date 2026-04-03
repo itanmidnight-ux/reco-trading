@@ -52,13 +52,12 @@ class MultiPairManager:
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange_client
         
-        # Only Top 10 most popular pairs for faster scanning
+        # Only 2 top pairs for faster scanning (BTC and ETH)
         self.default_pairs = base_pairs or [
-            "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", 
-            "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT"
+            "BTC/USDT", "ETH/USDT"
         ]
         
-        # Single tier for top 10 pairs
+        # Single tier for 2 pairs
         self.tier_pairs = {
             1: self.default_pairs,
         }
@@ -67,7 +66,7 @@ class MultiPairManager:
         self.active_pair: str = "BTC/USDT"
         self.pair_history: dict[str, list[dict]] = {}
         
-        # Scan every 10 seconds for top 10
+        # Scan every 15 seconds for 2 pairs
         self.tier_scan_intervals = {
             1: 10,   # Scan every 10 seconds
         }

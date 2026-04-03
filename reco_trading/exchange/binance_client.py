@@ -194,6 +194,13 @@ class BinanceClient:
             operation="fetch_ticker"
         )
 
+    async def fetch_tickers(self, symbols: list[str] | None = None) -> dict[str, Any]:
+        """Fetch ticker data for all or specified symbols."""
+        return await self._with_retry(
+            self.exchange.fetch_tickers, symbols,
+            operation="fetch_tickers"
+        )
+
     async def fetch_order_book(self, symbol: str, limit: int = 20) -> dict[str, Any]:
         """Fetch order book."""
         return await self._with_retry(

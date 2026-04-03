@@ -20,6 +20,7 @@ services:
       - ONCHAIN_ANALYSIS=true
     ports:
       - "8080:8080"
+      - "9000:9000"
       - "5432:5432"
       - "6379:6379"
     volumes:
@@ -28,15 +29,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+    networks:
+      - reco-network
 
   postgres:
     image: timescale/timescaledb:latest-pg15
@@ -49,10 +50,12 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trading"]
+      test: ["CMD-SHELL", "pg_isready -U trading -d reco_trading_prod"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - reco-network
 
   redis:
     image: redis:7-alpine
@@ -66,6 +69,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - reco-network
 
   api:
     build:
@@ -79,11 +84,13 @@ services:
       - postgres
       - redis
     restart: unless-stopped
+    networks:
+      - reco-network
 
 volumes:
   postgres_data:
   redis_data:
 
 networks:
-  default:
-    name: reco-trading-network
+  reco-network:
+    driver: bridge

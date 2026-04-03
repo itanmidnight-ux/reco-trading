@@ -72,6 +72,16 @@ class StateManager(QObject):
             "session_stats": {},
             "runtime_settings": {},
             "exit_intelligence": {},
+            "market_analysis": {
+                "status": "idle",
+                "total_markets": 0,
+                "analyzed_markets": 0,
+                "progress_pct": 0.0,
+                "best_pair": "--",
+                "best_score": 0.0,
+                "last_analysis_time": "Never",
+                "ai_connected": False,
+            },
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -93,6 +103,7 @@ class StateManager(QObject):
         with self._lock:
             history = self._state.setdefault("trade_history", [])
             history.insert(0, deepcopy(trade))
+            self._state["trade_history"] = history[:500]
             payload = deepcopy(trade)
             state_copy = deepcopy(self._state)
         self.trade_added.emit(payload)
@@ -137,6 +148,11 @@ class StateManager(QObject):
         with self._lock:
             self._control_queue.append("force_close")
         self.control_requested.emit("force_close")
+
+    def request_analysis(self, action: str) -> None:
+        with self._lock:
+            self._control_queue.append(f"analysis_{action}")
+        self.control_requested.emit(f"analysis_{action}")
 
     def pop_control_requests(self) -> list[str]:
         with self._lock:

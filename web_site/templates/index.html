@@ -170,23 +170,6 @@
         .badge-blue { background: rgba(96, 165, 250, 0.15); color: var(--accent-blue); }
         .badge-purple { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); }
         
-        #loading {
-            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(10, 15, 20, 0.95);
-            display: flex; flex-direction: column; justify-content: center; align-items: center;
-            z-index: 9999;
-        }
-        
-        .loader {
-            width: 45px; height: 45px;
-            border: 3px solid var(--border-color);
-            border-top-color: var(--accent-cyan);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-        
-        @keyframes spin { to { transform: rotate(360deg); } }
-        
         .tab-content { padding: 1rem; background: var(--bg-card); border: 1px solid var(--border-color); border-top: none; }
         
         .glow-cyan { text-shadow: 0 0 15px rgba(34, 211, 238, 0.5); }
@@ -225,11 +208,6 @@
     </style>
 </head>
 <body>
-    <div id="loading">
-        <div class="loader"></div>
-        <p class="mt-3 text-muted">Connecting to bot...</p>
-    </div>
-
     <nav class="navbar navbar-dark">
         <div class="container-fluid px-3">
             <a class="navbar-brand" href="#"><i class="fas fa-chart-line me-2"></i>Reco-Trading</a>
@@ -252,6 +230,8 @@
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-ml"><i class="fas fa-robot me-1"></i> AI/ML</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#risk"><i class="fas fa-shield-alt me-1"></i> Risk</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#health"><i class="fas fa-heartbeat me-1"></i> Health</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#market-analysis"><i class="fas fa-globe me-1"></i> Market Analysis</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-monitor"><i class="fas fa-robot me-1"></i> AI Monitor</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs"><i class="fas fa-list me-1"></i> Logs</button></li>
         </ul>
 
@@ -620,6 +600,104 @@
                 </div>
             </div>
 
+            <!-- Market Analysis -->
+            <div class="tab-pane fade" id="market-analysis">
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-info-circle text-cyan"></i> Analysis Status</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Current Pair</span><span class="info-value" id="maCurrentPair">BTC/USDT</span></div>
+                            <div class="info-row"><span class="info-label">AI Connection</span><span class="info-value" id="maAIStatus">-</span></div>
+                            <div class="info-row"><span class="info-label">Markets to Scan</span><span class="info-value" id="maTotalMarkets">0</span></div>
+                            <div class="info-row"><span class="info-label">Analyzed</span><span class="info-value" id="maAnalyzedMarkets">0</span></div>
+                            <div class="info-row"><span class="info-label">Best Pair Found</span><span class="info-value text-cyan" id="maBestPair">--</span></div>
+                            <div class="info-row"><span class="info-label">Last Analysis</span><span class="info-value" id="maLastAnalysis">Never</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-cogs text-green"></i> Analysis Controls</div>
+                        <div class="card-body">
+                            <div class="mb-3">
+                                <label class="info-label">Markets to analyze:</label>
+                                <input type="number" id="maMarketCount" class="form-control form-control-sm" value="50" min="1" max="500" style="width:100px; background:var(--bg-secondary); color:var(--text-primary); border-color:var(--border-color); display:inline-block;">
+                            </div>
+                            <div class="d-flex gap-2 mb-3">
+                                <button class="btn btn-success" id="maStartBtn" onclick="startMarketAnalysis()"><i class="fas fa-play me-1"></i> Iniciar Analisis de Mejor Mercado</button>
+                                <button class="btn btn-danger" id="maCancelBtn" style="display:none;" onclick="cancelMarketAnalysis()"><i class="fas fa-stop me-1"></i> Cancelar Analisis</button>
+                            </div>
+                            <button class="btn btn-primary" id="maChangePairBtn" style="display:none;" onclick="changeToBestPair()"><i class="fas fa-exchange-alt me-1"></i> Cambiar a la Par/Moneda</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card mt-3">
+                    <div class="card-header"><i class="fas fa-tasks text-blue"></i> Analysis Progress</div>
+                    <div class="card-body">
+                        <div class="progress mb-2" style="height:24px;">
+                            <div class="progress-bar" id="maProgressBar" role="progressbar" style="width:0%; background:linear-gradient(90deg, var(--accent-green), var(--accent-cyan), var(--accent-green));"></div>
+                        </div>
+                        <div class="text-center">
+                            <span class="stat-value text-green" id="maProgressPct">0.0%</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card mt-3">
+                    <div class="card-header"><i class="fas fa-chart-bar text-purple"></i> Analysis Results</div>
+                    <div class="card-body">
+                        <div class="text-muted" id="maResultsText">No analysis results yet. Start an analysis to scan all markets.</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI/LLM Monitor -->
+            <div class="tab-pane fade" id="ai-monitor">
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-robot text-cyan"></i> ML Models Status</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">ML Direction</span><span class="info-value" id="aiMLDirection">-</span></div>
+                            <div class="info-row"><span class="info-label">ML Confidence</span><span class="info-value" id="aiMLConfidence">-</span></div>
+                            <div class="info-row"><span class="info-label">TFT Direction</span><span class="info-value" id="aiTFTDirection">-</span></div>
+                            <div class="info-row"><span class="info-label">TFT Confidence</span><span class="info-value" id="aiTFTConfidence">-</span></div>
+                            <div class="info-row"><span class="info-label">NBEATS Direction</span><span class="info-value" id="aiNBEATSDirection">-</span></div>
+                            <div class="info-row"><span class="info-label">NBEATS Confidence</span><span class="info-value" id="aiNBEATSConfidence">-</span></div>
+                            <div class="info-row"><span class="info-label">Market Regime</span><span class="info-value" id="aiMarketRegime">-</span></div>
+                            <div class="info-row"><span class="info-label">Market Sentiment</span><span class="info-value" id="aiMarketSentiment">-</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-brain text-purple"></i> Autonomous Brain</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Active Pair</span><span class="info-value" id="aiActivePair">-</span></div>
+                            <div class="info-row"><span class="info-label">Trading Mode</span><span class="info-value" id="aiTradingMode">-</span></div>
+                            <div class="info-row"><span class="info-label">Leverage</span><span class="info-value" id="aiLeverage">-</span></div>
+                            <div class="info-row"><span class="info-label">Side</span><span class="info-value" id="aiSide">-</span></div>
+                            <div class="info-row"><span class="info-label">All Modules Init</span><span class="info-value" id="aiAllModules">-</span></div>
+                            <div class="info-row"><span class="info-label">WS Connected</span><span class="info-value" id="aiWSConnected">-</span></div>
+                            <div class="info-row"><span class="info-label">Auto-Improver Trades</span><span class="info-value" id="aiAutoTrades">-</span></div>
+                            <div class="info-row"><span class="info-label">Auto-Improver Win Rate</span><span class="info-value" id="aiAutoWR">-</span></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="grid-2 mt-3">
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-shield-alt text-green"></i> System Health</div>
+                        <div class="card-body">
+                            <div class="info-row"><span class="info-label">Resilience</span><span class="info-value" id="aiResilience">-</span></div>
+                            <div class="info-row"><span class="info-label">Consecutive Failures</span><span class="info-value" id="aiFailures">-</span></div>
+                            <div class="info-row"><span class="info-label">Emergency System</span><span class="info-value" id="aiEmergency">-</span></div>
+                            <div class="info-row"><span class="info-label">Consecutive Losses</span><span class="info-value" id="aiConsecLosses">-</span></div>
+                            <div class="info-row"><span class="info-label">Optimization Count</span><span class="info-value" id="aiOptCount">-</span></div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header"><i class="fas fa-sliders-h text-yellow"></i> Auto-Optimized Params</div>
+                        <div class="card-body">
+                            <div id="aiAutoParams" class="text-muted">Waiting for data...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Logs -->
             <div class="tab-pane fade" id="logs">
                 <div class="card mt-3">
@@ -644,6 +722,7 @@
         function fmtPctNum(n) { return n===null||n===undefined?'-':n.toFixed(2)+'%'; }
         
         function getSignalClass(s) { return s==='BUY'?'signal-buy':s==='SELL'?'signal-sell':'signal-hold'; }
+        
         function getStatusClass(s) {
             if(s==='RUNNING'||s==='READY')return'status-running';
             if(s==='ERROR')return'status-error';
@@ -862,7 +941,8 @@
             // Update trades
             updateTradesTable(d.trade_history||[]);
             updateLogs(d.logs||[]);
-            document.getElementById('loading').style.display = 'none';
+            updateMarketAnalysisTab(d.market_analysis || null);
+            updateAIMonitorTab(d);
         }
         
         function updateTradesTable(trades) {
@@ -874,7 +954,7 @@
                 const pnlClass = p>=0?'text-green':'text-red';
                 const statusClass = t.status==='CLOSED'?'badge-green':'badge-blue';
                 const duration = t.duration || '-';
-                return `<tr>
+                return `<tr onclick="showTradeDetail(${JSON.stringify(JSON.stringify(t))})" style="cursor:pointer;">
                     <td>${t.trade_id||'-'}</td>
                     <td>${t.time||'-'}</td>
                     <td>${t.pair||'-'}</td>
@@ -931,24 +1011,19 @@
                     return;
                 }
                 
-                // Update regime
                 document.getElementById('regimeValue').textContent = 
                     autonomous.regime_detector?.current || '-';
                 
-                // Update optimizer score
                 const optScore = autonomous.strategy_optimizer?.optimizer?.best_score || 0;
                 document.getElementById('optimizerScoreValue').textContent = 
                     typeof optScore === 'number' ? optScore.toFixed(2) : '0';
                 
-                // Update consecutive losses
                 document.getElementById('consecutiveLossesValue').textContent = 
                     autonomous.consecutive_losses || 0;
                 
-                // Update active pair
                 document.getElementById('activePairValue').textContent = 
                     multipair.active_pair || autonomous.current_best_pair || 'BTC/USDT';
                 
-                // Update optimizer data
                 const optData = autonomous.strategy_optimizer || {};
                 document.getElementById('optimizerData').innerHTML = `
                     <div class="info-row"><span class="info-label">Iterations</span><span class="info-value">${optData.optimizer?.iteration || 0}</span></div>
@@ -959,7 +1034,6 @@
                     <pre class="small mt-1" style="max-height: 100px; overflow-y: auto;">${JSON.stringify(optData.current_params || {}, null, 2)}</pre>
                 `;
                 
-                // Update evolver data
                 const evolverData = autonomous.strategy_evolver || {};
                 document.getElementById('evolverData').innerHTML = `
                     <div class="info-row"><span class="info-label">Generation</span><span class="info-value">${evolverData.optimizer?.generation || 0}</span></div>
@@ -968,7 +1042,6 @@
                     <div class="info-row"><span class="info-label">Mutation Rate</span><span class="info-value">${((evolverData.optimizer?.mutation_rate || 0) * 100).toFixed(0)}%</span></div>
                 `;
                 
-                // Update pairs data
                 if (multipair.pairs && multipair.pairs.length > 0) {
                     const sortedPairs = [...multipair.pairs].sort((a, b) => b.opportunity_score - a.opportunity_score);
                     document.getElementById('pairsData').innerHTML = sortedPairs.slice(0, 12).map(p => `
@@ -981,7 +1054,6 @@
                     document.getElementById('pairsData').innerHTML = '<div class="text-muted">Scanning pairs...</div>';
                 }
                 
-                // Update filters
                 const filters = autonomous.current_filters || {};
                 document.getElementById('filtersData').innerHTML = `
                     <div class="info-row"><span class="info-label">RSI Period</span><span class="info-value">${filters.rsi_period || '-'}</span></div>
@@ -991,7 +1063,6 @@
                     <div class="info-row"><span class="info-label">MA Long</span><span class="info-value">${filters.ma_long_period || '-'}</span></div>
                 `;
                 
-                // Update regime data
                 const regimeData = autonomous.regime_detector || {};
                 document.getElementById('regimeData').innerHTML = `
                     <div class="info-row"><span class="info-label">Current</span><span class="info-value">${regimeData.current || '-'}</span></div>
@@ -1000,7 +1071,6 @@
                     <div class="info-row"><span class="info-label">History</span><span class="info-value">${regimeData.history_length || 0}</span></div>
                 `;
                 
-                // Update adaptive filters
                 const adaptFilters = autonomous.adaptive_filters || {};
                 document.getElementById('adaptiveFiltersData').innerHTML = `
                     <div class="info-row"><span class="info-label">KAMA Trend</span><span class="info-value">${adaptFilters.kama?.trend || '-'}</span></div>
@@ -1011,6 +1081,188 @@
                 
             } catch(e) {
                 console.error('Error fetching AI/ML data:', e);
+            }
+        }
+        
+        async function startMarketAnalysis() {
+            const count = document.getElementById('maMarketCount').value || 50;
+            try {
+                const r = await fetch('/api/market_analysis/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({market_count: parseInt(count)})
+                });
+                const j = await r.json();
+                if (j.success) {
+                    document.getElementById('maStartBtn').style.display = 'none';
+                    document.getElementById('maCancelBtn').style.display = 'inline-block';
+                    document.getElementById('maChangePairBtn').style.display = 'none';
+                    document.getElementById('maMarketCount').disabled = true;
+                }
+            } catch(e) { console.error('Error starting analysis:', e); }
+        }
+        
+        async function cancelMarketAnalysis() {
+            try {
+                const r = await fetch('/api/market_analysis/cancel', {method: 'POST'});
+                const j = await r.json();
+                if (j.success) {
+                    document.getElementById('maStartBtn').style.display = 'inline-block';
+                    document.getElementById('maCancelBtn').style.display = 'none';
+                    document.getElementById('maChangePairBtn').style.display = 'none';
+                    document.getElementById('maMarketCount').disabled = false;
+                    document.getElementById('maProgressBar').style.width = '0%';
+                    document.getElementById('maProgressPct').textContent = '0.0%';
+                }
+            } catch(e) { console.error('Error cancelling analysis:', e); }
+        }
+        
+        async function changeToBestPair() {
+            try {
+                const r = await fetch('/api/market_analysis/change_pair', {method: 'POST'});
+                const j = await r.json();
+                if (j.success) {
+                    alert(j.message || 'Pair change requested. Will switch after current trade completes.');
+                }
+            } catch(e) { console.error('Error changing pair:', e); }
+        }
+        
+        function updateMarketAnalysisTab(ma) {
+            if (!ma) return;
+            
+            document.getElementById('maCurrentPair').textContent = ma.current_pair || 'BTC/USDT';
+            
+            const aiConnected = ma.ai_connected || false;
+            const aiEl = document.getElementById('maAIStatus');
+            aiEl.textContent = aiConnected ? 'Connected' : 'Disconnected';
+            aiEl.className = 'info-value ' + (aiConnected ? 'text-green' : 'text-red');
+            
+            document.getElementById('maTotalMarkets').textContent = ma.total_markets || 0;
+            document.getElementById('maAnalyzedMarkets').textContent = ma.analyzed_markets || 0;
+            
+            const bestPair = ma.best_pair || '--';
+            const bestScore = ma.best_score || 0;
+            const bestEl = document.getElementById('maBestPair');
+            if (bestPair !== '--') {
+                bestEl.textContent = `${bestPair} (score: ${bestScore.toFixed(2)})`;
+            } else {
+                bestEl.textContent = '--';
+            }
+            
+            document.getElementById('maLastAnalysis').textContent = ma.last_analysis_time || 'Never';
+            
+            const progressPct = ma.progress_pct || 0;
+            document.getElementById('maProgressBar').style.width = progressPct + '%';
+            document.getElementById('maProgressPct').textContent = progressPct.toFixed(1) + '%';
+            
+            const status = ma.status || 'idle';
+            if (status === 'running') {
+                document.getElementById('maStartBtn').style.display = 'none';
+                document.getElementById('maCancelBtn').style.display = 'inline-block';
+                document.getElementById('maChangePairBtn').style.display = 'none';
+                document.getElementById('maMarketCount').disabled = true;
+            } else if (status === 'completed') {
+                document.getElementById('maStartBtn').style.display = 'inline-block';
+                document.getElementById('maCancelBtn').style.display = 'none';
+                document.getElementById('maChangePairBtn').style.display = 'inline-block';
+                document.getElementById('maMarketCount').disabled = false;
+                document.getElementById('maResultsText').textContent = 
+                    `Analysis completed at ${ma.last_analysis_time || '-'}. Scanned ${ma.total_markets || 0} markets. Best pair: ${bestPair} with score ${bestScore.toFixed(2)}. Click 'Cambiar a la Par/Moneda' to switch.`;
+            } else if (status === 'cancelled') {
+                document.getElementById('maStartBtn').style.display = 'inline-block';
+                document.getElementById('maCancelBtn').style.display = 'none';
+                document.getElementById('maChangePairBtn').style.display = 'none';
+                document.getElementById('maMarketCount').disabled = false;
+                document.getElementById('maResultsText').textContent = 'Analysis was cancelled.';
+            } else {
+                document.getElementById('maStartBtn').style.display = 'inline-block';
+                document.getElementById('maCancelBtn').style.display = 'none';
+                document.getElementById('maChangePairBtn').style.display = 'none';
+                document.getElementById('maMarketCount').disabled = false;
+                document.getElementById('maResultsText').textContent = 'No analysis results yet. Start an analysis to scan all markets.';
+            }
+        }
+        
+        function showTradeDetail(tradeJson) {
+            const t = typeof tradeJson === 'string' ? JSON.parse(tradeJson) : tradeJson;
+            const pnl = t.pnl || 0;
+            const pnlClass = pnl >= 0 ? 'text-green' : 'text-red';
+            
+            const modalHtml = `
+                <div class="modal fade" id="tradeDetailModal" tabindex="-1">
+                    <div class="modal-dialog modal-lg">
+                        <div class="modal-content" style="background:var(--bg-card); border:1px solid var(--border-color);">
+                            <div class="modal-header" style="border-color:var(--border-color);">
+                                <h5 class="modal-title"><i class="fas fa-receipt me-2 text-cyan"></i>Trade Details</h5>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="grid-2">
+                                    <div class="info-row"><span class="info-label">Trade ID</span><span class="info-value">${t.trade_id||'-'}</span></div>
+                                    <div class="info-row"><span class="info-label">Pair</span><span class="info-value">${t.pair||'-'}</span></div>
+                                    <div class="info-row"><span class="info-label">Side</span><span class="info-value ${t.side==='BUY'?'text-green':'text-red'}">${t.side||'-'}</span></div>
+                                    <div class="info-row"><span class="info-label">Status</span><span class="info-value">${t.status||'-'}</span></div>
+                                    <div class="info-row"><span class="info-label">Entry Price</span><span class="info-value">${fmt(t.entry,4)}</span></div>
+                                    <div class="info-row"><span class="info-label">Exit Price</span><span class="info-value">${fmt(t.exit,4)}</span></div>
+                                    <div class="info-row"><span class="info-label">Size</span><span class="info-value">${fmt(t.size||t.quantity,6)}</span></div>
+                                    <div class="info-row"><span class="info-label">Stop Loss</span><span class="info-value">${fmt(t.stop_loss,4)}</span></div>
+                                    <div class="info-row"><span class="info-label">Take Profit</span><span class="info-value">${fmt(t.take_profit,4)}</span></div>
+                                    <div class="info-row"><span class="info-label">P&L ($)</span><span class="info-value ${pnlClass}">${pnl>=0?'+':''}${fmt(pnl,2)}</span></div>
+                                    <div class="info-row"><span class="info-label">P&L (%)</span><span class="info-value ${pnlClass}">${pnl>=0?'+':''}${(t.pnl_percent||0).toFixed(2)}%</span></div>
+                                    <div class="info-row"><span class="info-label">Duration</span><span class="info-value">${t.duration||'-'}</span></div>
+                                    <div class="info-row"><span class="info-label">Entry Time</span><span class="info-value">${t.entry_time||t.time||'-'}</span></div>
+                                    <div class="info-row"><span class="info-label">Exit Time</span><span class="info-value">${t.exit_time||'-'}</span></div>
+                                    <div class="info-row"><span class="info-label">Fees</span><span class="info-value">${fmt(t.fees,4)}</span></div>
+                                    <div class="info-row"><span class="info-label">Confidence</span><span class="info-value">${t.confidence||'-'}</span></div>
+                                </div>
+                                ${t.signal_details ? `<div class="mt-3"><strong>Signal Details:</strong><pre class="small mt-1" style="background:var(--bg-secondary); padding:10px; border-radius:8px; overflow:auto; max-height:150px;">${JSON.stringify(t.signal_details, null, 2)}</pre></div>` : ''}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            document.body.insertAdjacentHTML('beforeend', modalHtml);
+            const modal = new bootstrap.Modal(document.getElementById('tradeDetailModal'));
+            modal.show();
+            document.getElementById('tradeDetailModal').addEventListener('hidden.bs.modal', function() {
+                this.remove();
+            });
+        }
+        
+        function updateAIMonitorTab(d) {
+            document.getElementById('aiMLDirection').textContent = d.ml_direction || '-';
+            document.getElementById('aiMLConfidence').textContent = d.ml_confidence ? (d.ml_confidence * 100).toFixed(1) + '%' : '-';
+            document.getElementById('aiTFTDirection').textContent = d.tft_direction || '-';
+            document.getElementById('aiTFTConfidence').textContent = d.tft_confidence ? (d.tft_confidence * 100).toFixed(1) + '%' : '-';
+            document.getElementById('aiNBEATSDirection').textContent = d.nbeats_direction || '-';
+            document.getElementById('aiNBEATSConfidence').textContent = d.nbeats_confidence ? (d.nbeats_confidence * 100).toFixed(1) + '%' : '-';
+            document.getElementById('aiMarketRegime').textContent = d.market_regime || '-';
+            document.getElementById('aiMarketSentiment').textContent = d.market_sentiment || '-';
+            
+            document.getElementById('aiActivePair').textContent = d.active_pair || '-';
+            document.getElementById('aiTradingMode').textContent = d.trading_mode || '-';
+            document.getElementById('aiLeverage').textContent = d.trading_leverage || '-';
+            document.getElementById('aiSide').textContent = d.trading_side || '-';
+            document.getElementById('aiAllModules').textContent = d.all_modules_initialized ? 'Yes' : 'No';
+            document.getElementById('aiAllModules').className = 'info-value ' + (d.all_modules_initialized ? 'text-green' : 'text-red');
+            document.getElementById('aiWSConnected').textContent = d.ws_connected ? 'Yes' : 'No';
+            document.getElementById('aiWSConnected').className = 'info-value ' + (d.ws_connected ? 'text-green' : 'text-red');
+            document.getElementById('aiAutoTrades').textContent = d.auto_improve_total_trades || '-';
+            document.getElementById('aiAutoWR').textContent = d.auto_improve_win_rate ? (d.auto_improve_win_rate * 100).toFixed(1) + '%' : '-';
+            
+            document.getElementById('aiResilience').textContent = d.resilience_healthy ? 'Healthy' : 'Unknown';
+            document.getElementById('aiResilience').className = 'info-value ' + (d.resilience_healthy ? 'text-green' : 'text-yellow');
+            document.getElementById('aiFailures').textContent = d.resilience_consecutive_failures || '0';
+            document.getElementById('aiEmergency').textContent = d.emergency_system || '-';
+            document.getElementById('aiConsecLosses').textContent = d.auto_improve_consecutive_losses || '0';
+            document.getElementById('aiOptCount').textContent = d.auto_improve_optimization_count || '-';
+            
+            const autoParams = d.auto_optimized_params || {};
+            if (Object.keys(autoParams).length > 0) {
+                document.getElementById('aiAutoParams').innerHTML = `<pre class="small" style="background:var(--bg-secondary); padding:10px; border-radius:8px; overflow:auto; max-height:200px;">${JSON.stringify(autoParams, null, 2)}</pre>`;
+            } else {
+                document.getElementById('aiAutoParams').textContent = 'No auto-optimized parameters available yet.';
             }
         }
         

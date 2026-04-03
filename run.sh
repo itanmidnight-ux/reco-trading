@@ -1,380 +1,153 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "${ROOT_DIR}"
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/scripts/lib/runtime_env.sh"
 
-# ============================================
-# DETECT ROOT ACCESS
-# ============================================
+sync_mode_to_env() {
+  local mode_option="$1"
+  local env_file=".env"
 
-IS_ROOT=false
-IS_SUDO=false
+  if [ ! -f "${env_file}" ]; then
+    touch "${env_file}"
+  fi
 
-if [[ "${EUID}" -eq 0 ]]; then
-  IS_ROOT=true
-elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-  IS_SUDO=true
-fi
+  if [ "${mode_option}" = "1" ]; then
+    upsert_env_var "${env_file}" "BINANCE_TESTNET" "true"
+    upsert_env_var "${env_file}" "CONFIRM_MAINNET" "false"
+    upsert_env_var "${env_file}" "ENVIRONMENT" "testnet"
+    upsert_env_var "${env_file}" "RUNTIME_PROFILE" "paper"
+  elif [ "${mode_option}" = "2" ]; then
+    upsert_env_var "${env_file}" "BINANCE_TESTNET" "false"
+    upsert_env_var "${env_file}" "CONFIRM_MAINNET" "true"
+    upsert_env_var "${env_file}" "ENVIRONMENT" "production"
+    upsert_env_var "${env_file}" "RUNTIME_PROFILE" "production"
+  fi
+}
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+attempt_postgres_auto_fix() {
+  local helper="scripts/postgres/bootstrap_local_postgres.sh"
+  case "${DB_HOST:-localhost}" in
+    localhost|127.0.0.1|::1) ;;
+    *)
+      return 1
+      ;;
+  esac
 
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+  if [ ! -f "${helper}" ]; then
+    return 1
+  fi
 
-echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN}  RECO-TRADING BOT v3.0${NC}"
-echo -e "${CYAN}========================================${NC}"
+  if [ ! -x "${helper}" ]; then
+    chmod +x "${helper}"
+  fi
 
-if [[ "$IS_ROOT" == "true" ]]; then
-  log_info "Ejecutando como ROOT"
-elif [[ "$IS_SUDO" == "true" ]]; then
-  log_info "SUDO disponible"
+  echo "Intentando corregir PostgreSQL automáticamente..."
+  if ! "${helper}"; then
+    return 1
+  fi
+
+  load_runtime_env
+  if [ -z "${POSTGRES_DSN:-}" ]; then
+    build_postgres_dsn_from_config || true
+  fi
+}
+
+# Activar entorno virtual si existe
+if [ -f .venv/bin/activate ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
 else
-  log_info "Modo usuario (sin root)"
+  echo "Aviso: .venv/bin/activate no existe. Usando Python del sistema."
 fi
-
-# Load functions (handle missing file gracefully)
-if [[ -f "${ROOT_DIR}/scripts/lib/runtime_env.sh" ]]; then
-  source "${ROOT_DIR}/scripts/lib/runtime_env.sh"
-else
-  load_runtime_env() {
-    if [[ -f "${ROOT_DIR}/.env" ]]; then
-      set -a
-      source "${ROOT_DIR}/.env"
-      set +a
-    fi
-  }
-fi
-
-# Force non-interactive mode if not in a tty (e.g., cron, Docker, automated)
-if [[ ! -t 0 ]]; then
-  export DASHBOARD_TYPE="${DASHBOARD_TYPE:-none}"
-fi
-
-# ============================================
-# CHECK VIRTUAL ENVIRONMENT
-# ============================================
-
-if [[ ! -d "${ROOT_DIR}/.venv" ]]; then
-  log_error "Entorno virtual no encontrado"
-  echo ""
-  echo "Ejecuta install.sh primero:"
-  echo "  ./install.sh"
-  exit 1
-fi
-
-# Check if already in venv
-IN_VENV=$(${ROOT_DIR}/.venv/bin/python -c "import sys; print('yes' if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix) else 'no')" 2>/dev/null || echo "no")
-
-if [[ "$IN_VENV" != "yes" ]]; then
-  log_info "Activando entorno virtual..."
-  source "${ROOT_DIR}/.venv/bin/activate"
-fi
-
-# Use venv Python directly
-PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-echo -e "${GREEN}Python: $($PYTHON_BIN --version 2>&1)${NC}"
-
-# ============================================
-# VERIFY DEPENDENCIES
-# ============================================
-
-log_info "Verificando dependencias..."
-
-MISSING_DEPS=()
-for pkg in ccxt asyncpg sqlalchemy httpx; do
-  if ! $PYTHON_BIN -c "import $pkg" 2>/dev/null; then
-    MISSING_DEPS+=("$pkg")
-  fi
-done
-
-if [[ ${#MISSING_DEPS[@]} -gt 0 ]]; then
-  log_warn "Dependencias faltantes: ${MISSING_DEPS[*]}"
-  echo ""
-  log_info "Instalando dependencias automáticamente..."
-  
-  # Upgrade pip first
-  ${ROOT_DIR}/.venv/bin/pip install --upgrade pip -q 2>/dev/null || true
-  
-  # Install missing packages
-  for dep in "${MISSING_DEPS[@]}"; do
-    ${ROOT_DIR}/.venv/bin/pip install "$dep" -q 2>/dev/null || true
-    log_success "Instalado: $dep"
-  done
-  
-  # Also try requirements.txt
-  if [[ -f "${ROOT_DIR}/requirements.txt" ]]; then
-    ${ROOT_DIR}/.venv/bin/pip install -r "${ROOT_DIR}/requirements.txt" -q --ignore-installed 2>/dev/null || true
-  fi
-  
-  # Verify again
-  STILL_MISSING=()
-  for pkg in ccxt asyncpg sqlalchemy httpx; do
-    if ! $PYTHON_BIN -c "import $pkg" 2>/dev/null; then
-      STILL_MISSING+=("$pkg")
-    fi
-  done
-  
-  if [[ ${#STILL_MISSING[@]} -gt 0 ]]; then
-    log_error "No se pudieron instalar: ${STILL_MISSING[*]}"
-    echo ""
-    echo "Ejecuta:"
-    echo "  ./install-linux.sh"
-    exit 1
-  fi
-fi
-
-echo -e "${GREEN}✓ Dependencias OK${NC}"
-
-# ============================================
-# LOAD ENVIRONMENT
-# ============================================
 
 load_runtime_env
 
-# ============================================
-# VERIFY API KEYS
-# ============================================
-
-if [[ -z "${BINANCE_API_KEY:-}" ]] || [[ "$BINANCE_API_KEY" == "CAMBIAR_POR_TU_API_KEY" ]]; then
-  log_error "BINANCE_API_KEY no configurada en .env"
-  echo ""
-  echo "Edita el archivo .env y reemplaza:"
-  echo "  BINANCE_API_KEY=CAMBIAR_POR_TU_API_KEY"
-  echo ""
-  echo "Por tus credenciales de Binance."
-  exit 1
+# Intentar construir DSN desde config si no existe
+if [ -z "${POSTGRES_DSN:-}" ]; then
+  build_postgres_dsn_from_config || true
 fi
 
-if [[ -z "${BINANCE_API_SECRET:-}" ]] || [[ "$BINANCE_API_SECRET" == "CAMBIAR_POR_TU_API_SECRET" ]]; then
-  log_error "BINANCE_API_SECRET no configurada en .env"
-  echo ""
-  echo "Edita el archivo .env y reemplaza:"
-  echo "  BINANCE_API_SECRET=CAMBIAR_POR_TU_API_SECRET"
-  echo ""
-  echo "Por tus credenciales de Binance."
-  exit 1
-fi
-
-echo -e "${GREEN}✓ API Keys configuradas${NC}"
-
-# ============================================
-# MENU - SELECT MODE (skip if DASHBOARD_TYPE set)
-# ============================================
-
-if [[ -z "${DASHBOARD_TYPE:-}" ]]; then
-
+# Menú de selección de modo
 echo ""
 echo "Seleccione modo de ejecución:"
-echo "1) Testnet (Sandbox) - Recomendado para pruebas"
-echo "2) Producción Real (Dinero real)"
-read -p "Opción [1]: " MODE_OPTION
+echo "1) Binance Testnet (Sandbox - ÓRDENES REALES EN TESTNET)"
+echo "2) Binance Producción Real (Mainnet - Dinero real)"
+read -r -p "Ingrese opción (1 o 2): " MODE_OPTION
 
-if [[ "$MODE_OPTION" == "2" ]]; then
-  read -p "Escriba 'CONFIRMAR' para operar con dinero real: " CONFIRM
-  if [[ "$CONFIRM" != "CONFIRMAR" ]]; then
-    echo "Cancelado."
-    exit 1
-  fi
-  export BINANCE_TESTNET=false
-  export CONFIRM_MAINNET=true
-  export ENVIRONMENT=production
-  export RUNTIME_PROFILE=live
-  echo -e "${RED}⚠️  MODO PRODUCCIÓN ACTIVADO${NC}"
-else
+if [ "$MODE_OPTION" = "1" ]; then
   export BINANCE_TESTNET=true
   export CONFIRM_MAINNET=false
   export ENVIRONMENT=testnet
   export RUNTIME_PROFILE=paper
-  echo -e "${GREEN}✓ MODO TESTNET${NC}"
-fi
-
-# Update .env with mode
-if [[ -f "${ROOT_DIR}/.env" ]]; then
-  sed -i "s|^BINANCE_TESTNET=.*|BINANCE_TESTNET=${BINANCE_TESTNET}|" "${ROOT_DIR}/.env" 2>/dev/null || true
-  sed -i "s|^CONFIRM_MAINNET=.*|CONFIRM_MAINNET=${CONFIRM_MAINNET}|" "${ROOT_DIR}/.env" 2>/dev/null || true
-  sed -i "s|^ENVIRONMENT=.*|ENVIRONMENT=${ENVIRONMENT}|" "${ROOT_DIR}/.env" 2>/dev/null || true
-fi
-
+  sync_mode_to_env "$MODE_OPTION"
+  echo "Modo TESTNET activado."
+elif [ "$MODE_OPTION" = "2" ]; then
+  export BINANCE_TESTNET=false
+  read -r -p "⚠️  Está a punto de operar con dinero real. Escriba CONFIRMAR para continuar: " CONFIRM
+  if [ "$CONFIRM" != "CONFIRMAR" ]; then
+    echo "Operación cancelada."
+    exit 1
+  fi
+  if [ -z "${BINANCE_API_KEY:-}" ] || [ -z "${BINANCE_API_SECRET:-}" ]; then
+    echo "Error: BINANCE_API_KEY y BINANCE_API_SECRET son obligatorios para producción real."
+    exit 1
+  fi
+  export CONFIRM_MAINNET=true
+  export ENVIRONMENT=production
+  export RUNTIME_PROFILE=production
+  sync_mode_to_env "$MODE_OPTION"
+  echo "Modo PRODUCCIÓN REAL activado."
 else
-  echo -e "${CYAN}ℹ️  Modo no-interactivo (Docker/automático)${NC}"
+  echo "Opción inválida."
+  exit 1
 fi
 
-# ============================================
-# CHECK DATABASE
-# ============================================
+echo ""
 
-log_info "Verificando base de datos..."
-
-DB_STATUS="unknown"
-
-# Try PostgreSQL
-if [[ -n "${POSTGRES_DSN:-}" ]]; then
-  if $PYTHON_BIN -c "
-import asyncio
-import sys
-sys.path.insert(0, '.')
-from reco_trading.database.repository import Repository
-
-async def check():
-    from reco_trading.config.settings import Settings
-    s = Settings()
-    if s.postgres_dsn:
-        r = Repository(s.postgres_dsn)
-        try:
-            await r.verify_connectivity()
-            print('OK')
-        except:
-            pass
-        finally:
-            await r.close()
-
-asyncio.run(check())
-" 2>/dev/null; then
-    DB_STATUS="postgresql"
-    echo -e "${GREEN}✓ PostgreSQL conectado${NC}"
-  else
-    log_warn "PostgreSQL no accesible"
-  fi
-fi
-
-# Try MySQL
-if [[ -n "${MYSQL_DSN:-}" ]] && [[ "$DB_STATUS" == "unknown" ]]; then
-  if $PYTHON_BIN -c "
-import asyncio
-import sys
-sys.path.insert(0, '.')
-from reco_trading.database.repository import Repository
-
-async def check():
-    from reco_trading.config.settings import Settings
-    s = Settings()
-    if s.mysql_dsn:
-        r = Repository(s.mysql_dsn)
-        try:
-            await r.verify_connectivity()
-            print('OK')
-        except:
-            pass
-        finally:
-            await r.close()
-
-asyncio.run(check())
-" 2>/dev/null; then
-    DB_STATUS="mysql"
-    echo -e "${GREEN}✓ MySQL conectado${NC}"
-  fi
-fi
-
-# Fallback to SQLite
-if [[ "$DB_STATUS" == "unknown" ]]; then
-  if [[ -n "${DATABASE_URL:-}" ]]; then
-    DB_STATUS="sqlite"
-    echo -e "${GREEN}✓ SQLite configurado${NC}"
-  else
-    log_warn "Sin base de datos configurada"
-    echo "  El programa usará SQLite automáticamente"
-    DB_STATUS="sqlite_fallback"
-    export DATABASE_URL="sqlite+aiosqlite:///${ROOT_DIR}/data/reco_trading.db"
-    mkdir -p "${ROOT_DIR}/data"
-  fi
-fi
-
-# Export DATABASE_URL if PostgreSQL or MySQL failed
-if [[ "$DB_STATUS" == "postgresql" ]]; then
-  export DATABASE_URL="${POSTGRES_DSN}"
-elif [[ "$DB_STATUS" == "mysql" ]]; then
-  export DATABASE_URL="${MYSQL_DSN}"
-fi
-
-# ============================================
-# CLEAN UP OLD PROCESSES
-# ============================================
-
-if pgrep -f "python.*reco_trading" > /dev/null 2>&1; then
-  log_warn "Deteniendo instancia anterior..."
-  pkill -f "python.*reco_trading" 2>/dev/null || true
-  sleep 2
-fi
-
-# Free ports if we have permissions
-for port in 8000 8080 9000; do
-  if ss -tlnp 2>/dev/null | grep -q ":${port} "; then
-    if [[ "$IS_ROOT" == "true" ]] || [[ "$IS_SUDO" == "true" ]]; then
-      log_info "Liberando puerto ${port}..."
-      fuser -k ${port}/tcp 2>/dev/null || true
-      sleep 1
-    fi
+# Verificar API Keys
+missing_vars=()
+for required_var in BINANCE_API_KEY BINANCE_API_SECRET; do
+  if [ -z "${!required_var:-}" ]; then
+    missing_vars+=("${required_var}")
   fi
 done
 
-# ============================================
-# SELECT DASHBOARD TYPE (skip if non-interactive)
-# ============================================
+# Verificar base de datos - preferir PostgreSQL, fallback a SQLite
+db_available=false
 
-if [[ -t 0 ]] && [[ -z "${DASHBOARD_TYPE:-}" ]]; then
-  echo ""
-  echo -e "${CYAN}========================================${NC}"
-  echo -e "${CYAN}  SELECT DASHBOARD TYPE${NC}"
-  echo -e "${CYAN}========================================${NC}"
-  echo ""
-  echo "Seleccione el tipo de dashboard:"
-  echo "1) App Dashboard (PySide6 GUI) - Interfaz de escritorio"
-  echo "2) Web Dashboard (Navegador) - Acceso en http://localhost:9000"
-  echo "3) Headless (Sin dashboard) - Solo terminal"
-  echo ""
-  
-  while true; do
-    read -p "Elija opción [1-3]: " DASH_CHOICE
-    case $DASH_CHOICE in
-      1)
-        export DASHBOARD_TYPE="app"
-        echo -e "${GREEN}✓ App Dashboard seleccionado${NC}"
-        break
-        ;;
-      2)
-        export DASHBOARD_TYPE="web"
-        echo -e "${GREEN}✓ Web Dashboard seleccionado${NC}"
-        break
-        ;;
-      3)
-        export DASHBOARD_TYPE="none"
-        echo -e "${GREEN}✓ Modo Headless seleccionado${NC}"
-        break
-        ;;
-      *)
-        echo -e "${YELLOW}Opción inválida. Elija 1, 2 o 3.${NC}"
-        ;;
-    esac
-  done
-elif [[ -n "${DASHBOARD_TYPE:-}" ]]; then
-  echo -e "${CYAN}ℹ️  Dashboard type prefijado: ${DASHBOARD_TYPE}${NC}"
-else
-  export DASHBOARD_TYPE="none"
-  echo -e "${CYAN}ℹ️  Modo no-interactivo (sin dashboard)${NC}"
+# Intentar PostgreSQL primero
+if [ -n "${POSTGRES_DSN:-}" ]; then
+  if postgres_host_reachable; then
+    echo "✓ PostgreSQL conectado correctamente"
+    db_available=true
+  else
+    echo "Advertencia: PostgreSQL no está disponible en el host configurado"
+    # Intentar auto-reparar
+    if attempt_postgres_auto_fix && postgres_host_reachable; then
+      echo "✓ PostgreSQL fue reparado automáticamente"
+      db_available=true
+    fi
+  fi
 fi
 
-# ============================================
-# START BOT
-# ============================================
+# Fallback a SQLite si PostgreSQL no está disponible
+if [ "$db_available" = false ]; then
+  echo "Usando SQLite como fallback..."
+  build_sqlite_dsn
+  if [ -n "${DATABASE_URL:-}" ]; then
+    echo "✓ SQLite configurado: ${DATABASE_URL}"
+    db_available=true
+  fi
+fi
+
+if [ "$db_available" = false ]; then
+  echo "Error: No se pudo configurar ninguna base de datos"
+  exit 1
+fi
 
 echo ""
-echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}  ✅ INICIANDO BOT v3.0${NC}"
-echo -e "${GREEN}========================================${NC}"
-echo ""
-echo "Modo: ${ENVIRONMENT}"
-echo "Base de datos: ${DB_STATUS}"
-echo "Dashboard: ${DASHBOARD_TYPE}"
+echo "Iniciando Reco-Trading Bot..."
 echo ""
 
-# Run the bot using venv Python
-$PYTHON_BIN main.py "$@"
+python main.py

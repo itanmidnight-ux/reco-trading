@@ -217,47 +217,26 @@ class BotEngine:
         self.enhanced_ml.add_model("sentiment", 1.0)
         self._ml_enabled = True
         
-        # Initialize advanced ML models (optional - only if dependencies available)
-        if _TFT_AVAILABLE:
-            self.tft_manager = TFTManager(TFTConfig(hidden_size=128, sequence_length=60, prediction_horizon=5))
-            self.logger.info("TFT model initialized")
-        else:
-            self.tft_manager = None
-            self.logger.info("TFT model skipped (torch not available)")
-            
-        if _NBEATS_AVAILABLE:
-            self.nbeats_manager = NBEATSManager(NBEATSConfig(hidden_size=256, sequence_length=60, prediction_horizon=5))
-            self.logger.info("NBEATS model initialized")
-        else:
-            self.nbeats_manager = None
-            self.logger.info("NBEATS model skipped (torch not available)")
+        self.tft_manager = None
+        self.nbeats_manager = None
+        self.meta_learning_manager = None
+        self.market_meta_learner = None
         
-        # Meta-learning (optional)
-        if _META_LEARNING_AVAILABLE:
-            try:
-                self.meta_learning_manager = MetaLearningManager(MetaLearningConfig(
-                    maml_inner_lr=0.01,
-                    maml_outer_lr=0.001,
-                    adaptation_steps=5,
-                    task_batch_size=4,
-                    max_tasks=50
-                ))
-                self.logger.info("Meta-learning manager initialized")
-            except Exception as e:
-                self.logger.warning(f"Meta-learning init failed: {e}")
-                self.meta_learning_manager = None
-        else:
-            self.meta_learning_manager = None
-            self.logger.info("Meta-learning skipped (dependencies not available)")
+        self.logger.info("Lightweight ML mode: TFT/NBEATS/Meta-learning disabled for low RAM usage")
         
-        try:
-            from reco_trading.ml.meta_learner import MarketMetaLearner as OriginalMarketMetaLearner
-            self.market_meta_learner = OriginalMarketMetaLearner()
-        except Exception as e:
-            self.logger.warning(f"MarketMetaLearner init failed: {e}")
-            self.market_meta_learner = None
-        
-        self.logger.info("Advanced ML models initialized")
+        from reco_trading.core.llm_trade_confirmator import LLMTradeConfirmator
+        from reco_trading.core.llm_systems.log_analyzer import LLMLogAnalyzer
+        from reco_trading.core.llm_systems.auto_fix_coordinator import AutoFixCoordinator
+
+        self.trade_confirmator = LLMTradeConfirmator()
+        self.log_analyzer = LLMLogAnalyzer()
+        self.auto_fix_coordinator = AutoFixCoordinator(
+            log_analyzer=self.log_analyzer,
+            pause_callback=lambda: setattr(self, "manual_pause", True),
+            resume_callback=lambda: setattr(self, "manual_pause", False),
+            refresh_callback=self._on_auto_fix_refresh,
+        )
+        self.logger.info("LLM systems initialized: TradeConfirmator, LogAnalyzer, AutoFixCoordinator")
         
         self.trading_mode_manager = TradingModeManager(self.client)
         self.ws_manager = WebSocketManager(self.client)
@@ -275,6 +254,8 @@ class BotEngine:
         self._cached_frame15: Any | None = None
         self._last_primary_indicator_ts: datetime | None = None
         self._last_confirmation_indicator_ts: datetime | None = None
+        self._market_analysis_cancelled = False
+        self._pending_pair_switch: str | None = None
 
         self.dashboard = TerminalDashboard()
         self.snapshot: dict[str, Any] = {
@@ -350,12 +331,22 @@ class BotEngine:
             "exit_intelligence_codes": [],
             "exit_intelligence_details": {},
             "exit_intelligence_log": [],
+            "market_analysis": {
+                "status": "idle",
+                "total_markets": 0,
+                "analyzed_markets": 0,
+                "progress_pct": 0.0,
+                "best_pair": "--",
+                "best_score": 0.0,
+                "last_analysis_time": "Never",
+                "ai_connected": False,
+            },
+            "market_analysis_request": None,
+            "market_analysis_market_count": 50,
         }
 
     async def run(self) -> None:
         try:
-            await self._set_state(BotState.INITIALIZING, "initialize_settings")
-            
             try:
                 await self.repository.setup()
                 self.snapshot["database_status"] = "CONNECTED"
@@ -383,8 +374,6 @@ class BotEngine:
             await self._set_state(BotState.CONNECTING_EXCHANGE, "connect_exchange")
             await self.client.connect()
             await self.client.sync_time()
-            await self._set_state(BotState.SYNCING_SYMBOL, "sync_symbol")
-            await self._set_state(BotState.SYNCING_RULES, "sync_exchange_rules")
             await self.order_manager.sync_rules()
             self.snapshot["exchange_status"] = "CONNECTED"
             self.observability.update_health(exchange_healthy=True)
@@ -408,8 +397,17 @@ class BotEngine:
             self._auto_improver_initialized = True
             self.logger.info("All auto-improvement systems started: AutoImprover, SelfAnalyzer, AutonomousOptimizer, LoopManager")
             
-            # Auto-train ML models with historical data (non-blocking, runs in background)
             self._start_ml_auto_training()
+            
+            self.snapshot["market_analysis"]["ai_connected"] = True
+            self.snapshot["llm_trade_confirmator"] = self.trade_confirmator.stats
+            self._sync_ui_state()
+            
+            try:
+                await self.auto_fix_coordinator.start()
+                self.logger.info("AutoFixCoordinator started")
+            except Exception as afc_exc:
+                self.logger.warning(f"AutoFixCoordinator failed to start: {afc_exc}")
             
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -418,6 +416,7 @@ class BotEngine:
                 while True:
                     try:
                         await self._process_control_requests()
+                        await self._switch_symbol_if_pending()
                         await self.client.periodic_time_resync(interval_seconds=1800.0)
                         if self.emergency_stop_active:
                             await self._set_state(BotState.PAUSED, "emergency_stop")
@@ -473,13 +472,42 @@ class BotEngine:
                             intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
                             self._apply_market_intelligence_snapshot(intelligence)
                             if intelligence.get("approved"):
-                                await self._log_trade_cycle_summary(
-                                    analysis=analysis,
-                                    decision="APPROVED",
-                                    reason="TRADE_APPROVED",
-                                    filter_checks=list(analysis.get("validation_checks", [])),
+                                confirmation = self.trade_confirmator.confirm_trade(
+                                    symbol=self.symbol,
+                                    side=str(analysis.get("side", "HOLD")),
+                                    entry_price=float(market_data.get("price", 0)),
+                                    quantity=float(analysis.get("quantity", 0)),
+                                    signal=str(analysis.get("signal", "HOLD")),
+                                    confidence=float(analysis.get("confidence", 0)),
+                                    trend=str(analysis.get("trend", "NEUTRAL")),
+                                    adx=float(analysis.get("adx", 0)),
+                                    volatility_regime=str(self.snapshot.get("volatility_regime", "NORMAL")),
+                                    order_flow=str(analysis.get("order_flow", "NEUTRAL")),
+                                    spread=float(market_data.get("spread", 0)),
+                                    atr=float(market_data.get("atr", 0)),
+                                    volume=float(market_data.get("volume", 0)),
+                                    risk_per_trade=self._effective_risk_per_trade_fraction(),
+                                    daily_pnl=float(self.snapshot.get("daily_pnl", 0) or 0),
+                                    trades_today=int(self.snapshot.get("trades_today", 0)),
+                                    max_trades_per_day=int(self.settings.max_trades_per_day),
                                 )
-                                await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                                if not confirmation.confirmed:
+                                    await self._log("WARNING", f"llm_trade_rejected reason={confirmation.reason} time={confirmation.analysis_time_ms:.1f}ms")
+                                    await self._log_trade_cycle_summary(
+                                        analysis=analysis,
+                                        decision="REJECTED",
+                                        reason=f"LLM_CONFIRM_REJECT: {confirmation.reason}",
+                                        filter_checks=list(analysis.get("validation_checks", [])),
+                                    )
+                                else:
+                                    await self._log("INFO", f"llm_trade_confirmed time={confirmation.analysis_time_ms:.1f}ms")
+                                    await self._log_trade_cycle_summary(
+                                        analysis=analysis,
+                                        decision="APPROVED",
+                                        reason="TRADE_LLM_CONFIRMED",
+                                        filter_checks=list(analysis.get("validation_checks", [])),
+                                    )
+                                    await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
                             else:
                                 rejection_reason = str(intelligence.get("reason", "MARKET_INTELLIGENCE_REJECT"))
                                 await self._set_state(BotState.WAITING_MARKET_DATA, rejection_reason)
@@ -503,6 +531,7 @@ class BotEngine:
                         self.exchange_failure_count = 0
                         self.observability.update_health(exchange_healthy=True)
                         self._refresh_observability_snapshot()
+                        await self._run_log_analysis_cycle()
                         self._sync_ui_state()
                         self._safe_live_update(live)
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
@@ -2110,6 +2139,96 @@ class BotEngine:
         thread.start()
         self.logger.info("ML auto-training started in background")
 
+    async def _start_market_analysis(self, market_count: int) -> None:
+        """Analyze all markets to find the best trading pair."""
+        self._market_analysis_cancelled = False
+        ma = self.snapshot["market_analysis"]
+        ma["status"] = "running"
+        ma["total_markets"] = market_count
+        ma["analyzed_markets"] = 0
+        ma["progress_pct"] = 0.0
+        ma["best_pair"] = "--"
+        ma["best_score"] = 0.0
+        self._sync_ui_state()
+
+        try:
+            all_tickers = await self.client.fetch_tickers()
+            usdt_pairs = [
+                sym for sym in all_tickers.keys()
+                if sym.endswith("/USDT") and ":" not in sym and sym.count("/") == 1
+            ][:market_count]
+
+            best_pair = "--"
+            best_score = 0.0
+
+            for i, pair in enumerate(usdt_pairs):
+                if self._market_analysis_cancelled:
+                    ma["status"] = "cancelled"
+                    ma["progress_pct"] = 0.0
+                    self._sync_ui_state()
+                    return
+
+                try:
+                    ticker = all_tickers.get(pair, {})
+                    price = float(ticker.get("last", 0))
+                    volume = float(ticker.get("baseVolume", 0))
+                    change = float(ticker.get("percentage", 0) or 0)
+                    spread = 0.0
+                    if ticker.get("ask") and ticker.get("bid"):
+                        spread = (float(ticker["ask"]) - float(ticker["bid"])) / float(ticker["ask"]) * 100 if float(ticker["ask"]) > 0 else 0
+
+                    score = 0.0
+                    if price > 0:
+                        score += min(volume / 1000, 30)
+                        score += min(abs(change) / 5, 20)
+                        score += max(0, 20 - spread * 10)
+                        score += min(price / 1000, 10)
+                        score += 20
+
+                    if score > best_score:
+                        best_score = score
+                        best_pair = pair
+
+                    ma["analyzed_markets"] = i + 1
+                    ma["progress_pct"] = ((i + 1) / len(usdt_pairs)) * 100
+                    ma["best_pair"] = best_pair
+                    ma["best_score"] = best_score
+                    self._sync_ui_state()
+                except Exception:
+                    continue
+
+            from datetime import datetime, timezone
+            ma["status"] = "completed"
+            ma["progress_pct"] = 100.0
+            ma["best_pair"] = best_pair
+            ma["best_score"] = best_score
+            ma["last_analysis_time"] = datetime.now(timezone.utc).strftime("%H:%M:%S")
+            self._sync_ui_state()
+            await self._log("INFO", f"market_analysis_completed best={best_pair} score={best_score:.2f}")
+        except Exception as exc:
+            ma["status"] = "idle"
+            ma["progress_pct"] = 0.0
+            self._sync_ui_state()
+            await self._log("ERROR", f"market_analysis_failed: {exc}")
+
+    def _on_auto_fix_refresh(self) -> None:
+        """Called by AutoFixCoordinator after fixes are applied."""
+        self.logger.info("Auto-fix refresh triggered - applying corrections")
+        self.snapshot["auto_fix_applied"] = True
+        self._sync_ui_state()
+
+    async def _run_log_analysis_cycle(self) -> None:
+        """Periodically analyze logs and write errors to docs/analisis.txt."""
+        try:
+            logs = self.snapshot.get("logs", [])[-100:]
+            new_errors = self.log_analyzer.analyze_logs(logs)
+            if new_errors:
+                await self._log("WARNING", f"llm_analyzer found {len(new_errors)} new errors")
+            self.log_analyzer.cleanup_old_errors()
+            self.snapshot["llm_analysis"] = self.log_analyzer.get_summary()
+        except Exception as exc:
+            self.logger.debug(f"Log analysis cycle error: {exc}")
+
     async def _process_control_requests(self) -> None:
         if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):
             return
@@ -2129,6 +2248,17 @@ class BotEngine:
                 self.manual_pause = True
                 await self._log("ERROR", "emergency_stop_requested")
                 await self.force_close_position()
+            elif control == "analysis_start":
+                market_count = self.snapshot.get("market_analysis_market_count", 50)
+                await self._start_market_analysis(int(market_count))
+            elif control == "analysis_cancel":
+                self._market_analysis_cancelled = True
+                await self._log("INFO", "market_analysis_cancelled")
+            elif control == "analysis_change_pair":
+                best_pair = self.snapshot.get("market_analysis", {}).get("best_pair")
+                if best_pair and best_pair != "--":
+                    self._pending_pair_switch = normalize_symbol(best_pair)
+                    await self._log("INFO", f"pair_switch_requested target={self._pending_pair_switch}")
 
         if hasattr(self.state_manager, "pop_runtime_settings"):
             runtime_updates = self.state_manager.pop_runtime_settings()
@@ -2265,6 +2395,15 @@ class BotEngine:
         await self.order_manager.sync_rules()
         await self._set_state(BotState.WAITING_MARKET_DATA, "runtime_symbol_switch_complete")
         await self._log("INFO", f"runtime_symbol_switched from={previous_symbol} to={normalized_symbol}")
+
+    async def _switch_symbol_if_pending(self) -> None:
+        if not self._pending_pair_switch:
+            return
+        if await self._has_active_trade_for_symbol_switch():
+            return
+        target = self._pending_pair_switch
+        self._pending_pair_switch = None
+        await self._switch_symbol(target)
 
     def _auto_investment_controls(self, mode: str, sanitized_payload: dict[str, Any] | None = None) -> dict[str, float | bool | str]:
         normalized_mode = str(mode).strip().lower()
@@ -2600,6 +2739,7 @@ class BotEngine:
                     "memory_usage_mb": round(_get_memory_mb(), 1),
                     "last_server_sync": datetime.utcnow().isoformat(timespec="seconds"),
                 },
+                market_analysis=self.snapshot.get("market_analysis", {}),
                 risk_metrics={
                     "risk_per_trade": f"{self._effective_risk_per_trade_fraction():.2%}",
                     "max_concurrent_trades": self._effective_max_concurrent_trades(),
@@ -2643,6 +2783,9 @@ class BotEngine:
                     "details": dict(self.snapshot.get("exit_intelligence_details", {}) or {}),
                     "events": list(self.snapshot.get("exit_intelligence_log", []) or []),
                 },
+                llm_trade_confirmator=self.trade_confirmator.stats,
+                llm_analysis=self.log_analyzer.get_summary(),
+                auto_fix_coordinator=self.auto_fix_coordinator.get_status(),
             )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)

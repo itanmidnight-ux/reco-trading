@@ -213,9 +213,36 @@ def _enhance_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     # AI/ML
     snapshot.setdefault("ml_direction", snapshot.get("ml_direction", None))
     snapshot.setdefault("ml_confidence", snapshot.get("ml_confidence", 0.0))
+    snapshot.setdefault("ml_predicted_move", snapshot.get("ml_predicted_move", 0.0))
+    snapshot.setdefault("tft_direction", snapshot.get("tft_direction", None))
+    snapshot.setdefault("tft_confidence", snapshot.get("tft_confidence", 0.0))
+    snapshot.setdefault("nbeats_direction", snapshot.get("nbeats_direction", None))
+    snapshot.setdefault("nbeats_confidence", snapshot.get("nbeats_confidence", 0.0))
     snapshot.setdefault("market_regime", snapshot.get("market_regime", "UNKNOWN"))
     snapshot.setdefault("market_sentiment", snapshot.get("market_sentiment", "NEUTRAL"))
     snapshot.setdefault("confluence_score", snapshot.get("confluence_score", 0.0))
+    snapshot.setdefault("confluence_aligned", snapshot.get("confluence_aligned", None))
+    
+    # Autonomous brain / system state
+    snapshot.setdefault("active_pair", snapshot.get("active_pair", None))
+    snapshot.setdefault("pair_opportunity_score", snapshot.get("pair_opportunity_score", 0.0))
+    snapshot.setdefault("trading_mode", snapshot.get("trading_mode", None))
+    snapshot.setdefault("trading_leverage", snapshot.get("trading_leverage", None))
+    snapshot.setdefault("trading_side", snapshot.get("trading_side", None))
+    snapshot.setdefault("all_modules_initialized", snapshot.get("all_modules_initialized", None))
+    snapshot.setdefault("ws_connected", snapshot.get("ws_connected", None))
+    
+    # Auto-improver
+    snapshot.setdefault("auto_improve_total_trades", snapshot.get("auto_improve_total_trades", 0))
+    snapshot.setdefault("auto_improve_win_rate", snapshot.get("auto_improve_win_rate", 0.0))
+    snapshot.setdefault("auto_improve_consecutive_losses", snapshot.get("auto_improve_consecutive_losses", 0))
+    snapshot.setdefault("auto_improve_optimization_count", snapshot.get("auto_improve_optimization_count", 0))
+    snapshot.setdefault("auto_optimized_params", snapshot.get("auto_optimized_params", {}))
+    
+    # Resilience & emergency
+    snapshot.setdefault("resilience_healthy", snapshot.get("resilience_healthy", None))
+    snapshot.setdefault("resilience_consecutive_failures", snapshot.get("resilience_consecutive_failures", 0))
+    snapshot.setdefault("emergency_system", snapshot.get("emergency_system", None))
     
     # Capital profile
     snapshot.setdefault("capital_profile", snapshot.get("capital_profile", "UNKNOWN"))
@@ -736,6 +763,78 @@ def create_app() -> Flask:
             "exchange_reconnections": snapshot.get("exchange_reconnections", 0),
             "dynamic_exit_enabled": snapshot.get("dynamic_exit_enabled", True),
         })
+    
+    @app.route('/api/market_analysis')
+    def api_market_analysis():
+        """Get market analysis status."""
+        snapshot = get_bot_snapshot()
+        ma = snapshot.get("market_analysis", {})
+        return jsonify(ma)
+    
+    @app.route('/api/market_analysis/start', methods=['POST'])
+    def api_market_analysis_start():
+        """Start market analysis."""
+        global _global_bot_instance
+        if _global_bot_instance is None and _bot_instance_getter is not None:
+            try:
+                _global_bot_instance = _bot_instance_getter()
+            except Exception:
+                pass
+        if _global_bot_instance is None:
+            return jsonify({"success": False, "error": "Bot not connected"})
+        try:
+            data = request.get_json(silent=True) or {}
+            market_count = data.get("market_count", 50)
+            if hasattr(_global_bot_instance, 'snapshot'):
+                _global_bot_instance.snapshot["market_analysis_request"] = "start"
+                _global_bot_instance.snapshot["market_analysis_market_count"] = market_count
+            logger.info(f"Market analysis started for {market_count} markets")
+            return jsonify({"success": True, "message": f"Starting analysis of {market_count} markets"})
+        except Exception as e:
+            logger.error(f"Error starting market analysis: {e}")
+            return jsonify({"success": False, "error": str(e)})
+    
+    @app.route('/api/market_analysis/cancel', methods=['POST'])
+    def api_market_analysis_cancel():
+        """Cancel market analysis."""
+        global _global_bot_instance
+        if _global_bot_instance is None and _bot_instance_getter is not None:
+            try:
+                _global_bot_instance = _bot_instance_getter()
+            except Exception:
+                pass
+        if _global_bot_instance is None:
+            return jsonify({"success": False, "error": "Bot not connected"})
+        try:
+            if hasattr(_global_bot_instance, 'snapshot'):
+                _global_bot_instance.snapshot["market_analysis_request"] = "cancel"
+            logger.info("Market analysis cancelled")
+            return jsonify({"success": True, "message": "Analysis cancelled"})
+        except Exception as e:
+            logger.error(f"Error cancelling market analysis: {e}")
+            return jsonify({"success": False, "error": str(e)})
+    
+    @app.route('/api/market_analysis/change_pair', methods=['POST'])
+    def api_market_analysis_change_pair():
+        """Request pair change to best analyzed pair."""
+        global _global_bot_instance
+        if _global_bot_instance is None and _bot_instance_getter is not None:
+            try:
+                _global_bot_instance = _bot_instance_getter()
+            except Exception:
+                pass
+        if _global_bot_instance is None:
+            return jsonify({"success": False, "error": "Bot not connected"})
+        try:
+            if hasattr(_global_bot_instance, 'snapshot'):
+                _global_bot_instance.snapshot["market_analysis_request"] = "change_pair"
+            ma = _global_bot_instance.snapshot.get("market_analysis", {})
+            best_pair = ma.get("best_pair", "unknown")
+            logger.info(f"Pair change requested to {best_pair}")
+            return jsonify({"success": True, "message": f"Will switch to {best_pair} after current trade completes"})
+        except Exception as e:
+            logger.error(f"Error changing pair: {e}")
+            return jsonify({"success": False, "error": str(e)})
     
     _app = app
     return app

@@ -17,8 +17,6 @@ from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
 from reco_trading.ui.tabs.strategy_tab import StrategyTab
 from reco_trading.ui.tabs.trades_tab import TradesTab
-from reco_trading.ui.tabs.market_analysis_tab import MarketAnalysisTab
-from reco_trading.ui.tabs.ai_monitor_tab import AIMonitorTab
 
 
 class MainWindow(QMainWindow):
@@ -45,8 +43,6 @@ class MainWindow(QMainWindow):
         self.risk_tab = RiskTab()
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
-        self.market_analysis_tab = MarketAnalysisTab()
-        self.ai_monitor_tab = AIMonitorTab()
 
         tabs.addTab(self.dashboard_tab, "Dashboard")
         tabs.addTab(self.trades_tab, "Trades")
@@ -58,8 +54,6 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.risk_tab, "Risk")
         tabs.addTab(self.settings_tab, "Settings")
         tabs.addTab(self.system_tab, "System")
-        tabs.addTab(self.market_analysis_tab, "Market Analysis")
-        tabs.addTab(self.ai_monitor_tab, "AI Monitor")
         self.setCentralWidget(tabs)
         self.tabs = tabs
         self.tab_fade = QPropertyAnimation(self, b"windowOpacity", self)
@@ -70,7 +64,6 @@ class MainWindow(QMainWindow):
         state_manager.log_added.connect(self.logs_tab.add_log)
         state_manager.notification.connect(self._notify)
         self.settings_tab.settings_changed.connect(self._on_ui_settings)
-        self.market_analysis_tab.analysis_requested.connect(self._on_analysis_request)
 
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self._refresh_from_snapshot)
@@ -94,7 +87,6 @@ class MainWindow(QMainWindow):
             self.risk_tab,
             self.settings_tab,
             self.system_tab,
-            self.market_analysis_tab,
         ):
             try:
                 tab.update_state(enriched_state)
@@ -113,9 +105,6 @@ class MainWindow(QMainWindow):
         self.refresh_timer.setInterval(int(settings.get("refresh_rate_ms", 1000)))
         self.dashboard_tab.chart_panel.setVisible(bool(settings.get("chart_visible", True)))
         self.state_manager.push_runtime_settings(settings)
-
-    def _on_analysis_request(self, action: str) -> None:
-        self.state_manager.request_analysis(action)
 
     def _notify(self, title: str, message: str) -> None:
         QMessageBox.information(self, title, message)

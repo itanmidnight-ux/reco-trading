@@ -303,6 +303,53 @@ class Repository:
             return list(result.scalars().all())
 
     @safe_db_call(default=[])
+    async def get_trades(self, limit: int = 200, offset: int = 0, status_filter: str | None = None, symbol: str | None = None) -> list[Trade]:
+        async with self.session_factory() as session:
+            q = select(Trade)
+            if status_filter:
+                q = q.where(Trade.status == status_filter)
+            if symbol:
+                q = q.where(Trade.symbol == symbol)
+            q = q.order_by(Trade.timestamp.desc()).limit(max(1, int(limit))).offset(max(0, int(offset)))
+            result = await session.execute(q)
+            return list(result.scalars().all())
+
+    @safe_db_call(default={"total": 0, "closed": 0, "open": 0, "realized_pnl": 0.0, "win_rate": 0.0})
+    async def get_trade_summary(self) -> dict[str, Any]:
+        async with self.session_factory() as session:
+            total_q = select(func.count(Trade.id))
+            total_result = await session.execute(total_q)
+            total = total_result.scalar_one() or 0
+
+            closed_q = select(func.count(Trade.id)).where(Trade.status != "OPEN")
+            closed_result = await session.execute(closed_q)
+            closed = closed_result.scalar_one() or 0
+
+            open_q = select(func.count(Trade.id)).where(Trade.status == "OPEN")
+            open_result = await session.execute(open_q)
+            open_count = open_result.scalar_one() or 0
+
+            pnl_q = select(func.coalesce(func.sum(Trade.pnl), 0.0)).where(Trade.status != "OPEN")
+            pnl_result = await session.execute(pnl_q)
+            realized_pnl = float(pnl_result.scalar_one() or 0.0)
+
+            wins_q = select(func.count(Trade.id)).where(Trade.status != "OPEN").where(Trade.pnl > 0)
+            wins_result = await session.execute(wins_q)
+            wins = wins_result.scalar_one() or 0
+
+            win_rate = (wins / closed * 100) if closed > 0 else 0.0
+
+            return {
+                "total": total,
+                "closed": closed,
+                "open": open_count,
+                "realized_pnl": realized_pnl,
+                "win_rate": win_rate,
+                "wins": wins,
+                "losses": closed - wins,
+            }
+
+    @safe_db_call(default=[])
     async def get_recent_logs(self, limit: int = 400) -> list[BotLog]:
         capped_limit = max(1, int(limit))
         async with self.session_factory() as session:

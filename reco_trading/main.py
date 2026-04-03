@@ -37,19 +37,28 @@ def get_bot_instance() -> BotEngine | None:
     return _bot_instance
 
 
+def _run_bot(settings: Settings, state_manager: object | None) -> None:
+    """Run the bot in a separate thread."""
+    asyncio.run(BotEngine(settings, state_manager=state_manager).run())
+
+
 async def _verify_database_connection(settings: Settings) -> str:
-    """Verify database connection - supports PostgreSQL, MySQL, and SQLite."""
+    """Verify database connection - PostgreSQL is primary, SQLite fallback."""
     dsn = None
     
+    # PostgreSQL - Primary choice
     if settings.postgres_dsn:
         dsn = settings.postgres_dsn
-    elif settings.mysql_dsn:
-        dsn = settings.mysql_dsn
+    # SQLite - Fallback if PostgreSQL not configured
     elif settings.database_url:
         dsn = settings.database_url
         if dsn.startswith("sqlite://"):
             dsn = dsn.replace("sqlite://", "sqlite+aiosqlite://", 1)
+    # MySQL - Alternative fallback
+    elif settings.mysql_dsn:
+        dsn = settings.mysql_dsn
     
+    # Create SQLite as last resort if nothing configured
     if not dsn:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         os.makedirs(os.path.join(project_root, "data"), exist_ok=True)
@@ -156,34 +165,19 @@ def run() -> None:
     elif dashboard_type == '3':
         dashboard_type = 'none'
     
-    state_manager: StateManager | None = None
+    state_manager = None
+    bot_thread = None
     
+    # Create state manager for App dashboard
     if dashboard_type == 'app':
         try:
             from reco_trading.ui import StateManager, run_gui
             state_manager = StateManager()
             logger.info("App Dashboard selected")
         except Exception as exc:
-            logger.exception(f"App Dashboard failed: {exc}, falling back to headless")
-            dashboard_type = 'none'
-    
-    elif dashboard_type == 'web':
-        logger.info("Web Dashboard selected (port 9000)")
-        try:
-            from web_site.dashboard_server import run_in_thread, set_bot_instance_getter
-            
-            def get_bot():
-                return get_bot_instance()
-            
-            set_bot_instance_getter(get_bot)
-            web_dashboard_thread = run_in_thread(host='0.0.0.0', port=9000)
-            logger.info("Web Dashboard started on http://localhost:9000")
-        except Exception as exc:
-            logger.exception(f"Web Dashboard failed: {exc}, running headless")
-            dashboard_type = 'none'
-    
-    if dashboard_type == 'none':
-        logger.info("Running in headless mode (no dashboard)")
+            logger.exception("UI initialization failed, running bot headless: %s", exc)
+            _run_bot(settings, None)
+            return
     
     # Hydrate UI state from database
     try:
@@ -191,40 +185,37 @@ def run() -> None:
         if state_manager:
             asyncio.run(hydrate_state_from_database(settings, state_manager))
     except Exception as exc:
-        logger.warning("State hydration failed; continuing with an empty UI state: %s", exc)
-
-    # Create and start bot engine
-    global _bot_instance
-    _bot_instance = BotEngine(settings, state_manager=state_manager)
+        logger.warning("State hydration failed; continuing with an empty UI state because the bot can still start cleanly: %s", exc)
     
-    # Set bot instance for web dashboard
-    if dashboard_type == 'web':
-        try:
-            from web_site.dashboard_server import set_bot_instance
-            set_bot_instance(_bot_instance)
-        except Exception:
-            pass
+    # Start bot in background thread
+    import threading
+    bot_thread = threading.Thread(target=_run_bot, args=(settings, state_manager), daemon=True, name="bot-engine")
+    bot_thread.start()
     
-    logger.info(f"Bot engine initialized with {dashboard_type} dashboard")
-
-    if dashboard_type == 'app' and state_manager:
+    # Run GUI in main thread (or start web dashboard)
+    if dashboard_type == 'app':
         try:
             from reco_trading.ui import run_gui
             run_gui(state_manager)
         except Exception as exc:
             logger.exception("GUI failed, bot will continue running: %s", exc)
-            # Wait for bot to finish
-            try:
-                asyncio.run(_bot_instance.run())
-            except KeyboardInterrupt:
-                logger.info("Shutting down...")
-    else:
+            bot_thread.join()
+    elif dashboard_type == 'web':
+        logger.info("Web Dashboard selected (port 9000)")
         try:
-            asyncio.run(_bot_instance.run())
-        except KeyboardInterrupt:
-            logger.info("Shutting down...")
-            if _bot_instance and hasattr(_bot_instance, 'snapshot'):
-                _bot_instance.snapshot["emergency_stop_active"] = True
+            from web_site.dashboard_server import run_in_thread, set_bot_instance_getter
+            def get_bot():
+                return get_bot_instance()
+            set_bot_instance_getter(get_bot)
+            web_dashboard_thread = run_in_thread(host='0.0.0.0', port=9000)
+            logger.info("Web Dashboard started on http://localhost:9000")
+            bot_thread.join()
+        except Exception as exc:
+            logger.exception("Web Dashboard failed: %s", exc)
+            bot_thread.join()
+    elif dashboard_type == 'none':
+        logger.info("Running in headless mode (no dashboard)")
+        bot_thread.join()
 
 
 if __name__ == "__main__":
