@@ -361,6 +361,7 @@ class BotEngine:
             },
             "market_analysis_request": None,
             "market_analysis_market_count": 50,
+            "runtime_settings_request": None,
         }
 
     async def run(self) -> None:
@@ -2277,9 +2278,10 @@ class BotEngine:
             self.logger.debug(f"Log analysis cycle error: {exc}")
 
     async def _process_control_requests(self) -> None:
-        if not self.state_manager or not hasattr(self.state_manager, "pop_control_requests"):
-            return
-        controls = self.state_manager.pop_control_requests()
+        controls: list[str] = []
+        if self.state_manager and hasattr(self.state_manager, "pop_control_requests"):
+            controls = self.state_manager.pop_control_requests()
+
         for control in controls:
             if control == "force_close":
                 await self.force_close_position()
@@ -2295,22 +2297,18 @@ class BotEngine:
                 self.manual_pause = True
                 await self._log("ERROR", "emergency_stop_requested")
                 await self.force_close_position()
-            elif control == "analysis_start":
-                market_count = self.snapshot.get("market_analysis_market_count", 50)
-                await self._start_market_analysis(int(market_count))
-            elif control == "analysis_cancel":
-                self._market_analysis_cancelled = True
-                await self._log("INFO", "market_analysis_cancelled")
-            elif control == "analysis_change_pair":
-                best_pair = self.snapshot.get("market_analysis", {}).get("best_pair")
-                if best_pair and best_pair != "--":
-                    self._pending_pair_switch = normalize_symbol(best_pair)
-                    await self._log("INFO", f"pair_switch_requested target={self._pending_pair_switch}")
 
-        if hasattr(self.state_manager, "pop_runtime_settings"):
-            runtime_updates = self.state_manager.pop_runtime_settings()
-            for update in runtime_updates:
-                await self._apply_runtime_settings(update)
+        runtime_updates: list[dict[str, Any]] = []
+        if self.state_manager and hasattr(self.state_manager, "pop_runtime_settings"):
+            runtime_updates.extend(self.state_manager.pop_runtime_settings())
+
+        requested = self.snapshot.get("runtime_settings_request")
+        if isinstance(requested, dict) and requested:
+            runtime_updates.append(requested)
+            self.snapshot["runtime_settings_request"] = None
+
+        for update in runtime_updates:
+            await self._apply_runtime_settings(update)
 
     async def _sleep_with_responsiveness(self, seconds: float) -> None:
         total = max(float(seconds), 0.0)
@@ -2440,6 +2438,9 @@ class BotEngine:
             }
         )
         await self.order_manager.sync_rules()
+        self.runtime_filter_config = self._get_default_filter_config()
+        self._configure_llm_runtime_mode()
+        self.snapshot["autonomous_filters"] = self.runtime_filter_config.copy()
         await self._set_state(BotState.WAITING_MARKET_DATA, "runtime_symbol_switch_complete")
         await self._log("INFO", f"runtime_symbol_switched from={previous_symbol} to={normalized_symbol}")
 

@@ -48,7 +48,9 @@ def _dashboard_password() -> str:
 def _unauthorized_response() -> Response:
     response = jsonify({"success": False, "error": "Unauthorized"})
     response.status_code = 401
-    response.headers["WWW-Authenticate"] = 'Basic realm="Reco Dashboard"'
+    mode = str(os.getenv("DASHBOARD_AUTH_MODE", "hybrid")).strip().lower()
+    if mode in {"basic", "hybrid"}:
+        response.headers["WWW-Authenticate"] = 'Basic realm="Reco Dashboard"'
     return response
 
 
@@ -92,6 +94,29 @@ def _is_authorized() -> bool:
         return _check_basic_auth()
     return _check_token_auth() or _check_basic_auth()
 
+
+
+
+def _validate_login_payload(payload: dict[str, Any]) -> tuple[bool, str]:
+    if not _is_dashboard_auth_enabled():
+        return True, "auth_disabled"
+
+    provided_user = str(payload.get("user", "")).strip()
+    provided_password = str(payload.get("password", "")).strip()
+    provided_token = str(payload.get("token", "")).strip()
+
+    configured_user = _dashboard_user()
+    configured_password = _dashboard_password()
+    configured_token = _dashboard_token()
+
+    if configured_user and not (provided_user and hmac.compare_digest(provided_user, configured_user)):
+        return False, "Invalid user"
+    if configured_password and not (provided_password and hmac.compare_digest(provided_password, configured_password)):
+        return False, "Invalid password"
+    if configured_token and not (provided_token and hmac.compare_digest(provided_token, configured_token)):
+        return False, "Invalid token"
+
+    return True, "ok"
 
 def _require_dashboard_auth() -> Response | None:
     if _is_authorized():
@@ -495,6 +520,16 @@ def create_app() -> Flask:
     @app.route('/')
     def index():
         return render_template('index.html')
+
+    @app.route('/api/auth/login', methods=['POST'])
+    def api_auth_login():
+        payload = request.get_json(silent=True) or {}
+        ok, reason = _validate_login_payload(payload)
+        if not ok:
+            response = jsonify({"success": False, "error": reason})
+            response.status_code = 401
+            return response
+        return jsonify({"success": True})
     
     @app.route('/api/snapshot')
     def api_snapshot():
@@ -795,20 +830,42 @@ def create_app() -> Flask:
         analytics = snapshot.get("analytics", {})
         return jsonify(analytics)
     
-    @app.route('/api/settings')
+    @app.route('/api/settings', methods=['GET', 'POST'])
     def api_settings():
         unauthorized = _require_dashboard_auth()
         if unauthorized:
             return unauthorized
         if _global_bot_instance is None:
             return jsonify({})
+
+        if request.method == 'POST':
+            payload = request.get_json(silent=True) or {}
+            runtime_payload = {
+                "default_pair": payload.get("default_pair") or payload.get("trading_symbol") or "",
+                "default_timeframe": payload.get("default_timeframe") or payload.get("timeframe") or "",
+                "investment_mode": payload.get("investment_mode") or "Balanced",
+                "risk_per_trade_fraction": payload.get("risk_per_trade_fraction", 0.01),
+                "max_trade_balance_fraction": payload.get("max_trade_balance_fraction", 0.20),
+                "capital_limit_usdt": payload.get("capital_limit_usdt", 0),
+                "capital_reserve_ratio": payload.get("capital_reserve_ratio", 0.15),
+                "min_cash_buffer_usdt": payload.get("min_cash_buffer_usdt", 10.0),
+                "dynamic_exit_enabled": payload.get("dynamic_exit_enabled", False),
+            }
+            _global_bot_instance.snapshot["runtime_settings_request"] = runtime_payload
+            runtime_current = dict(_global_bot_instance.snapshot.get("runtime_settings", {}) or {})
+            runtime_current.update(runtime_payload)
+            _global_bot_instance.snapshot["runtime_settings"] = runtime_current
+            return jsonify({"success": True, "runtime_settings": runtime_current})
+
         try:
             settings = getattr(_global_bot_instance, 'settings', None)
+            runtime = dict(_global_bot_instance.snapshot.get("runtime_settings", {}) or {})
             if settings:
                 return jsonify({
-                    "trading_symbol": getattr(settings, 'trading_symbol', 'BTCUSDT'),
-                    "timeframe": getattr(settings, 'primary_timeframe', '5m'),
+                    "trading_symbol": runtime.get("default_pair", getattr(settings, 'trading_symbol', 'BTCUSDT')),
+                    "timeframe": runtime.get("default_timeframe", getattr(settings, 'primary_timeframe', '5m')),
                     "confidence_threshold": getattr(settings, 'confidence_threshold', 0.70),
+                    "runtime_settings": runtime,
                 })
         except Exception as e:
             logger.error(f"Error getting settings: {e}")
@@ -937,90 +994,7 @@ def create_app() -> Flask:
             "dynamic_exit_enabled": snapshot.get("dynamic_exit_enabled", True),
         })
     
-    @app.route('/api/market_analysis')
-    def api_market_analysis():
-        unauthorized = _require_dashboard_auth()
-        if unauthorized:
-            return unauthorized
-        """Get market analysis status."""
-        snapshot = get_bot_snapshot()
-        ma = snapshot.get("market_analysis", {})
-        return jsonify(ma)
-    
-    @app.route('/api/market_analysis/start', methods=['POST'])
-    def api_market_analysis_start():
-        unauthorized = _require_dashboard_auth()
-        if unauthorized:
-            return unauthorized
-        """Start market analysis."""
-        global _global_bot_instance
-        if _global_bot_instance is None and _bot_instance_getter is not None:
-            try:
-                _global_bot_instance = _bot_instance_getter()
-            except Exception:
-                pass
-        if _global_bot_instance is None:
-            return jsonify({"success": False, "error": "Bot not connected"})
-        try:
-            data = request.get_json(silent=True) or {}
-            market_count = data.get("market_count", 50)
-            if hasattr(_global_bot_instance, 'snapshot'):
-                _global_bot_instance.snapshot["market_analysis_request"] = "start"
-                _global_bot_instance.snapshot["market_analysis_market_count"] = market_count
-            logger.info(f"Market analysis started for {market_count} markets")
-            return jsonify({"success": True, "message": f"Starting analysis of {market_count} markets"})
-        except Exception as e:
-            logger.error(f"Error starting market analysis: {e}")
-            return jsonify({"success": False, "error": str(e)})
-    
-    @app.route('/api/market_analysis/cancel', methods=['POST'])
-    def api_market_analysis_cancel():
-        unauthorized = _require_dashboard_auth()
-        if unauthorized:
-            return unauthorized
-        """Cancel market analysis."""
-        global _global_bot_instance
-        if _global_bot_instance is None and _bot_instance_getter is not None:
-            try:
-                _global_bot_instance = _bot_instance_getter()
-            except Exception:
-                pass
-        if _global_bot_instance is None:
-            return jsonify({"success": False, "error": "Bot not connected"})
-        try:
-            if hasattr(_global_bot_instance, 'snapshot'):
-                _global_bot_instance.snapshot["market_analysis_request"] = "cancel"
-            logger.info("Market analysis cancelled")
-            return jsonify({"success": True, "message": "Analysis cancelled"})
-        except Exception as e:
-            logger.error(f"Error cancelling market analysis: {e}")
-            return jsonify({"success": False, "error": str(e)})
-    
-    @app.route('/api/market_analysis/change_pair', methods=['POST'])
-    def api_market_analysis_change_pair():
-        unauthorized = _require_dashboard_auth()
-        if unauthorized:
-            return unauthorized
-        """Request pair change to best analyzed pair."""
-        global _global_bot_instance
-        if _global_bot_instance is None and _bot_instance_getter is not None:
-            try:
-                _global_bot_instance = _bot_instance_getter()
-            except Exception:
-                pass
-        if _global_bot_instance is None:
-            return jsonify({"success": False, "error": "Bot not connected"})
-        try:
-            if hasattr(_global_bot_instance, 'snapshot'):
-                _global_bot_instance.snapshot["market_analysis_request"] = "change_pair"
-            ma = _global_bot_instance.snapshot.get("market_analysis", {})
-            best_pair = ma.get("best_pair", "unknown")
-            logger.info(f"Pair change requested to {best_pair}")
-            return jsonify({"success": True, "message": f"Will switch to {best_pair} after current trade completes"})
-        except Exception as e:
-            logger.error(f"Error changing pair: {e}")
-            return jsonify({"success": False, "error": str(e)})
-    
+
     _app = app
     return app
 

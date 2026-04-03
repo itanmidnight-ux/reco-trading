@@ -218,6 +218,27 @@
     </style>
 </head>
 <body>
+    <div id="loginOverlay" style="position:fixed; inset:0; background:rgba(5,10,20,.92); display:none; z-index:9999; align-items:center; justify-content:center;">
+        <div class="card" style="max-width:420px; width:92%;">
+            <div class="card-header"><i class="fas fa-lock text-cyan"></i> Iniciar sesión</div>
+            <div class="card-body">
+                <div class="mb-2">
+                    <label class="small text-muted">User</label>
+                    <input id="loginUser" class="form-control" autocomplete="username" />
+                </div>
+                <div class="mb-2">
+                    <label class="small text-muted">Password</label>
+                    <input id="loginPassword" type="password" class="form-control" autocomplete="current-password" />
+                </div>
+                <div class="mb-3">
+                    <label class="small text-muted">Token</label>
+                    <input id="loginToken" class="form-control" autocomplete="off" />
+                </div>
+                <button id="loginBtn" class="btn btn-primary w-100" onclick="submitLogin()">Iniciar sesión</button>
+                <div id="loginError" class="text-red small mt-2" style="min-height:18px;"></div>
+            </div>
+        </div>
+    </div>
     <nav class="navbar navbar-dark">
         <div class="container-fluid px-3">
             <div class="d-flex flex-column">
@@ -242,11 +263,9 @@
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#strategy"><i class="fas fa-brain me-1"></i> Strategy</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#intel-log"><i class="fas fa-list-alt me-1"></i> Intel Log</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-ml"><i class="fas fa-robot me-1"></i> AI/ML</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#risk"><i class="fas fa-shield-alt me-1"></i> Risk</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cogs me-1"></i> Settings</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#system"><i class="fas fa-server me-1"></i> System</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#health"><i class="fas fa-heartbeat me-1"></i> Health</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#market-analysis"><i class="fas fa-globe me-1"></i> Market Analysis</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-monitor"><i class="fas fa-robot me-1"></i> AI Monitor</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs"><i class="fas fa-list me-1"></i> Logs</button></li>
         </ul>
@@ -645,54 +664,6 @@
                 </div>
             </div>
 
-            <!-- Market Analysis -->
-            <div class="tab-pane fade" id="market-analysis">
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-info-circle text-cyan"></i> Analysis Status</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Current Pair</span><span class="info-value" id="maCurrentPair">BTC/USDT</span></div>
-                            <div class="info-row"><span class="info-label">AI Connection</span><span class="info-value" id="maAIStatus">-</span></div>
-                            <div class="info-row"><span class="info-label">Markets to Scan</span><span class="info-value" id="maTotalMarkets">0</span></div>
-                            <div class="info-row"><span class="info-label">Analyzed</span><span class="info-value" id="maAnalyzedMarkets">0</span></div>
-                            <div class="info-row"><span class="info-label">Best Pair Found</span><span class="info-value text-cyan" id="maBestPair">--</span></div>
-                            <div class="info-row"><span class="info-label">Last Analysis</span><span class="info-value" id="maLastAnalysis">Never</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-cogs text-green"></i> Analysis Controls</div>
-                        <div class="card-body">
-                            <div class="mb-3">
-                                <label class="info-label">Markets to analyze:</label>
-                                <input type="number" id="maMarketCount" class="form-control form-control-sm" value="50" min="1" max="500" style="width:100px; background:var(--bg-secondary); color:var(--text-primary); border-color:var(--border-color); display:inline-block;">
-                            </div>
-                            <div class="d-flex gap-2 mb-3">
-                                <button class="btn btn-success" id="maStartBtn" onclick="startMarketAnalysis()"><i class="fas fa-play me-1"></i> Iniciar Analisis de Mejor Mercado</button>
-                                <button class="btn btn-danger" id="maCancelBtn" style="display:none;" onclick="cancelMarketAnalysis()"><i class="fas fa-stop me-1"></i> Cancelar Analisis</button>
-                            </div>
-                            <button class="btn btn-primary" id="maChangePairBtn" style="display:none;" onclick="changeToBestPair()"><i class="fas fa-exchange-alt me-1"></i> Cambiar a la Par/Moneda</button>
-                        </div>
-                    </div>
-                </div>
-                <div class="card mt-3">
-                    <div class="card-header"><i class="fas fa-tasks text-blue"></i> Analysis Progress</div>
-                    <div class="card-body">
-                        <div class="progress mb-2" style="height:24px;">
-                            <div class="progress-bar" id="maProgressBar" role="progressbar" style="width:0%; background:linear-gradient(90deg, var(--accent-green), var(--accent-cyan), var(--accent-green));"></div>
-                        </div>
-                        <div class="text-center">
-                            <span class="stat-value text-green" id="maProgressPct">0.0%</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="card mt-3">
-                    <div class="card-header"><i class="fas fa-chart-bar text-purple"></i> Analysis Results</div>
-                    <div class="card-body">
-                        <div class="text-muted" id="maResultsText">No analysis results yet. Start an analysis to scan all markets.</div>
-                    </div>
-                </div>
-            </div>
-
             <!-- AI/LLM Monitor -->
             <div class="tab-pane fade" id="ai-monitor">
                 <div class="grid-2 mt-3">
@@ -707,6 +678,10 @@
                             <div class="info-row"><span class="info-label">NBEATS Confidence</span><span class="info-value" id="aiNBEATSConfidence">-</span></div>
                             <div class="info-row"><span class="info-label">Market Regime</span><span class="info-value" id="aiMarketRegime">-</span></div>
                             <div class="info-row"><span class="info-label">Market Sentiment</span><span class="info-value" id="aiMarketSentiment">-</span></div>
+                            <div class="info-row"><span class="info-label">LLM Mode</span><span class="info-value" id="aiLlmMode">-</span></div>
+                            <div class="info-row"><span class="info-label">LLM Active</span><span class="info-value" id="aiLlmActive">-</span></div>
+                            <div class="info-row"><span class="info-label">LLM Decisions</span><span class="info-value" id="aiLlmDecisions">-</span></div>
+                            <div class="info-row"><span class="info-label">AutoFix Status</span><span class="info-value" id="aiAutoFixStatus">-</span></div>
                         </div>
                     </div>
                     <div class="card">
@@ -759,26 +734,81 @@
         let tradePerPage = 20;
         let tradeTotalPages = 1;
         let tradeSummary = null;
-        let dashboardToken = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('dashboard_token') || '';
+        let dashboardAuth = {
+            user: localStorage.getItem('dashboard_user') || '',
+            password: localStorage.getItem('dashboard_password') || '',
+            token: new URLSearchParams(window.location.search).get('token') || localStorage.getItem('dashboard_token') || ''
+        };
+        let isAuthenticated = false;
         let snapshotInFlight = false;
         let latestSnapshot = {};
+
+        function showLogin(message = '') {
+            const overlay = document.getElementById('loginOverlay');
+            overlay.style.display = 'flex';
+            document.getElementById('loginUser').value = dashboardAuth.user || '';
+            document.getElementById('loginPassword').value = dashboardAuth.password || '';
+            document.getElementById('loginToken').value = dashboardAuth.token || '';
+            document.getElementById('loginError').textContent = message || '';
+        }
+
+        function hideLogin() {
+            document.getElementById('loginOverlay').style.display = 'none';
+            document.getElementById('loginError').textContent = '';
+        }
+
+        function persistAuth() {
+            localStorage.setItem('dashboard_user', dashboardAuth.user || '');
+            localStorage.setItem('dashboard_password', dashboardAuth.password || '');
+            localStorage.setItem('dashboard_token', dashboardAuth.token || '');
+        }
+
+        async function submitLogin() {
+            dashboardAuth.user = (document.getElementById('loginUser').value || '').trim();
+            dashboardAuth.password = (document.getElementById('loginPassword').value || '').trim();
+            dashboardAuth.token = (document.getElementById('loginToken').value || '').trim();
+            persistAuth();
+
+            try {
+                const r = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user: dashboardAuth.user, password: dashboardAuth.password, token: dashboardAuth.token})
+                });
+                const j = await r.json();
+                if (!r.ok || !j.success) {
+                    isAuthenticated = false;
+                    showLogin(j.error || 'Credenciales inválidas');
+                    return;
+                }
+                isAuthenticated = true;
+                hideLogin();
+                fetchSnapshot();
+                loadAllTrades();
+                fetchAIMLData();
+            } catch (e) {
+                isAuthenticated = false;
+                showLogin('No se pudo validar sesión');
+            }
+        }
 
         function authFetch(url, options = {}) {
             const opts = {...options};
             opts.headers = {...(options.headers || {})};
-            if (dashboardToken) {
-                opts.headers['X-Dashboard-Token'] = dashboardToken;
+            if (dashboardAuth.token) {
+                opts.headers['X-Dashboard-Token'] = dashboardAuth.token;
             }
-            return fetch(url, opts);
-        }
-
-        function ensureDashboardToken() {
-            if (dashboardToken) return;
-            const input = prompt('Token del dashboard (si aplica):');
-            if (input && input.trim()) {
-                dashboardToken = input.trim();
-                localStorage.setItem('dashboard_token', dashboardToken);
+            if (dashboardAuth.user && dashboardAuth.password) {
+                opts.headers['Authorization'] = 'Basic ' + btoa(`${dashboardAuth.user}:${dashboardAuth.password}`);
             }
+            return fetch(url, opts).then((response) => {
+                if (response.status === 401) {
+                    isAuthenticated = false;
+                    showLogin('Sesión inválida. Inicia sesión nuevamente.');
+                    throw new Error('Unauthorized');
+                }
+                return response;
+            });
         }
         
         function fmt(n, d=2) { return (n===null||n===undefined)?'-':typeof n==='number'?n.toFixed(d):n; }
@@ -1017,7 +1047,6 @@
             updateIntelLogs(d.logs||[]);
             updateSettingsTab(d.runtime_settings || {});
             updateSystemTab(d.system || {});
-            updateMarketAnalysisTab(d.market_analysis || null);
             updateAIMonitorTab(d);
         }
 
@@ -1085,14 +1114,45 @@
         function updateSettingsTab(settings) {
             const c = document.getElementById('settingsContainer');
             if(!c) return;
-            const entries = Object.entries(settings || {});
-            if(!entries.length) {
-                c.innerHTML = '<div class="text-muted">No runtime settings available</div>';
-                return;
+            const runtime = settings || {};
+            const pair = runtime.default_pair || latestSnapshot.pair || 'BTC/USDT';
+            const timeframe = runtime.default_timeframe || '5m';
+            const invMode = runtime.investment_mode || latestSnapshot.investment_mode || 'Balanced';
+            c.innerHTML = `
+                <div class="grid-2">
+                    <div class="mb-2"><label class="info-label">Par de trading</label><input id="wsPair" class="form-control form-control-sm" value="${pair}" /></div>
+                    <div class="mb-2"><label class="info-label">Timeframe</label><input id="wsTimeframe" class="form-control form-control-sm" value="${timeframe}" /></div>
+                    <div class="mb-2"><label class="info-label">Investment Mode</label><input id="wsInvestmentMode" class="form-control form-control-sm" value="${invMode}" /></div>
+                    <div class="mb-2"><label class="info-label">Risk por trade (0-0.1)</label><input id="wsRiskPerTrade" type="number" step="0.001" min="0.001" max="0.1" class="form-control form-control-sm" value="${runtime.risk_per_trade_fraction ?? 0.01}" /></div>
+                </div>
+                <button class="btn btn-success btn-sm mt-2" onclick="applyWebSettings()">Aplicar cambios</button>
+                <div class="small text-muted mt-2">Los cambios aplican al bot completo, incluyendo IA/LLM y filtros por símbolo.</div>
+            `;
+        }
+
+        async function applyWebSettings() {
+            const payload = {
+                default_pair: (document.getElementById('wsPair')?.value || '').trim(),
+                default_timeframe: (document.getElementById('wsTimeframe')?.value || '').trim(),
+                investment_mode: (document.getElementById('wsInvestmentMode')?.value || '').trim(),
+                risk_per_trade_fraction: parseFloat(document.getElementById('wsRiskPerTrade')?.value || '0.01')
+            };
+            try {
+                const r = await authFetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(payload)
+                });
+                const j = await r.json();
+                if (!j.success) {
+                    alert('No se pudo aplicar settings');
+                    return;
+                }
+                await fetchSnapshot();
+                alert('Settings aplicados correctamente');
+            } catch (e) {
+                alert('Error aplicando settings: ' + e.message);
             }
-            c.innerHTML = entries.slice(0, 40).map(([k, v]) => `
-                <div class="info-row"><span class="info-label">${k}</span><span class="info-value">${typeof v === 'object' ? JSON.stringify(v) : v}</span></div>
-            `).join('');
         }
 
         function updateSystemTab(system) {
@@ -1214,106 +1274,7 @@
                 console.error('Error fetching AI/ML data:', e);
             }
         }
-        
-        async function startMarketAnalysis() {
-            const count = document.getElementById('maMarketCount').value || 50;
-            try {
-                const r = await authFetch('/api/market_analysis/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({market_count: parseInt(count)})
-                });
-                const j = await r.json();
-                if (j.success) {
-                    document.getElementById('maStartBtn').style.display = 'none';
-                    document.getElementById('maCancelBtn').style.display = 'inline-block';
-                    document.getElementById('maChangePairBtn').style.display = 'none';
-                    document.getElementById('maMarketCount').disabled = true;
-                }
-            } catch(e) { console.error('Error starting analysis:', e); }
-        }
-        
-        async function cancelMarketAnalysis() {
-            try {
-                const r = await authFetch('/api/market_analysis/cancel', {method: 'POST'});
-                const j = await r.json();
-                if (j.success) {
-                    document.getElementById('maStartBtn').style.display = 'inline-block';
-                    document.getElementById('maCancelBtn').style.display = 'none';
-                    document.getElementById('maChangePairBtn').style.display = 'none';
-                    document.getElementById('maMarketCount').disabled = false;
-                    document.getElementById('maProgressBar').style.width = '0%';
-                    document.getElementById('maProgressPct').textContent = '0.0%';
-                }
-            } catch(e) { console.error('Error cancelling analysis:', e); }
-        }
-        
-        async function changeToBestPair() {
-            try {
-                const r = await authFetch('/api/market_analysis/change_pair', {method: 'POST'});
-                const j = await r.json();
-                if (j.success) {
-                    alert(j.message || 'Pair change requested. Will switch after current trade completes.');
-                }
-            } catch(e) { console.error('Error changing pair:', e); }
-        }
-        
-        function updateMarketAnalysisTab(ma) {
-            if (!ma) return;
-            
-            document.getElementById('maCurrentPair').textContent = ma.current_pair || 'BTC/USDT';
-            
-            const aiConnected = ma.ai_connected || false;
-            const aiEl = document.getElementById('maAIStatus');
-            aiEl.textContent = aiConnected ? 'Connected' : 'Disconnected';
-            aiEl.className = 'info-value ' + (aiConnected ? 'text-green' : 'text-red');
-            
-            document.getElementById('maTotalMarkets').textContent = ma.total_markets || 0;
-            document.getElementById('maAnalyzedMarkets').textContent = ma.analyzed_markets || 0;
-            
-            const bestPair = ma.best_pair || '--';
-            const bestScore = ma.best_score || 0;
-            const bestEl = document.getElementById('maBestPair');
-            if (bestPair !== '--') {
-                bestEl.textContent = `${bestPair} (score: ${bestScore.toFixed(2)})`;
-            } else {
-                bestEl.textContent = '--';
-            }
-            
-            document.getElementById('maLastAnalysis').textContent = ma.last_analysis_time || 'Never';
-            
-            const progressPct = ma.progress_pct || 0;
-            document.getElementById('maProgressBar').style.width = progressPct + '%';
-            document.getElementById('maProgressPct').textContent = progressPct.toFixed(1) + '%';
-            
-            const status = ma.status || 'idle';
-            if (status === 'running') {
-                document.getElementById('maStartBtn').style.display = 'none';
-                document.getElementById('maCancelBtn').style.display = 'inline-block';
-                document.getElementById('maChangePairBtn').style.display = 'none';
-                document.getElementById('maMarketCount').disabled = true;
-            } else if (status === 'completed') {
-                document.getElementById('maStartBtn').style.display = 'inline-block';
-                document.getElementById('maCancelBtn').style.display = 'none';
-                document.getElementById('maChangePairBtn').style.display = 'inline-block';
-                document.getElementById('maMarketCount').disabled = false;
-                document.getElementById('maResultsText').textContent = 
-                    `Analysis completed at ${ma.last_analysis_time || '-'}. Scanned ${ma.total_markets || 0} markets. Best pair: ${bestPair} with score ${bestScore.toFixed(2)}. Click 'Cambiar a la Par/Moneda' to switch.`;
-            } else if (status === 'cancelled') {
-                document.getElementById('maStartBtn').style.display = 'inline-block';
-                document.getElementById('maCancelBtn').style.display = 'none';
-                document.getElementById('maChangePairBtn').style.display = 'none';
-                document.getElementById('maMarketCount').disabled = false;
-                document.getElementById('maResultsText').textContent = 'Analysis was cancelled.';
-            } else {
-                document.getElementById('maStartBtn').style.display = 'inline-block';
-                document.getElementById('maCancelBtn').style.display = 'none';
-                document.getElementById('maChangePairBtn').style.display = 'none';
-                document.getElementById('maMarketCount').disabled = false;
-                document.getElementById('maResultsText').textContent = 'No analysis results yet. Start an analysis to scan all markets.';
-            }
-        }
-        
+
         function showTradeDetail(tradeJson) {
             const t = typeof tradeJson === 'string' ? JSON.parse(tradeJson) : tradeJson;
             const pnl = t.pnl || 0;
@@ -1370,6 +1331,13 @@
             document.getElementById('aiNBEATSConfidence').textContent = d.nbeats_confidence ? (d.nbeats_confidence * 100).toFixed(1) + '%' : '-';
             document.getElementById('aiMarketRegime').textContent = d.market_regime || '-';
             document.getElementById('aiMarketSentiment').textContent = d.market_sentiment || '-';
+            const llmMode = d.llm_mode || '-';
+            const llmStats = d.llm_trade_confirmator || {};
+            const fixStatus = d.auto_fix_coordinator || {};
+            document.getElementById('aiLlmMode').textContent = llmMode;
+            document.getElementById('aiLlmActive').textContent = llmMode !== 'base' ? 'Yes' : 'No';
+            document.getElementById('aiLlmDecisions').textContent = llmStats.total_checks ?? llmStats.total_decisions ?? 0;
+            document.getElementById('aiAutoFixStatus').textContent = fixStatus.is_running ? 'Running' : 'Idle';
             
             document.getElementById('aiActivePair').textContent = d.active_pair || '-';
             document.getElementById('aiTradingMode').textContent = d.trading_mode || '-';
@@ -1398,13 +1366,12 @@
         }
         
         document.addEventListener('DOMContentLoaded', () => {
-            ensureDashboardToken();
-            fetchSnapshot();
-            loadAllTrades();
-            fetchAIMLData();
-            setInterval(fetchSnapshot, 1000);
-            setInterval(fetchAIMLData, 5000);
+            showLogin();
+            submitLogin();
+            setInterval(() => { if (isAuthenticated) fetchSnapshot(); }, 1000);
+            setInterval(() => { if (isAuthenticated) fetchAIMLData(); }, 5000);
             setInterval(() => {
+                if (!isAuthenticated) return;
                 const active = document.querySelector('#trades.tab-pane.active, #trades.show.active');
                 if (active) loadAllTrades();
             }, 12000);
