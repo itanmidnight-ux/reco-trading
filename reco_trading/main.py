@@ -26,7 +26,7 @@ def configure_logging() -> None:
         level=logging.INFO, 
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
-            logging.StreamHandler(sys.stdout)
+            logging.StreamHandler(sys.stderr)
         ]
     )
 
@@ -173,6 +173,9 @@ def run() -> None:
     
     state_manager = None
     bot_thread = None
+
+    # Prevent terminal dashboard rendering when GUI/Web dashboard is selected.
+    os.environ["BOT_TERMINAL_DASHBOARD"] = "1" if dashboard_type == "none" else "0"
     
     # Create state manager for App dashboard
     if dashboard_type == 'app':

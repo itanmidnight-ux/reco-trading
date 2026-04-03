@@ -64,3 +64,29 @@ def test_api_balance_uses_runtime_snapshot_values() -> None:
     assert payload["total"] == 250.0
     assert payload["free"] == 123.45
     assert payload["locked"] == 126.55
+
+
+def test_web_dashboard_stop_trade_control_queues_force_close() -> None:
+    _reset_dashboard_globals()
+
+    class DummyStateManager:
+        def __init__(self) -> None:
+            self.called = False
+
+        def request_force_close(self) -> None:
+            self.called = True
+
+    bot = SimpleNamespace(
+        state_manager=DummyStateManager(),
+        snapshot={},
+    )
+    dashboard_server.set_bot_instance(bot)
+    app = dashboard_server.create_app()
+    client = app.test_client()
+
+    response = client.post("/api/control/stop_trade")
+    payload = response.get_json()
+
+    assert response.status_code == 200
+    assert payload["success"] is True
+    assert bot.state_manager.called is True

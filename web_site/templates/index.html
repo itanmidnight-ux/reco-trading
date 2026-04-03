@@ -9,20 +9,20 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-primary: #0a0f14;
-            --bg-secondary: #111820;
-            --bg-card: #161d26;
-            --bg-hover: #1e2732;
-            --border-color: #252f3d;
-            --text-primary: #ffffff;
-            --text-secondary: #9ca3af;
-            --text-muted: #6b7280;
+            --bg-primary: #f3f6fb;
+            --bg-secondary: #ffffff;
+            --bg-card: #ffffff;
+            --bg-hover: #edf2ff;
+            --border-color: #dbe4f3;
+            --text-primary: #0f172a;
+            --text-secondary: #475569;
+            --text-muted: #64748b;
             --accent-cyan: #22d3ee;
-            --accent-green: #34d399;
-            --accent-red: #f87171;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
             --accent-yellow: #fbbf24;
-            --accent-blue: #60a5fa;
-            --accent-purple: #a78bfa;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
             --accent-orange: #fb923c;
         }
         
@@ -37,7 +37,7 @@
         }
         
         .navbar {
-            background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
             border-bottom: 1px solid var(--border-color);
             padding: 0.6rem 0;
         }
@@ -50,7 +50,7 @@
         }
         .brand-subtitle {
             font-size: 0.68rem;
-            color: var(--text-secondary);
+            color: #cbd5e1;
             letter-spacing: 0.8px;
             text-transform: uppercase;
             margin-left: 0.2rem;
@@ -73,6 +73,7 @@
             border: 1px solid var(--border-color);
             border-radius: 10px;
             margin-bottom: 1rem;
+            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
         }
         
         .card-header {
@@ -212,6 +213,8 @@
         .signal-buy { background: linear-gradient(135deg, rgba(52, 211, 153, 0.2), rgba(52, 211, 153, 0.1)); border: 2px solid var(--accent-green); color: var(--accent-green); }
         .signal-sell { background: linear-gradient(135deg, rgba(248, 113, 113, 0.2), rgba(248, 113, 113, 0.1)); border: 2px solid var(--accent-red); color: var(--accent-red); }
         .signal-hold { background: linear-gradient(135deg, rgba(251, 191, 36, 0.2), rgba(251, 191, 36, 0.1)); border: 2px solid var(--accent-yellow); color: var(--accent-yellow); }
+        .trade-control-wrap { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
+        .trade-control-wrap .btn { padding: 0.45rem 0.9rem; font-size: 0.82rem; }
     </style>
 </head>
 <body>
@@ -289,6 +292,11 @@
                             <div class="info-row"><span class="info-label">Position</span><span class="info-value" id="hasPositionValue">None</span></div>
                             <div class="info-row"><span class="info-label">Entry Price</span><span class="info-value" id="entryPriceValue">-</span></div>
                             <div class="info-row"><span class="info-label">Exchange</span><span class="info-value text-green" id="exchangeStatusValue">Connected</span></div>
+                            <div class="trade-control-wrap">
+                                <button class="btn btn-danger" id="stopTradeBtn" style="display:none;" onclick="stopTrade()">
+                                    <i class="fas fa-stop-circle me-1"></i>Stop Trade
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -747,12 +755,13 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        let updateInterval = null;
         let tradePage = 1;
         let tradePerPage = 20;
         let tradeTotalPages = 1;
         let tradeSummary = null;
         let dashboardToken = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('dashboard_token') || '';
+        let snapshotInFlight = false;
+        let latestSnapshot = {};
 
         function authFetch(url, options = {}) {
             const opts = {...options};
@@ -787,11 +796,17 @@
         }
         
         async function fetchSnapshot() {
+            if (snapshotInFlight) return;
             try {
+                snapshotInFlight = true;
+                const started = performance.now();
                 const r = await authFetch('/api/snapshot');
                 if(!r.ok) throw new Error('Failed');
-                updateDashboard(await r.json());
+                const payload = await r.json();
+                payload.api_latency_p95_ms = payload.api_latency_p95_ms || (performance.now() - started);
+                updateDashboard(payload);
             } catch(e) { console.error('Error:',e); }
+            finally { snapshotInFlight = false; }
         }
         
         async function loadAllTrades() {
@@ -855,6 +870,7 @@
         }
         
         function updateDashboard(d) {
+            latestSnapshot = d || {};
             // Status
             const status = d.status||'WAITING';
             document.getElementById('botStatus').textContent = status;
@@ -905,6 +921,7 @@
             document.getElementById('cooldownValue').textContent = d.cooldown||'READY';
             document.getElementById('hasPositionValue').textContent = d.has_open_position?(d.open_position_side||'Open'):'None';
             document.getElementById('entryPriceValue').textContent = fmtCur(d.open_position_entry);
+            document.getElementById('stopTradeBtn').style.display = d.has_open_position ? 'inline-block' : 'none';
             
             const exc = d.exchange_status||'UNKNOWN';
             document.getElementById('exchangeStatusValue').textContent = exc==='CONNECTED'?'Connected':exc;
@@ -1003,6 +1020,19 @@
             updateMarketAnalysisTab(d.market_analysis || null);
             updateAIMonitorTab(d);
         }
+
+        async function stopTrade() {
+            try {
+                const r = await authFetch('/api/control/stop_trade', {method:'POST'});
+                const j = await r.json();
+                if (!j.success) {
+                    alert('Error: ' + (j.error || 'unable to stop trade'));
+                }
+                await fetchSnapshot();
+            } catch (e) {
+                alert('Error: ' + e);
+            }
+        }
         
         function updateTradesTable(trades) {
             const tbody = document.getElementById('allTradesTableBody');
@@ -1100,15 +1130,15 @@
                 const multipair = await multipairRes.json();
                 
                 if (autonomous.error && autonomous.error !== 'Autonomous brain not available') {
-                    document.getElementById('regimeValue').textContent = '-';
+                    document.getElementById('regimeValue').textContent = latestSnapshot.market_regime || '-';
                     document.getElementById('optimizerScoreValue').textContent = '0';
-                    document.getElementById('consecutiveLossesValue').textContent = '0';
-                    document.getElementById('activePairValue').textContent = multipair.active_pair || 'BTC/USDT';
-                    document.getElementById('optimizerData').innerHTML = '<div class="text-muted">Bot not running</div>';
-                    document.getElementById('evolverData').innerHTML = '<div class="text-muted">Bot not running</div>';
-                    document.getElementById('filtersData').innerHTML = '<div class="text-muted">Bot not running</div>';
-                    document.getElementById('regimeData').innerHTML = '<div class="text-muted">Bot not running</div>';
-                    document.getElementById('adaptiveFiltersData').innerHTML = '<div class="text-muted">Bot not running</div>';
+                    document.getElementById('consecutiveLossesValue').textContent = latestSnapshot.auto_improve_consecutive_losses || 0;
+                    document.getElementById('activePairValue').textContent = multipair.active_pair || latestSnapshot.pair || 'BTC/USDT';
+                    document.getElementById('optimizerData').innerHTML = '<div class="text-muted">Awaiting optimizer stream...</div>';
+                    document.getElementById('evolverData').innerHTML = '<div class="text-muted">Awaiting evolver stream...</div>';
+                    document.getElementById('filtersData').innerHTML = '<div class="text-muted">Using runtime filters from snapshot</div>';
+                    document.getElementById('regimeData').innerHTML = `<div class="info-row"><span class="info-label">Current</span><span class="info-value">${latestSnapshot.market_regime || '-'}</span></div>`;
+                    document.getElementById('adaptiveFiltersData').innerHTML = '<div class="text-muted">Adaptive filter data pending</div>';
                     return;
                 }
                 
@@ -1372,9 +1402,12 @@
             fetchSnapshot();
             loadAllTrades();
             fetchAIMLData();
-            setInterval(fetchSnapshot, 1500);
+            setInterval(fetchSnapshot, 1000);
             setInterval(fetchAIMLData, 5000);
-            setInterval(loadAllTrades, 10000);
+            setInterval(() => {
+                const active = document.querySelector('#trades.tab-pane.active, #trades.show.active');
+                if (active) loadAllTrades();
+            }, 12000);
         });
     </script>
 </body>

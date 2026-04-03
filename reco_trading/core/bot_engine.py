@@ -5,6 +5,7 @@ import logging
 import os as _os
 import time
 import uuid
+from contextlib import AbstractContextManager
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -242,6 +243,7 @@ class BotEngine:
             remote_model=str(getattr(self.settings, "llm_remote_model", "gpt-4o-mini")),
             remote_api_key=str(getattr(self.settings, "llm_remote_api_key", "")),
         )
+        self._configure_llm_runtime_mode()
         self.log_analyzer = LLMLogAnalyzer()
         self.auto_fix_coordinator = AutoFixCoordinator(
             log_analyzer=self.log_analyzer,
@@ -328,6 +330,7 @@ class BotEngine:
             "optimization_reason": None,
             "live_trade_risk_fraction": None,
             "live_trade_max_allocation_fraction": None,
+            "llm_mode": str(getattr(self.settings, "llm_mode", "base")).lower(),
             "database_status": "CONNECTING",
             "exchange_status": "CONNECTING",
             "confluence_score": None,
@@ -427,7 +430,14 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
 
-            with Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False) as live:
+            terminal_dashboard_enabled = str(_os.getenv("BOT_TERMINAL_DASHBOARD", "1")).strip().lower() in {"1", "true", "yes", "on"}
+            live_context: AbstractContextManager[Any]
+            if terminal_dashboard_enabled:
+                live_context = Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False)
+            else:
+                live_context = _NoopLive()
+
+            with live_context as live:
                 while True:
                     try:
                         await self._process_control_requests()
@@ -1395,27 +1405,45 @@ class BotEngine:
             else:
                 used_atr = max(atr, price * 0.002)
 
-            breakeven_threshold = (
-                position.entry_price + used_atr
-                if position.side == "BUY"
-                else position.entry_price - used_atr
-            )
-            if position.side == "BUY" and price >= breakeven_threshold:
-                new_sl = self.order_manager.normalize_price(position.entry_price + 0.1 * used_atr)
-                if new_sl > position.stop_loss:
-                    position.stop_loss = new_sl
-                    await self._log(
-                        "INFO",
-                        f"breakeven_activated trade_id={position.trade_id} new_sl={new_sl:.4f}",
-                    )
-            elif position.side == "SELL" and price <= breakeven_threshold:
-                new_sl = self.order_manager.normalize_price(position.entry_price - 0.1 * used_atr)
-                if new_sl < position.stop_loss:
-                    position.stop_loss = new_sl
-                    await self._log(
-                        "INFO",
-                        f"breakeven_activated trade_id={position.trade_id} new_sl={new_sl:.4f}",
-                    )
+            auto_stop_enabled = bool(getattr(self.settings, "auto_stop_enabled", True))
+            break_even_trigger_pct = max(float(getattr(self.settings, "auto_stop_break_even_trigger_pct", 0.008) or 0.008), 0.0)
+            break_even_buffer_pct = max(float(getattr(self.settings, "auto_stop_break_even_buffer_pct", 0.0005) or 0.0005), 0.0)
+            trailing_activate_pct = max(float(getattr(self.settings, "auto_stop_trailing_activate_pct", 0.012) or 0.012), 0.0)
+            low_delta_pct = max(float(getattr(self.settings, "auto_stop_trailing_delta_low_vol_pct", 0.006) or 0.006), 0.0001)
+            high_delta_pct = max(float(getattr(self.settings, "auto_stop_trailing_delta_high_vol_pct", 0.010) or 0.010), 0.0001)
+            max_duration_minutes = max(int(getattr(self.settings, "auto_stop_max_duration_minutes", 180) or 180), 1)
+
+            if position.side == "BUY":
+                profit_pct = (price - position.entry_price) / max(position.entry_price, 1e-9)
+            else:
+                profit_pct = (position.entry_price - price) / max(position.entry_price, 1e-9)
+
+            if auto_stop_enabled:
+                break_even_price = position.entry_price * (1.0 + break_even_buffer_pct if position.side == "BUY" else 1.0 - break_even_buffer_pct)
+                break_even_sl = self.order_manager.normalize_price(break_even_price)
+                if profit_pct >= break_even_trigger_pct:
+                    if position.side == "BUY" and break_even_sl > position.stop_loss:
+                        position.stop_loss = break_even_sl
+                        await self._log("INFO", f"auto_stop_break_even trade_id={position.trade_id} profit_pct={profit_pct:.4f} new_sl={break_even_sl:.6f}")
+                    elif position.side == "SELL" and break_even_sl < position.stop_loss:
+                        position.stop_loss = break_even_sl
+                        await self._log("INFO", f"auto_stop_break_even trade_id={position.trade_id} profit_pct={profit_pct:.4f} new_sl={break_even_sl:.6f}")
+
+                vol_state = str(self.snapshot.get("volatility_regime", "NORMAL")).upper()
+                trailing_delta_pct = high_delta_pct if vol_state in {"HIGH", "HIGH_VOLATILITY", "EXTREME"} else low_delta_pct
+                if profit_pct >= trailing_activate_pct:
+                    if position.side == "BUY":
+                        trailed_sl = self.order_manager.normalize_price(price * (1.0 - trailing_delta_pct))
+                        if trailed_sl > position.stop_loss:
+                            position.stop_loss = trailed_sl
+                            position.trailing_stop = trailed_sl
+                            await self._log("INFO", f"auto_stop_trailing trade_id={position.trade_id} delta_pct={trailing_delta_pct:.4f} new_sl={trailed_sl:.6f}")
+                    else:
+                        trailed_sl = self.order_manager.normalize_price(price * (1.0 + trailing_delta_pct))
+                        if trailed_sl < position.stop_loss:
+                            position.stop_loss = trailed_sl
+                            position.trailing_stop = trailed_sl
+                            await self._log("INFO", f"auto_stop_trailing trade_id={position.trade_id} delta_pct={trailing_delta_pct:.4f} new_sl={trailed_sl:.6f}")
 
             if position.side == "BUY":
                 unrealized_pnl = (price - position.entry_price) * position.quantity
@@ -1430,6 +1458,10 @@ class BotEngine:
 
             structure_exit_reason = self._detect_structure_exit(position, market_data, price, used_atr)
             exit_reason = self._resolve_structure_exit_signal(position, structure_exit_reason)
+            if exit_reason is None and auto_stop_enabled and position.entry_timestamp_ms:
+                age_minutes = (time.time() * 1000 - float(position.entry_timestamp_ms)) / 60000.0
+                if age_minutes >= max_duration_minutes:
+                    exit_reason = "AUTO_STOP_MAX_DURATION"
             if exit_reason is None and bool(position.dynamic_exit_enabled):
                 intelligence = self.exit_intelligence.evaluate(
                     position=position,
@@ -2693,9 +2725,10 @@ class BotEngine:
             return True
         return datetime.now(timezone.utc) - self.last_close_time >= timedelta(minutes=self._effective_cooldown_minutes())
 
-    def _safe_live_update(self, live: Live) -> None:
+    def _safe_live_update(self, live: Any) -> None:
         try:
-            live.update(self.dashboard.render(self.snapshot))
+            if hasattr(live, "update"):
+                live.update(self.dashboard.render(self.snapshot))
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("dashboard_render_error: %s", exc)
 
@@ -2770,6 +2803,9 @@ class BotEngine:
                     "advanced_risk_reason": self.snapshot.get("advanced_risk_reason", "OK"),
                     "adaptive_size_multiplier": self.snapshot.get("adaptive_size_multiplier", 1.0),
                     "advanced_size_multiplier": self.snapshot.get("advanced_size_multiplier", 1.0),
+                    "auto_stop_enabled": bool(getattr(self.settings, "auto_stop_enabled", True)),
+                    "auto_stop_break_even_trigger_pct": float(getattr(self.settings, "auto_stop_break_even_trigger_pct", 0.008)),
+                    "auto_stop_trailing_activate_pct": float(getattr(self.settings, "auto_stop_trailing_activate_pct", 0.012)),
                 },
                 analytics={
                     "total_trades": self.trades_today,
@@ -3030,6 +3066,21 @@ class BotEngine:
         except Exception as e:
             self.logger.warning(f"Failed to apply autonomous filters: {e}")
 
+    def _configure_llm_runtime_mode(self) -> None:
+        llm_mode = str(getattr(self.settings, "llm_mode", "base")).lower()
+        if llm_mode != "llm_local":
+            return
+        self.settings.low_ram_mode = True
+        self.settings.max_ram_mb = min(int(getattr(self.settings, "max_ram_mb", 500) or 500), 650)
+        self.runtime_filter_config["min_confidence"] = max(self.runtime_filter_config.get("min_confidence", 0.45), 0.62)
+        self.runtime_filter_config["adx_threshold"] = max(self.runtime_filter_config.get("adx_threshold", 12.0), 18.0)
+        self.logger.info(
+            "llm_local_runtime_profile_applied min_confidence=%.2f adx_threshold=%.1f max_ram_mb=%s",
+            self.runtime_filter_config["min_confidence"],
+            self.runtime_filter_config["adx_threshold"],
+            self.settings.max_ram_mb,
+        )
+
     def _get_default_filter_config(self) -> dict[str, float]:
         normalized_symbol = self.symbol.replace("/", "").upper()
         default_configs = {
@@ -3091,6 +3142,17 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError, IndexError):
         return default
+
+
+class _NoopLive:
+    def __enter__(self) -> "_NoopLive":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
+
+    def update(self, _renderable: Any) -> None:
+        return
 
 
 def _book_price(order_book: dict[str, Any], side: str, fallback: float) -> float:
