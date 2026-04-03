@@ -32,6 +32,23 @@ handle_warning() {
     log_warn "$msg"
 }
 
+upsert_env_key() {
+    local env_file="$1"
+    local key="$2"
+    local value="$3"
+
+    if [[ ! -f "$env_file" ]]; then
+        printf "%s=%s\n" "$key" "$value" > "$env_file"
+        return
+    fi
+
+    if grep -q "^${key}=" "$env_file"; then
+        sed -i "s|^${key}=.*|${key}=${value}|" "$env_file"
+    else
+        printf "\n%s=%s\n" "$key" "$value" >> "$env_file"
+    fi
+}
+
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}  Reco-Trading Linux Installer v4.0${NC}"
 echo -e "${CYAN}========================================${NC}"
@@ -252,6 +269,110 @@ if ! $PYTHON_CMD -m pip --version >/dev/null 2>&1; then
 fi
 
 log_success "Dependencias del sistema verificadas"
+
+# ============================================
+# LLM MODE SELECTION
+# ============================================
+
+LLM_MODE="base"
+LLM_LOCAL_MODEL="qwen2.5:0.5b"
+OLLAMA_BASE_URL="http://localhost:11434"
+LLM_REMOTE_ENDPOINT="https://api.openai.com/v1/chat/completions"
+LLM_REMOTE_MODEL="gpt-4o-mini"
+LLM_REMOTE_API_KEY=""
+DASHBOARD_AUTH_ENABLED="true"
+DASHBOARD_AUTH_MODE="token"
+DASHBOARD_USERNAME="admin"
+DASHBOARD_PASSWORD="admin"
+DASHBOARD_API_TOKEN=""
+
+if [[ -f ".env" ]]; then
+    EXISTING_TOKEN=$(grep -E '^DASHBOARD_API_TOKEN=' .env | head -1 | cut -d '=' -f2- || true)
+    if [[ -n "${EXISTING_TOKEN}" ]]; then
+        DASHBOARD_API_TOKEN="${EXISTING_TOKEN}"
+    fi
+fi
+if [[ -z "${DASHBOARD_API_TOKEN}" ]]; then
+    if command -v python3 >/dev/null 2>&1; then
+        DASHBOARD_API_TOKEN=$(python3 - <<'PY'
+import secrets
+print(secrets.token_urlsafe(24))
+PY
+)
+    else
+        DASHBOARD_API_TOKEN="$(date +%s)_$RANDOM"
+    fi
+fi
+
+log_info "Selecciona modo de decisión LLM..."
+echo "  1) base (sin LLM para decisión final)"
+echo "  2) llm_local (Ollama + ${LLM_LOCAL_MODEL})"
+echo "  3) llm_remote (API externa)"
+read -p "Elige una opción (1/2/3): " -n 1 -r
+
+echo ""
+case "$REPLY" in
+    2)
+        LLM_MODE="llm_local"
+        ;;
+    3)
+        LLM_MODE="llm_remote"
+        read -p "Endpoint API remota [${LLM_REMOTE_ENDPOINT}]: " INPUT_REMOTE_ENDPOINT
+        if [[ -n "${INPUT_REMOTE_ENDPOINT}" ]]; then
+            LLM_REMOTE_ENDPOINT="${INPUT_REMOTE_ENDPOINT}"
+        fi
+        read -p "Modelo remoto [${LLM_REMOTE_MODEL}]: " INPUT_REMOTE_MODEL
+        if [[ -n "${INPUT_REMOTE_MODEL}" ]]; then
+            LLM_REMOTE_MODEL="${INPUT_REMOTE_MODEL}"
+        fi
+        read -p "API Key remota (opcional): " INPUT_REMOTE_KEY
+        if [[ -n "${INPUT_REMOTE_KEY}" ]]; then
+            LLM_REMOTE_API_KEY="${INPUT_REMOTE_KEY}"
+        fi
+        ;;
+    *)
+        LLM_MODE="base"
+        ;;
+esac
+
+if [[ "${LLM_MODE}" == "llm_local" ]]; then
+    log_info "Configurando Ollama (idempotente)..."
+    if command -v ollama >/dev/null 2>&1; then
+        log_success "Ollama ya está instalado"
+    else
+        case "$SYSTEM_TYPE" in
+            debian|fedora|rhel|arch|pi)
+                if command -v curl >/dev/null 2>&1; then
+                    if [[ -n "${RUN_CMD}" ]]; then
+                        curl -fsSL https://ollama.com/install.sh | ${RUN_CMD} bash 2>/dev/null || handle_warning "No se pudo instalar Ollama automáticamente"
+                    else
+                        curl -fsSL https://ollama.com/install.sh | bash 2>/dev/null || handle_warning "No se pudo instalar Ollama automáticamente"
+                    fi
+                else
+                    handle_warning "curl no disponible para instalar Ollama"
+                fi
+                ;;
+            termux|android|alpine)
+                handle_warning "Instalación automática de Ollama no soportada en este sistema"
+                ;;
+            *)
+                handle_warning "Sistema no reconocido para instalación automática de Ollama"
+                ;;
+        esac
+    fi
+
+    if command -v ollama >/dev/null 2>&1; then
+        if ollama list 2>/dev/null | awk '{print $1}' | grep -Fxq "${LLM_LOCAL_MODEL}"; then
+            log_success "Modelo ${LLM_LOCAL_MODEL} ya descargado"
+        else
+            log_info "Descargando modelo ${LLM_LOCAL_MODEL}..."
+            ollama pull "${LLM_LOCAL_MODEL}" 2>/dev/null || handle_warning "No se pudo descargar ${LLM_LOCAL_MODEL}"
+        fi
+    else
+        handle_warning "Ollama no disponible; se mantendrá modo base"
+        LLM_MODE="base"
+    fi
+fi
 
 # ============================================
 # CREATE VIRTUAL ENVIRONMENT
@@ -484,6 +605,21 @@ ENABLE_ADVANCED_META_LEARNING=true
 ENABLE_REINFORCEMENT_LEARNING=true
 DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
+
+# LLM Mode
+LLM_MODE=${LLM_MODE}
+LLM_LOCAL_MODEL=${LLM_LOCAL_MODEL}
+OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+LLM_REMOTE_ENDPOINT=${LLM_REMOTE_ENDPOINT}
+LLM_REMOTE_MODEL=${LLM_REMOTE_MODEL}
+LLM_REMOTE_API_KEY=${LLM_REMOTE_API_KEY}
+
+# Dashboard Security
+DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED}
+DASHBOARD_AUTH_MODE=${DASHBOARD_AUTH_MODE}
+DASHBOARD_USERNAME=${DASHBOARD_USERNAME}
+DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
 EOF
     elif [[ "$DB_TYPE" == "mysql" ]]; then
         cat > .env <<EOF
@@ -518,6 +654,21 @@ ENABLE_ADVANCED_META_LEARNING=true
 ENABLE_REINFORCEMENT_LEARNING=true
 DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
+
+# LLM Mode
+LLM_MODE=${LLM_MODE}
+LLM_LOCAL_MODEL=${LLM_LOCAL_MODEL}
+OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+LLM_REMOTE_ENDPOINT=${LLM_REMOTE_ENDPOINT}
+LLM_REMOTE_MODEL=${LLM_REMOTE_MODEL}
+LLM_REMOTE_API_KEY=${LLM_REMOTE_API_KEY}
+
+# Dashboard Security
+DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED}
+DASHBOARD_AUTH_MODE=${DASHBOARD_AUTH_MODE}
+DASHBOARD_USERNAME=${DASHBOARD_USERNAME}
+DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
 EOF
     else
         mkdir -p data
@@ -553,11 +704,39 @@ ENABLE_ADVANCED_META_LEARNING=true
 ENABLE_REINFORCEMENT_LEARNING=true
 DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
+
+# LLM Mode
+LLM_MODE=${LLM_MODE}
+LLM_LOCAL_MODEL=${LLM_LOCAL_MODEL}
+OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+LLM_REMOTE_ENDPOINT=${LLM_REMOTE_ENDPOINT}
+LLM_REMOTE_MODEL=${LLM_REMOTE_MODEL}
+LLM_REMOTE_API_KEY=${LLM_REMOTE_API_KEY}
+
+# Dashboard Security
+DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED}
+DASHBOARD_AUTH_MODE=${DASHBOARD_AUTH_MODE}
+DASHBOARD_USERNAME=${DASHBOARD_USERNAME}
+DASHBOARD_PASSWORD=${DASHBOARD_PASSWORD}
+DASHBOARD_API_TOKEN=${DASHBOARD_API_TOKEN}
 EOF
     fi
     
     log_success ".env generado"
 fi
+
+upsert_env_key ".env" "LLM_MODE" "${LLM_MODE}"
+upsert_env_key ".env" "LLM_LOCAL_MODEL" "${LLM_LOCAL_MODEL}"
+upsert_env_key ".env" "OLLAMA_BASE_URL" "${OLLAMA_BASE_URL}"
+upsert_env_key ".env" "LLM_REMOTE_ENDPOINT" "${LLM_REMOTE_ENDPOINT}"
+upsert_env_key ".env" "LLM_REMOTE_MODEL" "${LLM_REMOTE_MODEL}"
+upsert_env_key ".env" "LLM_REMOTE_API_KEY" "${LLM_REMOTE_API_KEY}"
+upsert_env_key ".env" "DASHBOARD_AUTH_ENABLED" "${DASHBOARD_AUTH_ENABLED}"
+upsert_env_key ".env" "DASHBOARD_AUTH_MODE" "${DASHBOARD_AUTH_MODE}"
+upsert_env_key ".env" "DASHBOARD_USERNAME" "${DASHBOARD_USERNAME}"
+upsert_env_key ".env" "DASHBOARD_PASSWORD" "${DASHBOARD_PASSWORD}"
+upsert_env_key ".env" "DASHBOARD_API_TOKEN" "${DASHBOARD_API_TOKEN}"
+log_success "Variables LLM actualizadas en .env"
 
 # ============================================
 # CREATE DIRECTORIES

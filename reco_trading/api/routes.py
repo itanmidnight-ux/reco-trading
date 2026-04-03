@@ -14,6 +14,31 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+_context_provider: Any = None
+
+
+def set_context_provider(provider: Any) -> None:
+    """Register runtime context provider (bot/server) for real API data."""
+    global _context_provider
+    _context_provider = provider
+
+
+def _resolve_snapshot() -> dict[str, Any]:
+    provider = _context_provider
+    if provider is None:
+        return {}
+    try:
+        if callable(provider):
+            provider = provider()
+    except Exception:
+        return {}
+    snapshot = getattr(provider, "snapshot", {})
+    if callable(snapshot):
+        try:
+            snapshot = snapshot()
+        except Exception:
+            snapshot = {}
+    return snapshot if isinstance(snapshot, dict) else {}
 
 
 class HealthResponse(BaseModel):
@@ -126,10 +151,14 @@ async def get_status():
 @router.get("/api/v1/balance", response_model=BalanceResponse, tags=["account"])
 async def get_balance():
     """Get account balance."""
+    snapshot = _resolve_snapshot()
+    total = float(snapshot.get("total_equity", snapshot.get("equity", snapshot.get("balance", 0.0))) or 0.0)
+    free = float(snapshot.get("balance", 0.0) or 0.0)
+    locked = max(total - free, 0.0)
     return {
-        "total": 1000.0,
-        "free": 1000.0,
-        "locked": 0.0,
+        "total": total,
+        "free": free,
+        "locked": locked,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 

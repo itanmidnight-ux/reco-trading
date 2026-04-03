@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -46,7 +45,7 @@ class AutoFixCoordinator:
         self._running = False
         self._task: asyncio.Task | None = None
         self._bot_paused = False
-        self._last_check = time.monotonic()
+        self._last_check = time.monotonic() - self.check_interval
         self._last_cleanup = time.monotonic()
         self._fix_cycles = 0
         self._errors_resolved = 0
@@ -213,11 +212,26 @@ class AutoFixCoordinator:
         docs_dir = self.log_analyzer.docs_dir
         os.makedirs(docs_dir, exist_ok=True)
         prompt_path = os.path.join(docs_dir, "fix_prompt.txt")
+        dispatch_path = os.path.join(docs_dir, "fix_prompt_dispatch.txt")
         
         with open(prompt_path, "w", encoding="utf-8") as f:
             f.write(prompt)
+        dispatch_command = (
+            "Cada hora ejecuta este flujo:\n"
+            "1) Lee docs/analisis.txt\n"
+            "2) Envia docs/analisis.txt + docs/fix_prompt.txt al asistente\n"
+            "3) Aplica los cambios en el codigo\n"
+            "4) Marca como [RESUELTO] lo solucionado en docs/analisis.txt\n"
+            "5) Reinicia/refresca el bot para aplicar correcciones\n"
+        )
+        with open(dispatch_path, "w", encoding="utf-8") as f:
+            f.write(dispatch_command)
         
-        self.logger.info(f"AutoFixCoordinator: Fix prompt written to {prompt_path}")
+        self.logger.info(
+            "AutoFixCoordinator: Fix prompt written to %s and dispatch command to %s",
+            prompt_path,
+            dispatch_path,
+        )
 
     async def _wait_for_fixes(self, timeout_seconds: float = 300) -> None:
         """Wait for fixes to be applied, checking periodically."""

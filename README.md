@@ -1,406 +1,256 @@
-# 🚀 **Reco Trading Bot v4.0 - Enterprise AI Trading Platform**
+# Reco Trading Bot v4.0
 
-> **The Most Advanced Free Trading Bot in the World**  
-> Professional-grade algorithmic trading with AI/ML, 20+ exchanges, futures, social trading, and mobile monitoring.
-
----
-
-## 📊 **Benchmark vs Premium Competitors**
-
-| Feature | **Reco-Trading v4.0** | FreqTrade | Cryptohopper ($159/mo) | Gunbot ($249) |
-|---------|------------------------|-----------|------------------------|---------------|
-| **Multi-Exchange** | ✅ **20+** | ✅ 20+ | ✅ 30+ | ✅ 30+ |
-| **Futures Trading** | ✅ **125x Leverage** | ❌ | ✅ | ✅ |
-| **Short Selling** | ✅ **Professional** | ❌ | ✅ | ✅ |
-| **Mobile App** | ✅ **Real-time API** | ❌ | ✅ | ❌ |
-| **Social Trading** | ✅ **Marketplace** | ❌ | ✅ | ❌ |
-| **Grid Trading** | ✅ **ATR-based** | ❌ | ✅ | ✅ |
-| **Copy Trading** | ✅ **Auto-copy** | ❌ | ✅ | ❌ |
-| **AI/ML Features** | ✅ **FreqAI + MetaLearner + Bayesian + Genetic** | ✅ Premium | ✅ Basic | ❌ |
-| **Auto-Improvement** | ✅ **Self-optimizing filters** | ❌ | ❌ | ❌ |
-| **Market Regime Detection** | ✅ **Adaptive** | ❌ | ❌ | ❌ |
-| **Dashboard Types** | ✅ **3 (App/Web/Headless)** | ✅ WebUI | ✅ Web/mobile | ❌ |
-| **Price** | 🆓 **$0** | 🆓 **$0** | 💰 **$159/mo** | 💰 **$249** |
-
-🎯 **Result**: More features than $200/month competitors, completely FREE.
+Plataforma avanzada de trading algorítmico con ejecución multi-módulo, analítica en tiempo real, panel web protegido y dashboard de terminal tipo **TUI** profesional.
 
 ---
 
-## 🏗️ **Architecture Overview**
+## Tabla de contenido
 
+1. [Resumen](#resumen)
+2. [Novedades recientes](#novedades-recientes)
+3. [Arquitectura](#arquitectura)
+4. [Instalación](#instalación)
+5. [Configuración `.env`](#configuración-env)
+6. [Dashboard web seguro (token/basic)](#dashboard-web-seguro-tokenbasic)
+7. [Acceso remoto desde celular u otro dispositivo](#acceso-remoto-desde-celular-u-otro-dispositivo)
+8. [Docker y hardening de puertos](#docker-y-hardening-de-puertos)
+9. [Dashboards disponibles](#dashboards-disponibles)
+10. [Troubleshooting](#troubleshooting)
+11. [Desarrollo y pruebas](#desarrollo-y-pruebas)
+
+---
+
+## Resumen
+
+**Reco Trading Bot** integra:
+
+- Motor de trading con control de riesgo y módulos de inteligencia de mercado.
+- Integración LLM en 3 modos: `base`, `llm_local`, `llm_remote`.
+- Dashboard web (Flask) con fallback a DB cuando no hay bot en memoria.
+- API complementaria (FastAPI) para endpoints runtime.
+- Dashboard de terminal **TUI** en Rich para operación headless profesional.
+
+---
+
+## Novedades recientes
+
+### 1) Modos LLM integrados
+- `base`: confirmación final por reglas.
+- `llm_local`: confirmación local con Ollama.
+- `llm_remote`: confirmación por proveedor remoto (API compatible OpenAI-style).
+
+### 2) Seguridad de dashboard web por `.env`
+- Autenticación configurable por variables de entorno:
+  - `DASHBOARD_AUTH_ENABLED`
+  - `DASHBOARD_AUTH_MODE` (`token`, `basic`, `hybrid`)
+  - `DASHBOARD_API_TOKEN`
+  - `DASHBOARD_USERNAME`
+  - `DASHBOARD_PASSWORD`
+
+### 3) Instaladores autónomos (Linux / Windows)
+- Los instaladores ahora agregan y actualizan automáticamente variables de dashboard y LLM en `.env`.
+- Generación automática de token de dashboard.
+
+### 4) Docker endurecido
+- Puertos ligados a `127.0.0.1` para reducir superficie de exposición.
+- Flujo listo para túnel Cloudflared sobre dashboard web.
+
+---
+
+## Arquitectura
+
+```text
+Reco Trading
+├── Motor principal (state machine + loop manager + risk)
+├── Capa AI/LLM
+│   ├── Confirmador de trade LLM
+│   └── Análisis y auto-fix
+├── Persistencia
+│   ├── SQLite / PostgreSQL / MySQL
+│   └── Repository asíncrono
+├── Dashboards
+│   ├── Desktop App (PySide6)
+│   ├── Web Dashboard (Flask)
+│   └── Terminal TUI (Rich)
+└── API runtime (FastAPI)
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Reco Trading Bot v4.0                        │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
-│  │   UI Layer  │  │  Dashboard   │  │   Mobile/Web API       │ │
-│  │ PySide6 App │  │  Web (Flask) │  │   FastAPI + WebSocket  │ │
-│  └──────┬──────┘  └──────┬───────┘  └──────────┬─────────────┘ │
-├─────────┼────────────────┼─────────────────────┼───────────────┤
-│  ┌──────▼────────────────▼─────────────────────▼─────────────┐ │
-│  │              Bot Engine (State Machine)                    │ │
-│  │  ┌─────────────┐  ┌──────────────┐  ┌──────────────────┐ │ │
-│  │  │ Signal Gen  │  │ Risk Manager │  │ Order Executor   │ │ │
-│  │  └─────────────┘  └──────────────┘  └──────────────────┘ │ │
-│  └──────────────────────────┬────────────────────────────────┘ │
-├─────────────────────────────┼──────────────────────────────────┤
-│  ┌──────────────────────────▼────────────────────────────────┐ │
-│  │              AI/ML Intelligence Layer                      │ │
-│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐ │ │
-│  │  │ FreqAI   │ │ Bayesian │ │ Genetic  │ │ MetaLearner  │ │ │
-│  │  │ Manager  │ │ Optimizer│ │ Evolver  │ │ (MAML)       │ │ │
-│  │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘ │ │
-│  │  ┌──────────────────────────────────────────────────────┐ │ │
-│  │  │ Auto-Improver + Market Regime Detector + Adaptive    │ │ │
-│  │  └──────────────────────────────────────────────────────┘ │ │
-│  └──────────────────────────┬────────────────────────────────┘ │
-├─────────────────────────────┼──────────────────────────────────┤
-│  ┌──────────────────────────▼────────────────────────────────┐ │
-│  │              Exchange Layer (CCXT)                         │ │
-│  │  Binance │ Kraken │ KuCoin │ Bybit │ OKX │ +15 more       │ │
-│  └──────────────────────────┬────────────────────────────────┘ │
-├─────────────────────────────┼──────────────────────────────────┤
-│  ┌──────────────────────────▼────────────────────────────────┐ │
-│  │              Data Layer                                    │ │
-│  │  PostgreSQL │ MySQL │ SQLite │ Redis (cache)              │ │
-│  └───────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-```
 
 ---
 
-## 🚀 **Quick Start**
+## Instalación
 
-### **Option 1: One-Click Install (Linux/macOS)**
+## Linux
+
 ```bash
-git clone https://github.com/your-org/reco-trading.git
-cd reco-trading
-./install.sh
-./run.sh
+chmod +x install-linux.sh
+./install-linux.sh
 ```
 
-### **Option 2: Docker (Production)**
+## Windows CMD
+
+```bat
+install-windows.bat
+```
+
+## Windows PowerShell
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\install-windows-powershell.ps1
+```
+
+## Docker (builder integral)
+
 ```bash
-docker-compose up -d
-# Web dashboard: http://localhost:9000
-```
-
-### **Option 3: Windows**
-```cmd
-install.bat
-run.bat
-```
-
-### **Option 4: Manual**
-```bash
-python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your API keys
-python -m reco_trading.main
+chmod +x docker-build.sh
+./docker-build.sh
 ```
 
 ---
 
-## ⚙️ **Configuration (.env)**
+## Configuración `.env`
+
+Ejemplo mínimo recomendado:
 
 ```env
-# ==============================
-# BINANCE CONFIGURATION
-# ==============================
-BINANCE_API_KEY=your_api_key
-BINANCE_API_SECRET=your_api_secret
+# Exchange
+BINANCE_API_KEY=TU_API_KEY
+BINANCE_API_SECRET=TU_API_SECRET
 BINANCE_TESTNET=true
+CONFIRM_MAINNET=false
+ENVIRONMENT=testnet
+RUNTIME_PROFILE=paper
 
-# ==============================
-# TRADING SETTINGS
-# ==============================
-TRADING_SYMBOL=BTCUSDT
-TIMEFRAME=5m
-CONFIDENCE_THRESHOLD=0.70
+# Database (elige una)
+DATABASE_URL=sqlite+aiosqlite:///./data/reco_trading.db
+# POSTGRES_DSN=postgresql+asyncpg://user:pass@localhost:5432/reco_trading_prod
+# MYSQL_DSN=mysql+aiomysql://user:pass@localhost:3306/reco_trading_prod
 
-# ==============================
-# RISK MANAGEMENT
-# ==============================
-RISK_PER_TRADE_FRACTION=0.01
-DAILY_LOSS_LIMIT=0.03
-MAX_DRAWDOWN=0.10
-CAPITAL_RESERVE_RATIO=0.15
+# LLM
+LLM_MODE=base
+LLM_LOCAL_MODEL=qwen2.5:0.5b
+OLLAMA_BASE_URL=http://localhost:11434
+LLM_REMOTE_ENDPOINT=https://api.openai.com/v1/chat/completions
+LLM_REMOTE_MODEL=gpt-4o-mini
+LLM_REMOTE_API_KEY=
 
-# ==============================
-# DATABASE
-# ==============================
-# SQLite (default)
-DATABASE_URL=sqlite+aiosqlite:///data/reco_trading.db
-
-# PostgreSQL (production)
-# POSTGRES_DSN=postgresql+asyncpg://user:pass@localhost/reco_trading
-
-# ==============================
-# AI/ML
-# ==============================
-FREQAI_ENABLED=true
-FREQAI_MODEL_TYPE=lightgbm
-FREQAI_AUTO_RETRAIN=true
-FREQAI_RETRAIN_INTERVAL_HOURS=6
+# Dashboard Security
+DASHBOARD_AUTH_ENABLED=true
+DASHBOARD_AUTH_MODE=token
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=admin
+DASHBOARD_API_TOKEN=TU_TOKEN_GENERADO
 ```
 
----
-
-## 🤖 **AI/ML Features**
-
-### **FreqAI Manager**
-- LightGBM, XGBoost, Random Forest models
-- Auto-retraining on schedule
-- Feature engineering (RSI, MACD, Bollinger Bands)
-- Model persistence and accuracy tracking
-
-### **Bayesian Optimizer**
-- Hyperparameter optimization using Gaussian Processes
-- Adaptive confidence thresholds
-- Performance tracking
-
-### **Genetic Algorithm Evolver**
-- Population-based strategy evolution
-- Crossover and mutation operators
-- Fitness-based selection
-
-### **MetaLearner (MAML)**
-- Model-Agnostic Meta-Learning
-- Fast adaptation to new market conditions
-- Few-shot learning capabilities
-
-### **Auto-Improver System**
-- **Self-optimizing filters**: RSI, MA, volume filters auto-adjust
-- **Market regime detection**: Trending, ranging, volatile regimes
-- **Consecutive loss detection**: Automatic risk reduction
-- **Walk-forward validation**: Prevents overfitting
-- **Overfitting detection**: Monitors for curve-fitting
+> Los instaladores generan/agregan automáticamente estas claves para reducir configuración manual.
 
 ---
 
-## 📊 **Trading Strategies**
+## Dashboard web seguro (token/basic)
 
-### **Signal Engines**
-1. **Trend Engine**: EMA crossovers, ADX, MACD
-2. **Momentum Engine**: RSI, Stochastic, ROC
-3. **Volume Engine**: OBV, Volume SMA, VWAP
-4. **Volatility Engine**: ATR, Bollinger Bands, Keltner
-5. **Structure Engine**: Support/Resistance, Pivot Points
+Con `DASHBOARD_AUTH_ENABLED=true`:
 
-### **Risk Management**
-- **Capital Profiles**: NANO, MICRO, SMALL, MEDIUM, LARGE, PREMIUM
-- **Dynamic Position Sizing**: Based on volatility and account size
-- **Stop Loss**: Trailing, fixed, ATR-based
-- **Take Profit**: Multi-level (30%, 50%, 100%)
-- **Cooldown Periods**: After losses, configurable
-- **Circuit Breaker**: Emergency stop on extreme conditions
+- `DASHBOARD_AUTH_MODE=token` → usa token.
+- `DASHBOARD_AUTH_MODE=basic` → usuario/clave.
+- `DASHBOARD_AUTH_MODE=hybrid` → acepta ambos.
 
-### **Advanced Features**
-- **Multi-pair Management**: Scan and trade 12+ pairs
-- **Smart Symbol Switching**: Auto-select best opportunities
-- **Exit Intelligence**: Dynamic exit based on market conditions
-- **Fee-aware Trading**: Accounts for exchange fees in calculations
+El frontend web usa `authFetch` y envía el token en `X-Dashboard-Token` cuando está disponible.
 
 ---
 
-## 📱 **Dashboard Options**
+## Acceso remoto desde celular u otro dispositivo
 
-### **1. Desktop App (PySide6)**
-- Real-time candlestick charts
-- Live PnL tracking
-- Bot controls (Start/Pause/Emergency)
-- Market intelligence panel
-- AI/ML status monitoring
-- Health metrics
+### Opción recomendada: Cloudflared Tunnel
 
-### **2. Web Dashboard (Flask)**
-- Browser-based at http://localhost:9000
-- 9 tabs: Overview, Trades, Analytics, Market, Strategy, AI/ML, Risk, Health, Logs
-- Real-time updates via polling
-- Bot controls (Pause/Resume/Emergency)
-- Trade history table
-
-### **3. Headless Mode**
-- Terminal-only output
-- Perfect for servers/VPS
-- Log-based monitoring
-- Lowest resource usage
-
----
-
-## 🐳 **Docker Deployment**
-
-```yaml
-# docker-compose.yml
-version: '3.8'
-services:
-  bot:
-    build: .
-    env_file: .env
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-    
-  postgres:
-    image: postgres:15
-    environment:
-      POSTGRES_DB: reco_trading
-      POSTGRES_USER: trading
-      POSTGRES_PASSWORD: your_password
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    restart: unless-stopped
-
-volumes:
-  pgdata:
-```
-
----
-
-## 📁 **Project Structure**
-
-```
-reco-trading/
-├── reco_trading/
-│   ├── core/                 # Core trading engine
-│   │   ├── bot_engine.py     # Main bot orchestrator
-│   │   ├── state_machine.py  # State management
-│   │   ├── event_bus.py      # Event system
-│   │   ├── scheduler.py      # Task scheduling
-│   │   ├── loop_manager.py   # Cycle management
-│   │   ├── adaptive_config.py # Dynamic configuration
-│   │   ├── intelligent_sizing.py # Position sizing
-│   │   ├── emergency_systems.py # Safety systems
-│   │   └── ...
-│   ├── ml/                   # Machine Learning
-│   │   ├── freqai_manager.py # FreqAI integration
-│   │   ├── enhanced_ml_engine.py # Heuristic ML
-│   │   ├── meta_learner.py   # MAML implementation
-│   │   └── continual/        # Continual learning
-│   ├── auto_improver/        # Self-optimization
-│   │   ├── auto_improver.py  # Base auto-improver
-│   │   ├── strategy_generator.py # Strategy creation
-│   │   ├── evaluator_engine.py # Backtesting
-│   │   └── training_engine.py # Model training
-│   ├── advanced_auto_improver/ # Advanced features
-│   │   ├── market_regime_detector.py
-│   │   ├── self_evaluation_engine.py
-│   │   ├── walk_forward_optimizer.py
-│   │   └── overfitting_detector.py
-│   ├── exchange/             # Exchange integration
-│   │   ├── exchange.py       # Base exchange wrapper
-│   │   ├── binance_client.py # Binance-specific
-│   │   ├── order_manager.py  # Order execution
-│   │   ├── pairlist.py       # Pair filtering
-│   │   └── blacklist.py      # Blacklist management
-│   ├── database/             # Data persistence
-│   │   ├── repository.py     # Data access layer
-│   │   └── models.py         # SQLAlchemy models
-│   ├── ui/                   # Desktop UI
-│   │   ├── app.py            # Qt application
-│   │   ├── main_window.py    # Main window
-│   │   ├── dashboard.py      # Terminal dashboard
-│   │   ├── tabs/             # UI tabs
-│   │   └── widgets/          # UI widgets
-│   ├── api/                  # REST API
-│   │   ├── server.py         # FastAPI server
-│   │   └── routes.py         # API endpoints
-│   ├── backtesting/          # Backtesting engine
-│   │   ├── engine.py         # Main backtester
-│   │   ├── simulator.py      # Trade simulator
-│   │   └── performance_metrics.py
-│   ├── analytics/            # Analytics
-│   │   └── session_tracker.py
-│   ├── config/               # Configuration
-│   │   └── settings.py       # Pydantic settings
-│   └── main.py               # Entry point
-├── web_site/                 # Web dashboard
-│   ├── dashboard_server.py   # Flask server
-│   └── templates/
-│       └── index.html        # Web UI
-├── scripts/                  # Utility scripts
-├── tests/                    # Test suite
-├── data/                     # Runtime data
-├── install.sh                # Linux/macOS installer
-├── run.sh                    # Linux/macOS launcher
-├── install.bat               # Windows installer
-├── run.bat                   # Windows launcher
-├── docker-compose.yml        # Docker config
-├── Dockerfile                # Docker image
-├── requirements.txt          # Dependencies
-└── README.md                 # This file
-```
-
----
-
-## 🧪 **Testing**
+El script `docker-build.sh` puede levantar túnel hacia:
 
 ```bash
-# Run all tests
-pytest tests/ -v
+cloudflared tunnel --url http://localhost:9000
+```
 
-# Run specific test category
-pytest tests/test_risk_controls.py -v
-pytest tests/test_signal_engine.py -v
-pytest tests/test_backtesting_engine.py -v
+### Cómo entrar desde otro dispositivo
 
-# Run with coverage
-pytest tests/ --cov=reco_trading --cov-report=html
+1. Abre la URL pública del túnel.
+2. Agrega el token en la URL la primera vez:
+   - `https://tu-url.trycloudflare.com/?token=TU_TOKEN`
+3. El frontend guarda el token localmente para próximas peticiones.
+
+> También puedes usar `Authorization: Bearer <token>` o `X-Dashboard-Token` en clientes personalizados.
+
+---
+
+## Docker y hardening de puertos
+
+- Dashboard web ligado a loopback (`127.0.0.1:9000`).
+- API auxiliar, DB, Redis y Ollama también en loopback cuando aplica.
+- Menor exposición de red por defecto.
+
+Si necesitas exposición controlada, usa reverse proxy/TLS o túnel autenticado.
+
+---
+
+## Dashboards disponibles
+
+## 1) Web Dashboard
+- Control operativo (`pause`, `resume`, `emergency`).
+- Trades, analytics, risk y estado de módulos.
+- Fallback a DB si el bot no está en memoria.
+
+## 2) Desktop Dashboard (PySide6)
+- UI gráfica local con tabs especializadas.
+
+## 3) Terminal TUI (Rich) — **mejorado**
+- Layout multi-panel profesional.
+- Badges visuales de estado/señal.
+- Barras de confianza y visuales de salud del sistema.
+- Diseñado para operación headless en VPS/servidor.
+
+---
+
+## Troubleshooting
+
+### El dashboard devuelve `Unauthorized`
+- Verifica:
+  - `DASHBOARD_AUTH_ENABLED=true`
+  - token correcto en `DASHBOARD_API_TOKEN`
+  - modo correcto en `DASHBOARD_AUTH_MODE`
+
+### No conecta Ollama en modo local
+- Revisa `OLLAMA_BASE_URL`.
+- Verifica que el modelo exista (`ollama list`).
+
+### El bot no inicia en Docker
+- Revisa logs:
+
+```bash
+docker logs reco-trading --tail 200
 ```
 
 ---
 
-## 🔒 **Security**
+## Desarrollo y pruebas
 
-- API keys stored in environment variables (never hardcoded)
-- No external data transmission (all processing local)
-- Web dashboard has no authentication (use reverse proxy in production)
-- Database connections use async drivers
-- Emergency stop available at all times
+### Pruebas recomendadas
 
----
+```bash
+pytest -q tests/test_web_dashboard_connection_and_layout.py tests/test_web_dashboard_db_and_balance.py
+```
 
-## 📈 **Performance**
+### Validaciones de sintaxis útiles
 
-- **Latency**: <100ms API calls to exchange
-- **Memory**: ~200MB RAM typical usage
-- **CPU**: <5% on modern hardware
-- **Database**: SQLite for development, PostgreSQL for production
-- **Scalability**: Supports 12+ trading pairs simultaneously
+```bash
+python -m py_compile web_site/dashboard_server.py
+bash -n install-linux.sh
+bash -n docker-build.sh
+```
 
 ---
 
-## 🤝 **Contributing**
+## Nota final
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+Este proyecto está orientado a operación profesional y evolución continua. Mantén siempre:
 
----
+- credenciales reales fuera de repositorio,
+- revisión de riesgos antes de habilitar mainnet,
+- y validación en testnet previo a producción.
 
-## 📄 **License**
-
-This project is open-source and available under the MIT License.
-
----
-
-## ⚠️ **Disclaimer**
-
-**Trading cryptocurrencies involves significant risk. This software is provided as-is without any warranty. Past performance does not guarantee future results. Always test thoroughly on testnet before using real funds. The authors are not responsible for any financial losses.**
-
----
-
-## 📞 **Support**
-
-- **Issues**: [GitHub Issues](https://github.com/your-org/reco-trading/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/reco-trading/discussions)
-
----
-
-<p align="center">
-  <strong>Made with ❤️ for the trading community</strong>
-</p>

@@ -152,6 +152,12 @@ class BotEngine:
         self.confluence = TimeframeConfluence()
 
         self.state_manager = state_manager
+        if self.state_manager and hasattr(self.state_manager, "configure_log_state_emission"):
+            self.state_manager.configure_log_state_emission(
+                bool(getattr(self.settings, "ui_state_emit_on_each_log", False))
+            )
+        if bool(getattr(self.settings, "low_ram_mode", True)):
+            settings.history_limit = max(120, min(int(settings.history_limit), 220))
         self.trades_today = 0
         self.win_count = 0
         self.start_time = time.time()
@@ -228,13 +234,22 @@ class BotEngine:
         from reco_trading.core.llm_systems.log_analyzer import LLMLogAnalyzer
         from reco_trading.core.llm_systems.auto_fix_coordinator import AutoFixCoordinator
 
-        self.trade_confirmator = LLMTradeConfirmator()
+        self.trade_confirmator = LLMTradeConfirmator(
+            llm_mode=str(getattr(self.settings, "llm_mode", "base")),
+            local_model=str(getattr(self.settings, "llm_local_model", "qwen2.5:0.5b")),
+            ollama_base_url=str(getattr(self.settings, "ollama_base_url", "http://localhost:11434")),
+            remote_endpoint=str(getattr(self.settings, "llm_remote_endpoint", "https://api.openai.com/v1/chat/completions")),
+            remote_model=str(getattr(self.settings, "llm_remote_model", "gpt-4o-mini")),
+            remote_api_key=str(getattr(self.settings, "llm_remote_api_key", "")),
+        )
         self.log_analyzer = LLMLogAnalyzer()
         self.auto_fix_coordinator = AutoFixCoordinator(
             log_analyzer=self.log_analyzer,
             pause_callback=lambda: setattr(self, "manual_pause", True),
             resume_callback=lambda: setattr(self, "manual_pause", False),
             refresh_callback=self._on_auto_fix_refresh,
+            check_interval_seconds=max(60, int(getattr(self.settings, "llm_fix_cycle_interval_seconds", 3600))),
+            cleanup_interval_seconds=max(3600, int(getattr(self.settings, "llm_cleanup_interval_seconds", 86400))),
         )
         self.logger.info("LLM systems initialized: TradeConfirmator, LogAnalyzer, AutoFixCoordinator")
         

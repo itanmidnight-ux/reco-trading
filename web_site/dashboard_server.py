@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import base64
+import hmac
 import json
 import logging
+import os
 import socket
 import threading
 import time
@@ -10,12 +14,89 @@ from typing import Any, Callable
 
 from flask import Flask, render_template, jsonify, Response, request
 
+from reco_trading.database.repository import Repository
 
 logger = logging.getLogger(__name__)
 
 _global_bot_instance: Any = None
 _bot_instance_getter: Callable | None = None
+_fallback_repository: Repository | None = None
 _app: Flask | None = None
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.getenv(name, str(default))).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _is_dashboard_auth_enabled() -> bool:
+    return _env_bool("DASHBOARD_AUTH_ENABLED", False)
+
+
+def _dashboard_token() -> str:
+    return str(os.getenv("DASHBOARD_API_TOKEN", "")).strip()
+
+
+def _dashboard_user() -> str:
+    return str(os.getenv("DASHBOARD_USERNAME", "admin")).strip()
+
+
+def _dashboard_password() -> str:
+    return str(os.getenv("DASHBOARD_PASSWORD", "")).strip()
+
+
+def _unauthorized_response() -> Response:
+    response = jsonify({"success": False, "error": "Unauthorized"})
+    response.status_code = 401
+    response.headers["WWW-Authenticate"] = 'Basic realm="Reco Dashboard"'
+    return response
+
+
+def _check_basic_auth() -> bool:
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(auth_header.split(" ", 1)[1]).decode("utf-8")
+        username, password = decoded.split(":", 1)
+    except Exception:
+        return False
+    configured_user = _dashboard_user()
+    configured_password = _dashboard_password()
+    if not configured_user or not configured_password:
+        return False
+    return hmac.compare_digest(username, configured_user) and hmac.compare_digest(password, configured_password)
+
+
+def _check_token_auth() -> bool:
+    token = _dashboard_token()
+    if not token:
+        return False
+    supplied = (
+        request.headers.get("X-Dashboard-Token", "")
+        or request.args.get("token", "")
+    ).strip()
+    auth_header = request.headers.get("Authorization", "")
+    if not supplied and auth_header.startswith("Bearer "):
+        supplied = auth_header.split(" ", 1)[1].strip()
+    return bool(supplied) and hmac.compare_digest(supplied, token)
+
+
+def _is_authorized() -> bool:
+    if not _is_dashboard_auth_enabled():
+        return True
+    mode = str(os.getenv("DASHBOARD_AUTH_MODE", "hybrid")).strip().lower()
+    if mode == "token":
+        return _check_token_auth()
+    if mode == "basic":
+        return _check_basic_auth()
+    return _check_token_auth() or _check_basic_auth()
+
+
+def _require_dashboard_auth() -> Response | None:
+    if _is_authorized():
+        return None
+    return _unauthorized_response()
 
 
 def _calc_duration(start: datetime | None, end: datetime | None) -> str | None:
@@ -51,6 +132,73 @@ def set_bot_instance_getter(getter: Callable) -> None:
     logger.info("Bot instance getter set for web dashboard")
 
 
+def _run_async(coro: Any) -> Any:
+    """Run coroutine from sync Flask context safely."""
+    try:
+        return asyncio.run(coro)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+
+def _resolve_dashboard_dsn() -> str:
+    postgres_dsn = os.getenv("POSTGRES_DSN", "").strip()
+    if postgres_dsn:
+        return postgres_dsn
+    mysql_dsn = os.getenv("MYSQL_DSN", "").strip()
+    if mysql_dsn:
+        return mysql_dsn
+
+    database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url:
+        if database_url.startswith("sqlite://") and not database_url.startswith("sqlite+aiosqlite://"):
+            return database_url.replace("sqlite://", "sqlite+aiosqlite://")
+        return database_url
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    data_dir = os.path.join(project_root, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    db_path = os.path.join(data_dir, "reco_trading.db")
+    return f"sqlite+aiosqlite:///{db_path}"
+
+
+def _get_fallback_repository() -> Repository:
+    global _fallback_repository
+    if _fallback_repository is None:
+        _fallback_repository = Repository(_resolve_dashboard_dsn())
+        _run_async(_fallback_repository.setup())
+    return _fallback_repository
+
+
+def _get_repository_from_context() -> Repository | None:
+    if _global_bot_instance is not None:
+        repository = getattr(_global_bot_instance, "repository", None)
+        if repository is not None:
+            return repository
+    try:
+        return _get_fallback_repository()
+    except Exception as exc:
+        logger.error("Failed to initialize dashboard fallback repository: %s", exc)
+        return None
+
+
+def _fetch_trades(limit: int = 200) -> tuple[list[Any], str]:
+    repository = _get_repository_from_context()
+    if repository is None or not hasattr(repository, "get_trades"):
+        return [], "snapshot"
+    try:
+        trades = _run_async(repository.get_trades(limit=limit))
+        if not isinstance(trades, list):
+            return [], "snapshot"
+        return trades, "database"
+    except Exception as exc:
+        logger.error("Error fetching trades from repository: %s", exc)
+        return [], "snapshot"
+
+
 def get_bot_snapshot() -> dict[str, Any]:
     """Get current snapshot from bot - enhanced with all fields."""
     global _global_bot_instance
@@ -62,7 +210,25 @@ def get_bot_snapshot() -> dict[str, Any]:
             pass
     
     if _global_bot_instance is None:
-        return _get_default_snapshot()
+        snapshot = _get_default_snapshot()
+        trades, source = _fetch_trades(limit=100)
+        if source == "database" and trades:
+            snapshot["trade_history"] = [
+                {
+                    "trade_id": t.id,
+                    "pair": t.symbol,
+                    "side": t.side,
+                    "entry": float(t.entry_price) if t.entry_price else 0.0,
+                    "exit": float(t.exit_price) if t.exit_price else 0.0,
+                    "size": float(t.quantity) if t.quantity else 0.0,
+                    "pnl": float(t.pnl) if t.pnl else 0.0,
+                    "status": t.status,
+                    "time": t.timestamp.strftime("%Y-%m-%d %H:%M") if t.timestamp else "-",
+                }
+                for t in trades
+            ]
+            snapshot["database_status"] = "CONNECTED"
+        return snapshot
     
     try:
         snapshot = getattr(_global_bot_instance, 'snapshot', {})
@@ -332,11 +498,17 @@ def create_app() -> Flask:
     
     @app.route('/api/snapshot')
     def api_snapshot():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         snapshot = get_bot_snapshot()
         return jsonify(snapshot)
     
     @app.route('/api/status')
     def api_status():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         snapshot = get_bot_snapshot()
         return jsonify({
             "status": snapshot.get("status", "UNKNOWN"),
@@ -361,6 +533,9 @@ def create_app() -> Flask:
     
     @app.route('/api/control/<action>', methods=['POST'])
     def api_control(action):
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Send control command to bot."""
         if _global_bot_instance is None:
             return jsonify({"success": False, "error": "Bot not connected"})
@@ -397,71 +572,53 @@ def create_app() -> Flask:
     
     @app.route('/api/trades')
     def api_trades():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         snapshot = get_bot_snapshot()
         trades = snapshot.get("trade_history", [])
         return jsonify(trades)
     
     @app.route('/api/all_trades')
     def api_all_trades():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get all trades from database with pagination and filtering."""
-        if _global_bot_instance is None:
-            return jsonify({"trades": [], "total": 0, "source": "snapshot"})
-        
         try:
-            repository = getattr(_global_bot_instance, 'repository', None)
-            if repository and hasattr(repository, 'get_trades'):
-                import asyncio
-                try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        trades = loop.run_until_complete(
-                            repository.get_trades(limit=200)
-                        )
-                    finally:
-                        loop.close()
-                    
-                    trade_list = []
-                    for t in trades:
-                        entry_price = float(t.entry_price) if t.entry_price else 0
-                        exit_price = float(t.exit_price) if t.exit_price else 0
-                        quantity = float(t.quantity) if t.quantity else 0
-                        pnl = float(t.pnl) if t.pnl else 0
-                        pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
-                        
-                        if t.side == "SELL":
-                            pnl_pct = -pnl_pct
-                        
-                        entry_time = t.timestamp.isoformat() if t.timestamp else None
-                        exit_time = t.close_timestamp.isoformat() if t.close_timestamp else None
-                        time_str = t.timestamp.strftime("%Y-%m-%d %H:%M") if t.timestamp else "-"
-                        
-                        trade_list.append({
-                            "trade_id": t.id,
-                            "pair": t.symbol,
-                            "side": t.side,
-                            "entry": entry_price,
-                            "exit": exit_price,
-                            "size": quantity,
-                            "stop_loss": float(t.stop_loss) if t.stop_loss else 0,
-                            "take_profit": float(t.take_profit) if t.take_profit else 0,
-                            "pnl": pnl,
-                            "pnl_percent": pnl_pct,
-                            "status": t.status,
-                            "entry_time": entry_time,
-                            "exit_time": exit_time,
-                            "time": time_str,
-                            "order_id": t.order_id,
-                            "duration": _calc_duration(t.timestamp, t.close_timestamp) if t.close_timestamp else None,
-                        })
-                    
-                    return jsonify({
-                        "trades": trade_list,
-                        "total": len(trade_list),
-                        "source": "database"
+            trades, source = _fetch_trades(limit=200)
+            if source == "database":
+                trade_list = []
+                for t in trades:
+                    entry_price = float(t.entry_price) if t.entry_price else 0
+                    exit_price = float(t.exit_price) if t.exit_price else 0
+                    quantity = float(t.quantity) if t.quantity else 0
+                    pnl = float(t.pnl) if t.pnl else 0
+                    pnl_pct = ((exit_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
+                    if t.side == "SELL":
+                        pnl_pct = -pnl_pct
+                    entry_time = t.timestamp.isoformat() if t.timestamp else None
+                    exit_time = t.close_timestamp.isoformat() if t.close_timestamp else None
+                    time_str = t.timestamp.strftime("%Y-%m-%d %H:%M") if t.timestamp else "-"
+                    trade_list.append({
+                        "trade_id": t.id,
+                        "pair": t.symbol,
+                        "side": t.side,
+                        "entry": entry_price,
+                        "exit": exit_price,
+                        "size": quantity,
+                        "stop_loss": float(t.stop_loss) if t.stop_loss else 0,
+                        "take_profit": float(t.take_profit) if t.take_profit else 0,
+                        "pnl": pnl,
+                        "pnl_percent": pnl_pct,
+                        "status": t.status,
+                        "entry_time": entry_time,
+                        "exit_time": exit_time,
+                        "time": time_str,
+                        "order_id": t.order_id,
+                        "duration": _calc_duration(t.timestamp, t.close_timestamp) if t.close_timestamp else None,
                     })
-                except Exception as e:
-                    logger.error(f"Error fetching trades from db: {e}")
+                return jsonify({"trades": trade_list, "total": len(trade_list), "source": "database"})
             
             snapshot = get_bot_snapshot()
             trades = snapshot.get("trade_history", [])
@@ -472,16 +629,15 @@ def create_app() -> Flask:
     
     @app.route('/api/db_trades')
     def api_db_trades():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get trades directly from database with pagination, filtering, and sorting."""
-        if _global_bot_instance is None:
-            return jsonify({"trades": [], "total": 0})
-        
         try:
-            repository = getattr(_global_bot_instance, 'repository', None)
+            repository = _get_repository_from_context()
             if not repository or not hasattr(repository, 'get_trades'):
                 return jsonify({"trades": [], "total": 0})
-            
-            import asyncio
+
             page = request.args.get('page', 1, type=int)
             per_page = request.args.get('per_page', 50, type=int)
             status_filter = request.args.get('status', '', type=str)
@@ -490,14 +646,7 @@ def create_app() -> Flask:
             
             per_page = min(per_page, 200)
             
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                all_trades = loop.run_until_complete(
-                    repository.get_trades(limit=1000)
-                )
-            finally:
-                loop.close()
+            all_trades = _run_async(repository.get_trades(limit=1000))
             
             # Apply filters
             filtered = all_trades
@@ -572,24 +721,16 @@ def create_app() -> Flask:
     
     @app.route('/api/trade_summary')
     def api_trade_summary():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get trade summary statistics from database."""
-        if _global_bot_instance is None:
-            return jsonify({})
-        
         try:
-            repository = getattr(_global_bot_instance, 'repository', None)
+            repository = _get_repository_from_context()
             if not repository or not hasattr(repository, 'get_trades'):
                 return jsonify({})
-            
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                all_trades = loop.run_until_complete(
-                    repository.get_trades(limit=1000)
-                )
-            finally:
-                loop.close()
+
+            all_trades = _run_async(repository.get_trades(limit=1000))
             
             closed = [t for t in all_trades if t.status == "CLOSED" and t.pnl is not None]
             open_trades = [t for t in all_trades if t.status == "OPEN"]
@@ -636,12 +777,18 @@ def create_app() -> Flask:
     
     @app.route('/api/analytics')
     def api_analytics():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         snapshot = get_bot_snapshot()
         analytics = snapshot.get("analytics", {})
         return jsonify(analytics)
     
     @app.route('/api/settings')
     def api_settings():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         if _global_bot_instance is None:
             return jsonify({})
         try:
@@ -658,6 +805,9 @@ def create_app() -> Flask:
     
     @app.route('/api/autonomous')
     def api_autonomous():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get autonomous brain status including optimizers and regime detector."""
         global _global_bot_instance, _bot_instance_getter
         bot = _global_bot_instance or (_bot_instance_getter() if _bot_instance_getter else None)
@@ -671,6 +821,9 @@ def create_app() -> Flask:
     
     @app.route('/api/multipair')
     def api_multipair():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get multi-pair manager status."""
         global _global_bot_instance, _bot_instance_getter
         bot = _global_bot_instance or (_bot_instance_getter() if _bot_instance_getter else None)
@@ -705,6 +858,9 @@ def create_app() -> Flask:
     
     @app.route('/api/market_data')
     def api_market_data():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get detailed market data."""
         snapshot = get_bot_snapshot()
         return jsonify({
@@ -723,6 +879,9 @@ def create_app() -> Flask:
     
     @app.route('/api/risk_data')
     def api_risk_data():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get detailed risk data."""
         snapshot = get_bot_snapshot()
         risk_metrics = snapshot.get("risk_metrics", {}) or {}
@@ -746,6 +905,9 @@ def create_app() -> Flask:
     
     @app.route('/api/health_detailed')
     def api_health_detailed():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get detailed health metrics."""
         snapshot = get_bot_snapshot()
         
@@ -766,6 +928,9 @@ def create_app() -> Flask:
     
     @app.route('/api/market_analysis')
     def api_market_analysis():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Get market analysis status."""
         snapshot = get_bot_snapshot()
         ma = snapshot.get("market_analysis", {})
@@ -773,6 +938,9 @@ def create_app() -> Flask:
     
     @app.route('/api/market_analysis/start', methods=['POST'])
     def api_market_analysis_start():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Start market analysis."""
         global _global_bot_instance
         if _global_bot_instance is None and _bot_instance_getter is not None:
@@ -796,6 +964,9 @@ def create_app() -> Flask:
     
     @app.route('/api/market_analysis/cancel', methods=['POST'])
     def api_market_analysis_cancel():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Cancel market analysis."""
         global _global_bot_instance
         if _global_bot_instance is None and _bot_instance_getter is not None:
@@ -816,6 +987,9 @@ def create_app() -> Flask:
     
     @app.route('/api/market_analysis/change_pair', methods=['POST'])
     def api_market_analysis_change_pair():
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
         """Request pair change to best analyzed pair."""
         global _global_bot_instance
         if _global_bot_instance is None and _bot_instance_getter is not None:
