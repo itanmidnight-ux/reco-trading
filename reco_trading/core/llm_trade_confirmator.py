@@ -183,8 +183,11 @@ class LLMTradeConfirmator:
             reasons.append(f"LLM_MODE desconocido ({self.llm_mode}), fallback a reglas")
         analysis_time = (time.perf_counter() - start) * 1000
 
-        self._confirmation_count += 1
-        if not confirmed:
+        total_events = self._confirmation_count + self._rejection_count + 1
+        self._avg_time_ms = ((self._avg_time_ms * (total_events - 1)) + analysis_time) / total_events
+        if confirmed:
+            self._confirmation_count += 1
+        else:
             self._rejection_count += 1
         if self._confirmation_count == 1:
             self._avg_time_ms = analysis_time

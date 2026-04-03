@@ -222,7 +222,9 @@ Si necesitas exposición controlada, usa reverse proxy/TLS o túnel autenticado.
 - Barras de confianza y visuales de salud del sistema.
 - Diseñado para operación headless en VPS/servidor.
 
----
+### No conecta Ollama en modo local
+- Revisa `OLLAMA_BASE_URL`.
+- Verifica que el modelo exista (`ollama list`).
 
 ## Troubleshooting
 
@@ -243,7 +245,9 @@ Si necesitas exposición controlada, usa reverse proxy/TLS o túnel autenticado.
 docker logs reco-trading --tail 200
 ```
 
----
+```bash
+pytest -q tests/test_web_dashboard_connection_and_layout.py tests/test_web_dashboard_db_and_balance.py
+```
 
 ## Desarrollo y pruebas
 
@@ -261,7 +265,9 @@ bash -n install-linux.sh
 bash -n docker-build.sh
 ```
 
----
+- credenciales reales fuera de repositorio,
+- revisión de riesgos antes de habilitar mainnet,
+- y validación en testnet previo a producción.
 
 ## Nota final
 

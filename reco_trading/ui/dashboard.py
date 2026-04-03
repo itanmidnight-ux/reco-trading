@@ -49,6 +49,7 @@ class DashboardSnapshot:
     exit_intelligence_reason: str | None = None
     exit_intelligence_codes: list[str] = field(default_factory=list)
     exit_intelligence_events: list[dict[str, Any]] = field(default_factory=list)
+    logs: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DashboardSnapshot":
@@ -88,6 +89,7 @@ class DashboardSnapshot:
             exit_intelligence_reason=_to_text(data.get("exit_intelligence_reason")),
             exit_intelligence_codes=[str(item) for item in (data.get("exit_intelligence_codes") or [])],
             exit_intelligence_events=[dict(item) for item in (data.get("exit_intelligence_log") or []) if isinstance(item, Mapping)],
+            logs=[dict(item) for item in (data.get("logs") or []) if isinstance(item, Mapping)],
         )
 
 
