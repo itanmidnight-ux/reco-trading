@@ -48,6 +48,13 @@
             color: var(--accent-cyan) !important;
             text-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
         }
+        .brand-subtitle {
+            font-size: 0.68rem;
+            color: var(--text-secondary);
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin-left: 0.2rem;
+        }
         
         .status-badge {
             padding: 0.3rem 0.75rem;
@@ -210,7 +217,10 @@
 <body>
     <nav class="navbar navbar-dark">
         <div class="container-fluid px-3">
-            <a class="navbar-brand" href="#"><i class="fas fa-chart-line me-2"></i>Reco-Trading</a>
+            <div class="d-flex flex-column">
+                <a class="navbar-brand" href="#"><i class="fas fa-chart-line me-2"></i>Reco-Trading</a>
+                <span class="brand-subtitle">Professional Local Dashboard</span>
+            </div>
             <div class="d-flex align-items-center gap-2">
                 <button class="btn btn-success btn-sm" onclick="sendControl('resume')" title="Resume"><i class="fas fa-play"></i></button>
                 <button class="btn btn-warning btn-sm" onclick="sendControl('pause')" title="Pause"><i class="fas fa-pause"></i></button>
@@ -227,8 +237,11 @@
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#analytics"><i class="fas fa-chart-pie me-1"></i> Analytics</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#market"><i class="fas fa-chart-line me-1"></i> Market</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#strategy"><i class="fas fa-brain me-1"></i> Strategy</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#intel-log"><i class="fas fa-list-alt me-1"></i> Intel Log</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-ml"><i class="fas fa-robot me-1"></i> AI/ML</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#risk"><i class="fas fa-shield-alt me-1"></i> Risk</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cogs me-1"></i> Settings</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#system"><i class="fas fa-server me-1"></i> System</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#health"><i class="fas fa-heartbeat me-1"></i> Health</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#market-analysis"><i class="fas fa-globe me-1"></i> Market Analysis</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-monitor"><i class="fas fa-robot me-1"></i> AI Monitor</button></li>
@@ -464,6 +477,14 @@
                 </div>
             </div>
 
+            <!-- Intel Log -->
+            <div class="tab-pane fade" id="intel-log">
+                <div class="card mt-3">
+                    <div class="card-header"><i class="fas fa-list-alt text-purple"></i> Decision / Intelligence Log</div>
+                    <div class="card-body" style="max-height: 500px; overflow-y: auto;" id="intelLogContainer"></div>
+                </div>
+            </div>
+
             <!-- Risk -->
             <div class="tab-pane fade" id="risk">
                 <div class="grid-3 mt-3">
@@ -496,6 +517,22 @@
                             <div class="info-row"><span class="info-label">Optimization Reason</span><span class="info-value" id="optimizationReasonValue">-</span></div>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <!-- Settings -->
+            <div class="tab-pane fade" id="settings">
+                <div class="card mt-3">
+                    <div class="card-header"><i class="fas fa-cogs text-orange"></i> Runtime Settings</div>
+                    <div class="card-body" id="settingsContainer"></div>
+                </div>
+            </div>
+
+            <!-- System -->
+            <div class="tab-pane fade" id="system">
+                <div class="card mt-3">
+                    <div class="card-header"><i class="fas fa-server text-blue"></i> System Metrics</div>
+                    <div class="card-body" id="systemContainer"></div>
                 </div>
             </div>
 
@@ -715,6 +752,25 @@
         let tradePerPage = 20;
         let tradeTotalPages = 1;
         let tradeSummary = null;
+        let dashboardToken = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('dashboard_token') || '';
+
+        function authFetch(url, options = {}) {
+            const opts = {...options};
+            opts.headers = {...(options.headers || {})};
+            if (dashboardToken) {
+                opts.headers['X-Dashboard-Token'] = dashboardToken;
+            }
+            return fetch(url, opts);
+        }
+
+        function ensureDashboardToken() {
+            if (dashboardToken) return;
+            const input = prompt('Token del dashboard (si aplica):');
+            if (input && input.trim()) {
+                dashboardToken = input.trim();
+                localStorage.setItem('dashboard_token', dashboardToken);
+            }
+        }
         
         function fmt(n, d=2) { return (n===null||n===undefined)?'-':typeof n==='number'?n.toFixed(d):n; }
         function fmtPct(n) { return n===null||n===undefined?'-':(n*100).toFixed(1)+'%'; }
@@ -732,7 +788,7 @@
         
         async function fetchSnapshot() {
             try {
-                const r = await fetch('/api/snapshot');
+                const r = await authFetch('/api/snapshot');
                 if(!r.ok) throw new Error('Failed');
                 updateDashboard(await r.json());
             } catch(e) { console.error('Error:',e); }
@@ -749,7 +805,7 @@
                 if (sideFilter) url += `&side=${sideFilter}`;
                 if (pairFilter) url += `&pair=${pairFilter}`;
                 
-                const r = await fetch(url);
+                const r = await authFetch(url);
                 const data = await r.json();
                 
                 tradeTotalPages = data.total_pages || 1;
@@ -891,20 +947,6 @@
             document.getElementById('signalQualityScore').textContent = fmtPct(d.signal_quality_score);
             document.getElementById('rawSignalValue').textContent = d.raw_signal || d.signal || '-';
             
-            // Auto-Improver multipliers
-            document.getElementById('adaptiveMultiplierValue').textContent = (riskMetrics.adaptive_size_multiplier || 1.0).toFixed(2) + 'x';
-            document.getElementById('advancedMultiplierValue').textContent = (riskMetrics.advanced_size_multiplier || 1.0).toFixed(2) + 'x';
-            document.getElementById('autoImproveEnabled').textContent = d.auto_improver_enabled !== false ? 'Yes' : 'No';
-            document.getElementById('consecutiveLosses').textContent = d.consecutive_losses || 0;
-            document.getElementById('consecutiveWins').textContent = d.consecutive_wins || 0;
-            
-            // Exit Intelligence
-            document.getElementById('exitScoreValue').textContent = fmt(d.exit_intelligence_score,3);
-            document.getElementById('exitThresholdValue').textContent = fmt(d.exit_intelligence_threshold,3);
-            document.getElementById('exitReasonValue').textContent = d.exit_intelligence_reason||'-';
-            document.getElementById('decisionReasonValue').textContent = d.decision_reason||'-';
-            document.getElementById('cooldownGateValue').textContent = d.cooldown_complete?'Complete':'Active';
-            
             // Risk metrics
             const riskMetrics = d.risk_metrics || {};
             document.getElementById('riskPerTradeValue').textContent = fmtPct(d.live_trade_risk_fraction);
@@ -919,6 +961,20 @@
             document.getElementById('emergencyStopValue').className = 'info-value ' + (d.emergency_stop_active ? 'text-red' : 'text-green');
             document.getElementById('reconnectionsValue').textContent = d.exchange_reconnections || 0;
             document.getElementById('dynamicExitValue').textContent = d.dynamic_exit_enabled ? 'Enabled' : 'Disabled';
+
+            // Auto-Improver multipliers
+            document.getElementById('adaptiveMultiplierValue').textContent = (riskMetrics.adaptive_size_multiplier || 1.0).toFixed(2) + 'x';
+            document.getElementById('advancedMultiplierValue').textContent = (riskMetrics.advanced_size_multiplier || 1.0).toFixed(2) + 'x';
+            document.getElementById('autoImproveEnabled').textContent = d.auto_improver_enabled !== false ? 'Yes' : 'No';
+            document.getElementById('consecutiveLosses').textContent = d.consecutive_losses || 0;
+            document.getElementById('consecutiveWins').textContent = d.consecutive_wins || 0;
+            
+            // Exit Intelligence
+            document.getElementById('exitScoreValue').textContent = fmt(d.exit_intelligence_score,3);
+            document.getElementById('exitThresholdValue').textContent = fmt(d.exit_intelligence_threshold,3);
+            document.getElementById('exitReasonValue').textContent = d.exit_intelligence_reason||'-';
+            document.getElementById('decisionReasonValue').textContent = d.decision_reason||'-';
+            document.getElementById('cooldownGateValue').textContent = d.cooldown_complete?'Complete':'Active';
             
             // Runtime settings
             const runtimeSettings = d.runtime_settings || {};
@@ -941,6 +997,9 @@
             // Update trades
             updateTradesTable(d.trade_history||[]);
             updateLogs(d.logs||[]);
+            updateIntelLogs(d.logs||[]);
+            updateSettingsTab(d.runtime_settings || {});
+            updateSystemTab(d.system || {});
             updateMarketAnalysisTab(d.market_analysis || null);
             updateAIMonitorTab(d);
         }
@@ -977,11 +1036,53 @@
             if(!logs.length) { c.innerHTML = '<div class="text-muted text-center py-4">No logs yet</div>'; return; }
             c.innerHTML = logs.slice(0,100).map(l => `<div class="log-entry ${(l.level||'').toLowerCase()}">[${l.time||''}] ${l.message||l.msg||''}</div>`).join('');
         }
+
+        function updateIntelLogs(logs) {
+            const c = document.getElementById('intelLogContainer');
+            if(!c) return;
+            const intel = (logs || []).filter(l => {
+                const lvl = (l.level || '').toUpperCase();
+                const msg = (l.message || l.msg || '').toLowerCase();
+                return lvl === 'WARNING' || lvl === 'ERROR' || msg.includes('decision') || msg.includes('signal');
+            });
+            if(!intel.length) {
+                c.innerHTML = '<div class="text-muted text-center py-4">No intelligence events yet</div>';
+                return;
+            }
+            c.innerHTML = intel.slice(0,120).map(l => `<div class="log-entry ${(l.level||'').toLowerCase()}">[${l.time||''}] ${l.level||'INFO'} - ${l.message||l.msg||''}</div>`).join('');
+        }
+
+        function updateSettingsTab(settings) {
+            const c = document.getElementById('settingsContainer');
+            if(!c) return;
+            const entries = Object.entries(settings || {});
+            if(!entries.length) {
+                c.innerHTML = '<div class="text-muted">No runtime settings available</div>';
+                return;
+            }
+            c.innerHTML = entries.slice(0, 40).map(([k, v]) => `
+                <div class="info-row"><span class="info-label">${k}</span><span class="info-value">${typeof v === 'object' ? JSON.stringify(v) : v}</span></div>
+            `).join('');
+        }
+
+        function updateSystemTab(system) {
+            const c = document.getElementById('systemContainer');
+            if(!c) return;
+            const src = system || {};
+            c.innerHTML = `
+                <div class="info-row"><span class="info-label">Uptime (s)</span><span class="info-value">${fmt(src.uptime_seconds || 0, 1)}</span></div>
+                <div class="info-row"><span class="info-label">API Latency (ms)</span><span class="info-value">${fmt(src.api_latency_ms || 0, 1)}</span></div>
+                <div class="info-row"><span class="info-label">Memory (MB)</span><span class="info-value">${fmt(src.memory_usage_mb || 0, 1)}</span></div>
+                <div class="info-row"><span class="info-label">Database</span><span class="info-value">${src.database_status || '-'}</span></div>
+                <div class="info-row"><span class="info-label">Exchange</span><span class="info-value">${src.exchange_status || '-'}</span></div>
+                <div class="info-row"><span class="info-label">Last Sync</span><span class="info-value">${src.last_server_sync || '-'}</span></div>
+            `;
+        }
         
         async function sendControl(a) {
             if(!confirm('Confirm: '+a+'?')) return;
             try {
-                const r = await fetch('/api/control/'+a, {method:'POST'});
+                const r = await authFetch('/api/control/'+a, {method:'POST'});
                 const j = await r.json();
                 alert(j.success?j.message:'Error: '+j.error);
                 fetchSnapshot();
@@ -991,8 +1092,8 @@
         async function fetchAIMLData() {
             try {
                 const [autonomousRes, multipairRes] = await Promise.all([
-                    fetch('/api/autonomous').catch(() => ({json: () => ({error: 'Not available'})})),
-                    fetch('/api/multipair').catch(() => ({json: () => ({error: 'Not available'})}))
+                    authFetch('/api/autonomous').catch(() => ({json: () => ({error: 'Not available'})})),
+                    authFetch('/api/multipair').catch(() => ({json: () => ({error: 'Not available'})}))
                 ]);
                 
                 const autonomous = await autonomousRes.json();
@@ -1087,7 +1188,7 @@
         async function startMarketAnalysis() {
             const count = document.getElementById('maMarketCount').value || 50;
             try {
-                const r = await fetch('/api/market_analysis/start', {
+                const r = await authFetch('/api/market_analysis/start', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({market_count: parseInt(count)})
@@ -1104,7 +1205,7 @@
         
         async function cancelMarketAnalysis() {
             try {
-                const r = await fetch('/api/market_analysis/cancel', {method: 'POST'});
+                const r = await authFetch('/api/market_analysis/cancel', {method: 'POST'});
                 const j = await r.json();
                 if (j.success) {
                     document.getElementById('maStartBtn').style.display = 'inline-block';
@@ -1119,7 +1220,7 @@
         
         async function changeToBestPair() {
             try {
-                const r = await fetch('/api/market_analysis/change_pair', {method: 'POST'});
+                const r = await authFetch('/api/market_analysis/change_pair', {method: 'POST'});
                 const j = await r.json();
                 if (j.success) {
                     alert(j.message || 'Pair change requested. Will switch after current trade completes.');
@@ -1267,6 +1368,7 @@
         }
         
         document.addEventListener('DOMContentLoaded', () => {
+            ensureDashboardToken();
             fetchSnapshot();
             loadAllTrades();
             fetchAIMLData();

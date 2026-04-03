@@ -27,6 +27,7 @@ class StateManager(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.RLock()
+        self._emit_state_on_each_log = False
         self._control_queue: list[str] = []
         self._runtime_settings_queue: list[dict[str, Any]] = []
         self._state: dict[str, Any] = {
@@ -113,13 +114,20 @@ class StateManager(QObject):
         entry = {"time": datetime.utcnow().strftime("%H:%M:%S"), "level": level.upper(), "message": message}
         if not self._is_visible_log_entry(entry):
             return
+        state_copy: dict[str, Any] | None = None
         with self._lock:
             logs = self._state.setdefault("logs", [])
             logs.append(entry)
             self._state["logs"] = logs[-400:]
-            state_copy = deepcopy(self._state)
+            if self._emit_state_on_each_log:
+                state_copy = deepcopy(self._state)
         self.log_added.emit(entry)
-        self.state_changed.emit(state_copy)
+        if state_copy is not None:
+            self.state_changed.emit(state_copy)
+
+    def configure_log_state_emission(self, enabled: bool) -> None:
+        with self._lock:
+            self._emit_state_on_each_log = bool(enabled)
 
     def notify(self, title: str, message: str) -> None:
         self.notification.emit(title, message)

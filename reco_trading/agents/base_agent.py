@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -136,9 +137,12 @@ class BaseLLMAgent(ABC):
 
     async def _ollama_request(self, prompt: str, system_prompt: str | None = None) -> dict:
         import httpx
-        
+        llm_mode = os.getenv("LLM_MODE", "llm_local").lower()
+        endpoint = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/") + "/api/generate"
+        model = os.getenv("LLM_LOCAL_MODEL", self.config.model)
+
         payload = {
-            "model": self.config.model,
+            "model": model,
             "prompt": prompt,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
@@ -150,8 +154,27 @@ class BaseLLMAgent(ABC):
         
         async with httpx.AsyncClient(timeout=self.config.timeout) as client:
             try:
+                if llm_mode == "llm_remote":
+                    endpoint = os.getenv("LLM_REMOTE_ENDPOINT", "https://api.openai.com/v1/chat/completions")
+                    headers = {"Content-Type": "application/json"}
+                    api_key = os.getenv("LLM_REMOTE_API_KEY", "")
+                    if api_key:
+                        headers["Authorization"] = f"Bearer {api_key}"
+                    remote_payload = {
+                        "model": os.getenv("LLM_REMOTE_MODEL", model),
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": self.config.temperature,
+                    }
+                    response = await client.post(endpoint, json=remote_payload, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    content = ""
+                    choices = data.get("choices", []) if isinstance(data, dict) else []
+                    if choices:
+                        content = str(choices[0].get("message", {}).get("content", ""))
+                    return {"response": content, "done": True, "context": {}}
                 response = await client.post(
-                    "http://localhost:11434/api/generate",
+                    endpoint,
                     json=payload
                 )
                 response.raise_for_status()
