@@ -6,7 +6,7 @@ import pytest
 
 from reco_trading.database.repository import Repository
 from reco_trading.exchange.binance_client import BinanceClient
-from reco_trading.main import _verify_database_connection, run
+from reco_trading.main import _join_bot_thread_or_exit, _verify_database_connection, run
 
 
 class _Settings:
@@ -91,3 +91,20 @@ def test_binance_client_close_ignores_missing_exchange_close() -> None:
     client.exchange = _ExchangeWithoutClose()  # type: ignore[assignment]
 
     asyncio.run(client.close())
+
+
+def test_join_bot_thread_or_exit_raises_system_exit_on_runtime_error(monkeypatch) -> None:
+    class _Thread:
+        def join(self) -> None:
+            return None
+
+    class _Logger:
+        def error(self, *_args, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr("reco_trading.main._bot_runtime_error", RuntimeError("boom"))
+
+    with pytest.raises(SystemExit) as excinfo:
+        _join_bot_thread_or_exit(_Thread(), _Logger())  # type: ignore[arg-type]
+
+    assert excinfo.value.code == 1

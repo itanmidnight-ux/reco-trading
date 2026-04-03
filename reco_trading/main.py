@@ -19,6 +19,7 @@ from reco_trading.database.repository import Repository
 # Global bot instance for web dashboard access
 _bot_instance: BotEngine | None = None
 _shutdown_event = threading.Event()
+_bot_runtime_error: Exception | None = None
 
 
 def configure_logging() -> None:
@@ -39,13 +40,25 @@ def get_bot_instance() -> BotEngine | None:
 
 def _run_bot(settings: Settings, state_manager: object | None) -> None:
     """Run the bot in a separate thread."""
-    global _bot_instance
+    global _bot_instance, _bot_runtime_error
     bot = BotEngine(settings, state_manager=state_manager)
     _bot_instance = bot
     try:
         asyncio.run(bot.run())
+    except Exception as exc:
+        _bot_runtime_error = exc
+        logging.getLogger(__name__).exception("Bot terminated due to an unhandled runtime error")
     finally:
         _bot_instance = None
+
+
+def _join_bot_thread_or_exit(bot_thread: threading.Thread, logger: logging.Logger) -> None:
+    """Wait for bot thread and exit with code 1 on runtime crash."""
+    global _bot_runtime_error
+    bot_thread.join()
+    if _bot_runtime_error is not None:
+        logger.error("Bot stopped unexpectedly: %s", _bot_runtime_error)
+        sys.exit(1)
 
 
 async def _verify_database_connection(settings: Settings) -> str:
@@ -139,12 +152,16 @@ def run() -> None:
     signal.signal(signal.SIGINT, _graceful_shutdown)
     signal.signal(signal.SIGTERM, _graceful_shutdown)
     
+    global _bot_runtime_error
+    _bot_runtime_error = None
     settings = Settings()
     
     # Check API keys
     if settings.require_api_keys and (not settings.binance_api_key or not settings.binance_api_secret):
         logger.error("BINANCE_API_KEY and BINANCE_API_SECRET are required")
         sys.exit(1)
+    if not settings.require_api_keys and (not settings.binance_api_key or not settings.binance_api_secret):
+        logger.warning("API keys are missing; bot startup may fail when connecting to Binance")
     
     if not settings.binance_testnet and not settings.confirm_mainnet:
         logger.error("Mainnet trading blocked: set CONFIRM_MAINNET=true to proceed")
@@ -210,7 +227,7 @@ def run() -> None:
             run_gui(state_manager)
         except Exception as exc:
             logger.exception("GUI failed, bot will continue running: %s", exc)
-            bot_thread.join()
+            _join_bot_thread_or_exit(bot_thread, logger)
     elif dashboard_type == 'web':
         logger.info("Web Dashboard selected (port 9000)")
         try:
@@ -220,13 +237,13 @@ def run() -> None:
             set_bot_instance_getter(get_bot)
             web_dashboard_thread = run_in_thread(host='0.0.0.0', port=9000)
             logger.info("Web Dashboard started on http://localhost:9000")
-            bot_thread.join()
+            _join_bot_thread_or_exit(bot_thread, logger)
         except Exception as exc:
             logger.exception("Web Dashboard failed: %s", exc)
-            bot_thread.join()
+            _join_bot_thread_or_exit(bot_thread, logger)
     elif dashboard_type == 'none':
         logger.info("Running in headless mode (no dashboard)")
-        bot_thread.join()
+        _join_bot_thread_or_exit(bot_thread, logger)
 
 
 if __name__ == "__main__":
