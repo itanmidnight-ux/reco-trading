@@ -571,6 +571,12 @@ class BotEngine:
                     except KeyboardInterrupt:
                         await self._set_state(BotState.STOPPED, "manual_stop")
                         break
+                    except asyncio.CancelledError as exc:
+                        if str(exc) == "executor_shutdown":
+                            await self._set_state(BotState.STOPPED, "executor_shutdown")
+                            await self._log("INFO", "executor_shutdown_detected_stopping_bot")
+                            break
+                        raise
                     except ccxt.BaseError as exc:
                         await self._set_state(BotState.ERROR, "exchange_error")
                         self.snapshot["exchange_status"] = "ERROR"
@@ -2105,7 +2111,22 @@ class BotEngine:
         return float(total_equity_usdt)
 
     async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
-        quote_balance, base_balance, quote_asset, _base_asset, balance_payload = await self._fetch_balances()
+        balances = await self._fetch_balances()
+        quote_balance = 0.0
+        base_balance = 0.0
+        quote_asset = "USDT"
+        balance_payload: dict[str, Any] = {}
+        if isinstance(balances, tuple):
+            if len(balances) >= 5:
+                quote_balance, base_balance, quote_asset, _base_asset, balance_payload = balances[:5]
+            elif len(balances) >= 2:
+                quote_balance, base_balance = balances[:2]
+        elif isinstance(balances, dict):
+            # Backward compatibility with older mocks/helpers.
+            quote_balance = _as_float(balances.get("quote_balance"), 0.0)
+            base_balance = _as_float(balances.get("base_balance"), 0.0)
+            quote_asset = str(balances.get("quote_asset") or "USDT")
+            balance_payload = dict(balances.get("payload") or {})
         reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
         base_value_quote = float(base_balance * reference_price)
         total_equity_quote = float(quote_balance + base_value_quote)
@@ -2127,10 +2148,13 @@ class BotEngine:
         self.snapshot["trades_today"] = self.trades_today
         self.snapshot["win_rate"] = self.win_count / self.trades_today if self.trades_today else 0.0
 
-        profile = self._current_capital_profile()
-        operable_capital = self._operable_equity_for_trading(total_equity_usdt, profile)
-        self.snapshot["capital_profile"] = profile.name
-        self.snapshot["operable_capital_usdt"] = operable_capital
+        profile_getter = getattr(self, "_current_capital_profile", None)
+        operable_getter = getattr(self, "_operable_equity_for_trading", None)
+        if callable(profile_getter) and callable(operable_getter):
+            profile = profile_getter()
+            operable_capital = operable_getter(total_equity_usdt, profile)
+            self.snapshot["capital_profile"] = profile.name
+            self.snapshot["operable_capital_usdt"] = operable_capital
 
         if self.starting_equity is None:
             self.starting_equity = max(total_equity_usdt, 1.0)

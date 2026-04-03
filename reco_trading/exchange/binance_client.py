@@ -305,6 +305,18 @@ class BinanceClient:
         for attempt in range(retries):
             try:
                 return await asyncio.to_thread(fn, *args, **kwargs)
+            except RuntimeError as exc:
+                # Happens during interpreter/event-loop shutdown when Python already
+                # closed the default ThreadPoolExecutor used by asyncio.to_thread().
+                # Retrying would fail the same way; surface a clearer async-cancel
+                # signal so upper layers can stop cleanly instead of spamming logs.
+                if "cannot schedule new futures after shutdown" in str(exc).lower():
+                    self.logger.info(
+                        "binance_call_cancelled op=%s reason=executor_shutdown",
+                        operation,
+                    )
+                    raise asyncio.CancelledError("executor_shutdown") from exc
+                raise
             except (ccxt.InvalidNonce, ccxt.ExchangeError) as exc:
                 if self._is_timestamp_error(exc) and not timestamp_resynced:
                     timestamp_resynced = True
