@@ -231,8 +231,20 @@ Si necesitas exposición controlada, usa reverse proxy/TLS o túnel autenticado.
 ### El dashboard devuelve `Unauthorized`
 - Verifica:
   - `DASHBOARD_AUTH_ENABLED=true`
-  - token correcto en `DASHBOARD_API_TOKEN`
   - modo correcto en `DASHBOARD_AUTH_MODE`
+  - **si usas `token`**: define `DASHBOARD_API_TOKEN` y entra con Token.
+  - **si usas `basic`**: define `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`.
+  - **si usas `hybrid`**: si defines token y usuario/clave, el login exigirá ambos factores.
+
+### El dashboard inicia pero no llegan precio/balance/equity
+- Verifica exchange + entorno:
+  - `BINANCE_TESTNET=true` para Spot Testnet.
+  - `ENVIRONMENT=testnet` y `RUNTIME_PROFILE=paper` durante pruebas.
+  - API keys vigentes de Testnet (las llaves de testnet pueden expirar por inactividad).
+- Endpoint WS Spot usado por el bot:
+  - testnet: `wss://stream.testnet.binance.vision/ws/<symbol>@bookTicker`
+  - mainnet: `wss://stream.binance.com:9443/ws/<symbol>@bookTicker`
+- Si no hay datos en websocket, el bot hace fallback REST para ticker; revisa conectividad de red y reloj del sistema.
 
 ### No conecta Ollama en modo local
 - Revisa `OLLAMA_BASE_URL`.
