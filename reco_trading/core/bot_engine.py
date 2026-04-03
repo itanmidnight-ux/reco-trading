@@ -602,6 +602,18 @@ class BotEngine:
                         self._safe_live_update(live)
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
         finally:
+            try:
+                await self.auto_fix_coordinator.stop()
+            except Exception:
+                pass
+            try:
+                await self.loop_manager.stop()
+            except Exception:
+                pass
+            try:
+                await self.multi_pair_manager.stop()
+            except Exception:
+                pass
             await self.auto_improver.stop()
             await self.autonomous_brain.stop()
             await self.resilience.stop()

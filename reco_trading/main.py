@@ -198,7 +198,9 @@ def run() -> None:
     
     # Start bot in background thread
     import threading
-    bot_thread = threading.Thread(target=_run_bot, args=(settings, state_manager), daemon=True, name="bot-engine")
+    # Non-daemon thread avoids abrupt interpreter shutdown that can break asyncio.to_thread
+    # with "cannot schedule new futures after shutdown".
+    bot_thread = threading.Thread(target=_run_bot, args=(settings, state_manager), daemon=False, name="bot-engine")
     bot_thread.start()
     
     # Run GUI in main thread (or start web dashboard)
