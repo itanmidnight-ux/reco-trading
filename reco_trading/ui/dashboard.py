@@ -205,15 +205,25 @@ class TerminalDashboard:
                 decision.add_row(f"gate:{gate}", str(value))
             decision.add_row("reason", snap.decision_reason or "-")
 
-            terminal_width = _safe_console_width(self.console)
             layout = Layout(name="root")
             layout.split_column(
                 Layout(Panel(header, border_style="bright_blue"), ratio=1),
                 Layout(name="main", ratio=13),
                 Layout(Panel(Align.center(Text("Press Ctrl+C to stop • Reco Trading TUI Runtime", style="dim white")), border_style="grey37"), ratio=1),
             )
+            layout["main"].split_row(
+                Layout(Panel(status, title="Market", border_style="cyan"), ratio=3),
+                Layout(name="center", ratio=5),
+                Layout(Panel(decision, title="Decision", border_style="yellow"), ratio=4),
+            )
+            layout["main"]["center"].split_column(
+                Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=3),
+                Layout(Panel(live_trades, border_style="bright_cyan"), ratio=4),
+                Layout(Panel(llm_gate, border_style="bright_yellow"), ratio=3),
+                Layout(Panel(event_log, border_style="white"), ratio=4),
+            )
 
-            if terminal_width < 110:
+            if width < 110:
                 # Compact mode for Android/mobile terminals and narrow SSH sessions.
                 layout["main"].split_column(
                     Layout(Panel(status, title="Market", border_style="cyan"), ratio=3),
@@ -313,14 +323,6 @@ def _normalize_confidence(value: float | None) -> float:
     if normalized > 1.0:
         normalized = normalized / 100.0 if normalized <= 100.0 else 1.0
     return max(0.0, min(1.0, normalized))
-
-
-def _safe_console_width(console: Console) -> int:
-    try:
-        detected = int(getattr(console.size, "width", 120))
-        return max(60, detected)
-    except Exception:
-        return 120
 
 
 def _styled_pnl(value: float | None) -> str:
