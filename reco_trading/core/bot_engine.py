@@ -454,7 +454,7 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
 
-            terminal_dashboard_enabled = str(_os.getenv("BOT_TERMINAL_DASHBOARD", "1")).strip().lower() in {"1", "true", "yes", "on"}
+            terminal_dashboard_enabled = bool(self.terminal_tui_enabled)
             live_context: AbstractContextManager[Any]
             if terminal_dashboard_enabled:
                 import sys
@@ -2509,7 +2509,13 @@ class BotEngine:
         filter_config = sanitized.get("filter_config", {})
         if filter_config:
             self._apply_symbol_filter_config(filter_config)
-        
+        elif symbol_switched:
+            # Al cambiar de mercado desde dashboard, refrescar filtros de inmediato
+            # para evitar mezclar umbrales del par anterior.
+            self._apply_symbol_filter_config(self._get_default_filter_config())
+            self.snapshot["autonomous_filters"] = dict(self.runtime_filter_config)
+            self.snapshot["autonomous_filter_reason"] = "symbol_switch_immediate_refresh"
+
         if symbol_switched:
             self.snapshot["pair"] = self.symbol
         if persist:
@@ -2601,6 +2607,23 @@ class BotEngine:
             risk_cap=_as_float(risk_cap, profile.risk_per_trade_fraction) if risk_cap is not None else None,
             allocation_cap=_as_float(allocation_cap, profile.max_trade_balance_fraction) if allocation_cap is not None else None,
         )
+
+        # Perfil de micro-capital: mejorar operatividad cuando el balance es muy bajo
+        # sin desactivar protecciones críticas.
+        if equity > 0 and equity <= 15.0:
+            micro_risk = min(max(optimized.risk_per_trade_fraction, 0.015), 0.03)
+            micro_allocation = min(max(optimized.max_trade_balance_fraction, 0.35), 0.65)
+            optimized = optimized.__class__(
+                risk_per_trade_fraction=micro_risk,
+                max_trade_balance_fraction=micro_allocation,
+                capital_reserve_ratio=min(max(optimized.capital_reserve_ratio, 0.03), 0.10),
+                min_cash_buffer_usdt=min(max(optimized.min_cash_buffer_usdt, 0.5), 1.5),
+                capital_limit_usdt=max(_as_float(optimized.capital_limit_usdt, equity), equity),
+                dynamic_exit_enabled=bool(optimized.dynamic_exit_enabled),
+                confidence_boost_multiplier=max(_as_float(optimized.confidence_boost_multiplier, 1.0), 1.03),
+                optimization_reason=f"{optimized.optimization_reason} | micro_balance_profile",
+            )
+
         return {
             "risk_per_trade_fraction": optimized.risk_per_trade_fraction,
             "max_trade_balance_fraction": optimized.max_trade_balance_fraction,
@@ -3199,6 +3222,7 @@ class BotEngine:
             "take_profit_atr_multiplier": _as_float(filter_config.get("take_profit_atr_multiplier"), 2.5),
             "min_confidence": _as_float(filter_config.get("min_confidence"), 0.55),
         }
+        self.base_filter_config = self._calibrate_filter_config_with_recent_market_data(self.base_filter_config)
         self.runtime_filter_config = dict(self.base_filter_config)
         # Re-aplicar ajustes LLM si está en modo local (se habrían sobreescrito)
         if str(getattr(self.settings, "llm_mode", "base")).lower() == "llm_local":
@@ -3254,6 +3278,13 @@ class BotEngine:
             trades_today = int(self.snapshot.get("trades_today", 0) or 0)
             win_rate = _as_float(self.snapshot.get("win_rate"), 0.0)
             daily_pnl = _as_float(self.snapshot.get("daily_pnl"), 0.0)
+            stale_ratio = _as_float(self.snapshot.get("stale_market_data_ratio"), 0.0)
+            signal_quality = _as_float(self.snapshot.get("signal_quality_score"), 0.0)
+            consecutive_losses = int(self.snapshot.get("consecutive_losses", 0) or 0)
+            total_equity = _as_float(
+                self.snapshot.get("total_equity"),
+                _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)),
+            )
 
             # Relajación controlada por falta de actividad — un solo ajuste acumulado
             if trades_today == 0 and daily_pnl >= 0:
@@ -3280,6 +3311,10 @@ class BotEngine:
             self.runtime_filter_config = effective_filters
             self.snapshot["autonomous_market_condition"] = market_condition
             self.snapshot["autonomous_filters"] = effective_filters.copy()
+            self.snapshot["autonomous_filter_reason"] = (
+                f"market={market_condition} stale_ratio={stale_ratio:.3f} "
+                f"signal_quality={signal_quality:.3f} consecutive_losses={consecutive_losses}"
+            )
             
         except Exception as e:
             self.logger.warning(f"Failed to apply autonomous filters: {e}")
@@ -3303,42 +3338,86 @@ class BotEngine:
         normalized_symbol = self.symbol.replace("/", "").upper()
         default_configs = {
             "BTCUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.0008, "atr_high_threshold": 0.030,
-                "stop_loss_atr_multiplier": 1.5, "take_profit_atr_multiplier": 2.5, "min_confidence": 0.40,
+                "adx_threshold": 16.0, "rsi_buy_threshold": 47.0, "rsi_sell_threshold": 53.0,
+                "volume_buy_threshold": 1.05, "volume_sell_threshold": 0.85,
+                "atr_low_threshold": 0.0010, "atr_high_threshold": 0.022,
+                "stop_loss_atr_multiplier": 1.5, "take_profit_atr_multiplier": 2.4, "min_confidence": 0.58,
             },
             "ETHUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.001, "atr_high_threshold": 0.040,
-                "stop_loss_atr_multiplier": 1.6, "take_profit_atr_multiplier": 2.6, "min_confidence": 0.40,
+                "adx_threshold": 17.0, "rsi_buy_threshold": 47.0, "rsi_sell_threshold": 53.0,
+                "volume_buy_threshold": 1.08, "volume_sell_threshold": 0.86,
+                "atr_low_threshold": 0.0012, "atr_high_threshold": 0.028,
+                "stop_loss_atr_multiplier": 1.6, "take_profit_atr_multiplier": 2.5, "min_confidence": 0.60,
             },
             "SOLUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.002, "atr_high_threshold": 0.060,
-                "stop_loss_atr_multiplier": 2.0, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.40,
+                "adx_threshold": 19.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
+                "volume_buy_threshold": 1.12, "volume_sell_threshold": 0.88,
+                "atr_low_threshold": 0.0022, "atr_high_threshold": 0.045,
+                "stop_loss_atr_multiplier": 2.0, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.63,
             },
             "BNBUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.001, "atr_high_threshold": 0.050,
-                "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 2.8, "min_confidence": 0.45,
+                "adx_threshold": 17.0, "rsi_buy_threshold": 47.0, "rsi_sell_threshold": 53.0,
+                "volume_buy_threshold": 1.07, "volume_sell_threshold": 0.86,
+                "atr_low_threshold": 0.0014, "atr_high_threshold": 0.030,
+                "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 2.7, "min_confidence": 0.60,
             },
             "XRPUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.80, "volume_sell_threshold": 0.95,
-                "atr_low_threshold": 0.002, "atr_high_threshold": 0.080,
-                "stop_loss_atr_multiplier": 2.2, "take_profit_atr_multiplier": 3.5, "min_confidence": 0.40,
+                "adx_threshold": 18.0, "rsi_buy_threshold": 49.0, "rsi_sell_threshold": 51.0,
+                "volume_buy_threshold": 1.10, "volume_sell_threshold": 0.90,
+                "atr_low_threshold": 0.0025, "atr_high_threshold": 0.060,
+                "stop_loss_atr_multiplier": 2.2, "take_profit_atr_multiplier": 3.4, "min_confidence": 0.62,
             },
         }
         return default_configs.get(normalized_symbol, {
-            "adx_threshold": 12.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
-            "volume_buy_threshold": 0.90, "volume_sell_threshold": 0.85,
-            "atr_low_threshold": 0.001, "atr_high_threshold": 0.040,
-            "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.45,
+            "adx_threshold": 18.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
+            "volume_buy_threshold": 1.08, "volume_sell_threshold": 0.88,
+            "atr_low_threshold": 0.0012, "atr_high_threshold": 0.035,
+            "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 2.8, "min_confidence": 0.60,
         })
+
+    def _calibrate_filter_config_with_recent_market_data(self, config: dict[str, float]) -> dict[str, float]:
+        """
+        Ajusta límites de filtros con datos recientes del mercado actual.
+        Mantiene límites conservadores para evitar pasar señales falsas.
+        """
+        calibrated = dict(config)
+        frame = getattr(self, "_cached_frame5", None)
+        try:
+            if frame is None or len(frame) < 40:
+                return calibrated
+            required = {"atr", "close", "volume", "vol_ma20", "adx"}
+            if not required.issubset(set(frame.columns)):
+                return calibrated
+
+            atr_ratio = (frame["atr"] / frame["close"]).replace([float("inf"), float("-inf")], float("nan")).dropna()
+            vol_ratio = (frame["volume"] / frame["vol_ma20"]).replace([float("inf"), float("-inf")], float("nan")).dropna()
+            adx_series = frame["adx"].replace([float("inf"), float("-inf")], float("nan")).dropna()
+            if len(atr_ratio) < 20 or len(vol_ratio) < 20 or len(adx_series) < 20:
+                return calibrated
+
+            atr_low_q = float(atr_ratio.quantile(0.20))
+            atr_high_q = float(atr_ratio.quantile(0.85))
+            adx_med = float(adx_series.tail(80).median())
+            vol_med = float(vol_ratio.tail(80).median())
+
+            calibrated["atr_low_threshold"] = min(max(atr_low_q * 0.95, 0.0005), 0.0200)
+            calibrated["atr_high_threshold"] = min(max(atr_high_q * 1.10, calibrated["atr_low_threshold"] + 0.001), 0.0900)
+            calibrated["adx_threshold"] = min(max((calibrated.get("adx_threshold", 16.0) + adx_med) / 2.0, 12.0), 30.0)
+            calibrated["volume_buy_threshold"] = min(max((calibrated.get("volume_buy_threshold", 1.0) + vol_med) / 2.0, 0.85), 1.45)
+            calibrated["min_confidence"] = min(max(calibrated.get("min_confidence", 0.58), 0.50), 0.85)
+            if hasattr(self, "logger"):
+                self.logger.info(
+                    "market_filter_calibrated symbol=%s adx=%.2f atr_low=%.5f atr_high=%.5f vol_buy=%.2f",
+                    self.symbol,
+                    calibrated["adx_threshold"],
+                    calibrated["atr_low_threshold"],
+                    calibrated["atr_high_threshold"],
+                    calibrated["volume_buy_threshold"],
+                )
+        except Exception as exc:
+            if hasattr(self, "logger"):
+                self.logger.warning("market_filter_calibration_failed symbol=%s reason=%s", self.symbol, exc)
+        return calibrated
 
     def _effective_adx_threshold(self) -> float:
         return self.runtime_filter_config.get("adx_threshold", 10.0)
