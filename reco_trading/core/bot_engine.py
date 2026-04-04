@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os as _os
 import time
@@ -247,6 +248,12 @@ class BotEngine:
             remote_endpoint=str(getattr(self.settings, "llm_remote_endpoint", "https://api.openai.com/v1/chat/completions")),
             remote_model=str(getattr(self.settings, "llm_remote_model", "gpt-4o-mini")),
             remote_api_key=str(getattr(self.settings, "llm_remote_api_key", "")),
+            local_keep_alive=str(getattr(self.settings, "llm_local_keep_alive", "20m")),
+            local_num_ctx=int(getattr(self.settings, "llm_local_num_ctx", 256)),
+            local_num_predict=int(getattr(self.settings, "llm_local_num_predict", 4)),
+            local_top_p=float(getattr(self.settings, "llm_local_top_p", 0.9)),
+            local_temperature=float(getattr(self.settings, "llm_local_temperature", 0.0)),
+            local_healthcheck_enabled=bool(getattr(self.settings, "llm_local_healthcheck_enabled", True)),
         )
         self._configure_llm_runtime_mode()
         self.log_analyzer = LLMLogAnalyzer()
@@ -278,6 +285,9 @@ class BotEngine:
         self._last_confirmation_indicator_ts: datetime | None = None
         self._market_analysis_cancelled = False
         self._pending_pair_switch: str | None = None
+        self._last_dashboard_render_ts: float = 0.0
+        self._last_dashboard_render_digest: str = ""
+        self._dashboard_min_render_interval_seconds: float = 0.20
 
         self.dashboard = TerminalDashboard()
         self.snapshot: dict[str, Any] = {
@@ -347,6 +357,7 @@ class BotEngine:
             "open_position_qty": None,
             "open_position_sl": None,
             "open_position_tp": None,
+            "open_positions": [],
             "session_streak": 0,
             "session_recommendation": "NORMAL",
             "exit_intelligence_score": 0.0,
@@ -440,11 +451,19 @@ class BotEngine:
             terminal_dashboard_enabled = str(_os.getenv("BOT_TERMINAL_DASHBOARD", "1")).strip().lower() in {"1", "true", "yes", "on"}
             live_context: AbstractContextManager[Any]
             if terminal_dashboard_enabled:
-                live_context = Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False)
+                live_context = Live(
+                    self.dashboard.render(self.snapshot),
+                    refresh_per_second=8,
+                    transient=False,
+                    auto_refresh=False,
+                    screen=True,
+                    vertical_overflow="crop",
+                )
             else:
                 live_context = _NoopLive()
 
             with live_context as live:
+                self._safe_live_update(live, force=True)
                 while True:
                     try:
                         await self._process_control_requests()
@@ -2828,14 +2847,49 @@ class BotEngine:
             return True
         return datetime.now(timezone.utc) - self.last_close_time >= timedelta(minutes=self._effective_cooldown_minutes())
 
-    def _safe_live_update(self, live: Any) -> None:
+    def _safe_live_update(self, live: Any, force: bool = False) -> None:
         try:
+            now = time.monotonic()
+            if not force and (now - self._last_dashboard_render_ts) < self._dashboard_min_render_interval_seconds:
+                return
+            digest = hashlib.sha1(
+                repr(
+                    (
+                        self.snapshot.get("status"),
+                        self.snapshot.get("price"),
+                        self.snapshot.get("signal"),
+                        self.snapshot.get("confidence"),
+                        self.snapshot.get("daily_pnl"),
+                        self.snapshot.get("unrealized_pnl"),
+                        self.snapshot.get("open_positions"),
+                        self.snapshot.get("llm_trade_confirmator"),
+                        (self.snapshot.get("logs") or [])[-6:],
+                    )
+                ).encode("utf-8", errors="ignore")
+            ).hexdigest()
+            if not force and digest == self._last_dashboard_render_digest:
+                return
             if hasattr(live, "update"):
-                live.update(self.dashboard.render(self.snapshot))
+                live.update(self.dashboard.render(self.snapshot), refresh=True)
+                self._last_dashboard_render_ts = now
+                self._last_dashboard_render_digest = digest
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("dashboard_render_error: %s", exc)
 
     def _sync_ui_state(self) -> None:
+        self.snapshot["open_positions"] = [
+            {
+                "trade_id": getattr(position, "trade_id", None),
+                "symbol": getattr(position, "symbol", self.symbol),
+                "side": getattr(position, "side", None),
+                "quantity": _as_float(getattr(position, "quantity", None), 0.0),
+                "entry_price": _as_float(getattr(position, "entry_price", None), 0.0),
+                "stop_loss": _as_float(getattr(position, "stop_loss", None), 0.0),
+                "take_profit": _as_float(getattr(position, "take_profit", None), 0.0),
+                "unrealized_pnl": self.snapshot.get("unrealized_pnl", 0.0),
+            }
+            for position in list(getattr(self.position_manager, "positions", []) or [])
+        ]
         if not self.state_manager:
             return
         try:
@@ -3183,6 +3237,26 @@ class BotEngine:
                         continue
                     lo, hi = allowed_ranges[key]
                     effective_filters[key] = min(max(_as_float(value, effective_filters.get(key, lo)), lo), hi)
+
+            trades_today = int(self.snapshot.get("trades_today", 0) or 0)
+            win_rate = _as_float(self.snapshot.get("win_rate"), 0.0)
+            daily_pnl = _as_float(self.snapshot.get("daily_pnl"), 0.0)
+
+            # Demand-aware adaptation:
+            # if market/filter combo is too restrictive and no trades are flowing, relax gradually.
+            if trades_today < 2:
+                effective_filters["min_confidence"] = max(0.36, _as_float(effective_filters.get("min_confidence"), 0.55) - 0.05)
+                effective_filters["adx_threshold"] = max(8.0, _as_float(effective_filters.get("adx_threshold"), 20.0) - 3.0)
+                effective_filters["volume_buy_threshold"] = min(_as_float(effective_filters.get("volume_buy_threshold"), 1.0), 0.90)
+                effective_filters["volume_sell_threshold"] = min(_as_float(effective_filters.get("volume_sell_threshold"), 1.0), 0.90)
+            if trades_today == 0 and daily_pnl >= 0:
+                effective_filters["min_confidence"] = max(0.34, _as_float(effective_filters.get("min_confidence"), 0.50) - 0.03)
+                effective_filters["adx_threshold"] = max(7.0, _as_float(effective_filters.get("adx_threshold"), 18.0) - 1.5)
+
+            # Protect quality if session quality drops.
+            if daily_pnl < -30.0 or (trades_today >= 3 and win_rate < 0.34):
+                effective_filters["min_confidence"] = min(0.78, _as_float(effective_filters.get("min_confidence"), 0.50) + 0.04)
+                effective_filters["adx_threshold"] = min(28.0, _as_float(effective_filters.get("adx_threshold"), 18.0) + 2.0)
             
             self.runtime_filter_config = effective_filters
             self.snapshot["autonomous_market_condition"] = market_condition

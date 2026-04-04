@@ -843,6 +843,7 @@ def create_app() -> Flask:
             runtime_payload = {
                 "default_pair": payload.get("default_pair") or payload.get("trading_symbol") or "",
                 "default_timeframe": payload.get("default_timeframe") or payload.get("timeframe") or "",
+                "quote_currency": payload.get("quote_currency") or "USDT",
                 "investment_mode": payload.get("investment_mode") or "Balanced",
                 "risk_per_trade_fraction": payload.get("risk_per_trade_fraction", 0.01),
                 "max_trade_balance_fraction": payload.get("max_trade_balance_fraction", 0.20),
@@ -1002,6 +1003,9 @@ def create_app() -> Flask:
 def run_server(host: str = '0.0.0.0', port: int = 9000) -> None:
     """Run the Flask dashboard server."""
     app = create_app()
+    werkzeug_logger = logging.getLogger("werkzeug")
+    werkzeug_logger.disabled = True
+    app.logger.disabled = True
     
     def find_available_port(start_port: int) -> int:
         """Find an available port starting from start_port."""

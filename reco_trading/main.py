@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 
 from reco_trading.config.settings import Settings
 from reco_trading.core.bot_engine import BotEngine
 from reco_trading.database.repository import Repository
+from web_site import run_in_thread as run_web_dashboard_in_thread
+from web_site.dashboard_server import set_bot_instance_getter
 
 _bot_instance: BotEngine | None = None
 _bot_runtime_error: Exception | None = None
@@ -39,6 +42,22 @@ def _join_bot_thread_or_exit(bot_thread: threading.Thread, logger: logging.Logge
     if _bot_runtime_error is not None:
         logger.error("Bot stopped unexpectedly: %s", _bot_runtime_error)
         sys.exit(1)
+
+
+def _start_web_dashboard(logger: logging.Logger) -> None:
+    # Keep web dashboard always-on; host/port controlled by env for flexible deployments.
+    web_host = str(os.getenv("WEB_DASHBOARD_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+    web_port_raw = str(os.getenv("WEB_DASHBOARD_PORT", "9000")).strip()
+    try:
+        web_port = int(web_port_raw)
+    except ValueError:
+        web_port = 9000
+        logger.warning("Invalid WEB_DASHBOARD_PORT=%s; falling back to %s", web_port_raw, web_port)
+
+    # Link dashboard to current bot lifecycle using getter to avoid stale references.
+    set_bot_instance_getter(get_bot_instance)
+    run_web_dashboard_in_thread(host=web_host, port=web_port)
+    logger.info("Web dashboard thread started at http://%s:%s", web_host, web_port)
 
 
 async def _verify_database_connection(settings: Settings) -> str:
@@ -74,33 +93,16 @@ def run() -> None:
         )
         raise SystemExit(1) from None
 
-    try:
-        from reco_trading.ui import StateManager, run_gui
+    _start_web_dashboard(logger)
 
-        state_manager = StateManager()
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("UI initialization failed, running bot headless: %s", exc)
-        _run_bot(settings, None)
-        return
-
-    try:
-        from reco_trading.ui.bootstrap import hydrate_state_from_database
-
-        asyncio.run(hydrate_state_from_database(settings, state_manager))
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "State hydration failed; continuing with an empty UI state because the bot can still start cleanly: %s",
-            exc,
-        )
-
-    bot_thread = threading.Thread(target=_run_bot, args=(settings, state_manager), daemon=True, name="bot-engine")
+    # Desktop dashboard removed from startup flow: terminal TUI + web dashboard are now the primary UX.
+    bot_thread = threading.Thread(target=_run_bot, args=(settings, None), daemon=True, name="bot-engine")
     bot_thread.start()
 
     try:
-        run_gui(state_manager)
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("GUI failed, bot will continue running: %s", exc)
         _join_bot_thread_or_exit(bot_thread, logger)
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested by user")
 
 
 if __name__ == "__main__":
