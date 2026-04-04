@@ -71,7 +71,6 @@ except ImportError:
     _META_LEARNING_AVAILABLE = False
 
 from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
-from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
 from reco_trading.core.integrations import initialize_all_modules, get_system_status, create_default_config
 from reco_trading.core.autonomous_brain import AutonomousTradingBrain, create_autonomous_brain
 from reco_trading.core.emergency_systems import EmergencySystem, DataValidator
@@ -159,7 +158,14 @@ class BotEngine:
                 bool(getattr(self.settings, "ui_state_emit_on_each_log", False))
             )
         if bool(getattr(self.settings, "low_ram_mode", True)):
+            original_limit = settings.history_limit
             settings.history_limit = max(120, min(int(settings.history_limit), 220))
+            if settings.history_limit != original_limit:
+                self.logger.warning(
+                    "history_limit clamped by low_ram_mode: %d → %d. "
+                    "Indicators requiring >%d candles may be inaccurate.",
+                    original_limit, settings.history_limit, settings.history_limit
+                )
         self.trades_today = 0
         self.win_count = 0
         self.start_time = time.time()
@@ -451,12 +457,15 @@ class BotEngine:
             terminal_dashboard_enabled = str(_os.getenv("BOT_TERMINAL_DASHBOARD", "1")).strip().lower() in {"1", "true", "yes", "on"}
             live_context: AbstractContextManager[Any]
             if terminal_dashboard_enabled:
+                import sys
+                _tui_fps = max(1, min(int(getattr(self, "terminal_tui_refresh_per_second", 4)), 10))
+                _has_tty = sys.stdout.isatty()
                 live_context = Live(
                     self.dashboard.render(self.snapshot),
-                    refresh_per_second=8,
+                    refresh_per_second=_tui_fps,
                     transient=False,
                     auto_refresh=False,
-                    screen=True,
+                    screen=_has_tty,  # screen=True solo si hay TTY real
                     vertical_overflow="crop",
                 )
             else:
@@ -3191,6 +3200,10 @@ class BotEngine:
             "min_confidence": _as_float(filter_config.get("min_confidence"), 0.55),
         }
         self.runtime_filter_config = dict(self.base_filter_config)
+        # Re-aplicar ajustes LLM si está en modo local (se habrían sobreescrito)
+        if str(getattr(self.settings, "llm_mode", "base")).lower() == "llm_local":
+            self._configure_llm_runtime_mode()
+            self.logger.info("LLM runtime filters re-applied after symbol config update")
         self.logger.info(f"Applied filter config for {self.symbol}: {self.runtime_filter_config}")
 
     def _apply_autonomous_filters(self) -> None:
@@ -3242,16 +3255,22 @@ class BotEngine:
             win_rate = _as_float(self.snapshot.get("win_rate"), 0.0)
             daily_pnl = _as_float(self.snapshot.get("daily_pnl"), 0.0)
 
-            # Demand-aware adaptation:
-            # if market/filter combo is too restrictive and no trades are flowing, relax gradually.
-            if trades_today < 2:
-                effective_filters["min_confidence"] = max(0.36, _as_float(effective_filters.get("min_confidence"), 0.55) - 0.05)
-                effective_filters["adx_threshold"] = max(8.0, _as_float(effective_filters.get("adx_threshold"), 20.0) - 3.0)
-                effective_filters["volume_buy_threshold"] = min(_as_float(effective_filters.get("volume_buy_threshold"), 1.0), 0.90)
-                effective_filters["volume_sell_threshold"] = min(_as_float(effective_filters.get("volume_sell_threshold"), 1.0), 0.90)
+            # Relajación controlada por falta de actividad — un solo ajuste acumulado
             if trades_today == 0 and daily_pnl >= 0:
-                effective_filters["min_confidence"] = max(0.34, _as_float(effective_filters.get("min_confidence"), 0.50) - 0.03)
-                effective_filters["adx_threshold"] = max(7.0, _as_float(effective_filters.get("adx_threshold"), 18.0) - 1.5)
+                # Sin trades y sin pérdidas: relajar moderadamente para buscar entrada
+                _BASE_CONF = self.base_filter_config.get("min_confidence", 0.45)
+                _BASE_ADX = self.base_filter_config.get("adx_threshold", 15.0)
+                effective_filters["min_confidence"] = max(_BASE_CONF - 0.06, 0.38)
+                effective_filters["adx_threshold"] = max(_BASE_ADX - 3.0, 9.0)
+                effective_filters["volume_buy_threshold"] = min(
+                    effective_filters.get("volume_buy_threshold", 1.0), 0.85
+                )
+            elif trades_today < 2 and daily_pnl >= -10.0:
+                # Pocos trades pero sin pérdida grave: relajar levemente
+                _BASE_CONF = self.base_filter_config.get("min_confidence", 0.45)
+                _BASE_ADX = self.base_filter_config.get("adx_threshold", 15.0)
+                effective_filters["min_confidence"] = max(_BASE_CONF - 0.03, 0.42)
+                effective_filters["adx_threshold"] = max(_BASE_ADX - 1.5, 11.0)
 
             # Protect quality if session quality drops.
             if daily_pnl < -30.0 or (trades_today >= 3 and win_rate < 0.34):
