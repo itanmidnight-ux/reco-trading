@@ -539,6 +539,18 @@ def create_app() -> Flask:
             response.status_code = 401
             return response
         return jsonify({"success": True})
+
+    @app.route('/api/auth/config')
+    def api_auth_config():
+        mode = str(os.getenv("DASHBOARD_AUTH_MODE", "hybrid")).strip().lower()
+        auth_enabled = _is_dashboard_auth_enabled()
+        return jsonify({
+            "success": True,
+            "auth_enabled": auth_enabled,
+            "mode": mode,
+            "requires_user_password": bool(auth_enabled and mode in {"basic", "hybrid"} and _dashboard_user() and _dashboard_password()),
+            "requires_token": bool(auth_enabled and mode in {"token", "hybrid"} and _dashboard_token()),
+        })
     
     @app.route('/api/snapshot')
     def api_snapshot():

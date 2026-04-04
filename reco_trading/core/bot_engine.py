@@ -949,7 +949,14 @@ class BotEngine:
         adx_value = _as_float(self.snapshot.get("adx"), 0.0)
         adx_threshold = self._effective_adx_threshold()
         
-        high_confidence_trade = confidence >= 0.75
+        high_confidence_override_threshold = max(
+            0.60,
+            min(
+                _as_float(self.runtime_filter_config.get("high_confidence_override_threshold"), 0.65),
+                0.90,
+            ),
+        )
+        high_confidence_trade = confidence >= high_confidence_override_threshold
         if high_confidence_trade:
             adx_pass = True
         else:
@@ -958,7 +965,11 @@ class BotEngine:
         validation_checks.append({
             "name": "adx_threshold",
             "value": adx_value,
-            "threshold": f">= {adx_threshold}",
+            "threshold": (
+                f"override@{high_confidence_override_threshold:.2f}"
+                if high_confidence_trade
+                else f">= {adx_threshold}"
+            ),
             "passed": adx_pass,
         })
         if not adx_pass and not high_confidence_trade:
@@ -980,7 +991,11 @@ class BotEngine:
         validation_checks.append({
             "name": "rsi_filter",
             "value": rsi_value,
-            "threshold": f"{rsi_threshold} ({side})",
+            "threshold": (
+                f"override@{high_confidence_override_threshold:.2f}"
+                if high_confidence_trade
+                else f"{rsi_threshold} ({side})"
+            ),
             "passed": rsi_pass,
         })
         if not rsi_pass and not high_confidence_trade:
@@ -989,17 +1004,21 @@ class BotEngine:
         volume_ratio = _as_float(self.snapshot.get("volume_ratio"), 1.0)
         if side == "BUY":
             vol_threshold = self.runtime_filter_config.get("volume_buy_threshold", 0.80)
-            vol_pass = volume_ratio >= vol_threshold
+            vol_pass = high_confidence_trade or volume_ratio >= vol_threshold
         else:
             vol_threshold = self.runtime_filter_config.get("volume_sell_threshold", 0.80)
-            vol_pass = volume_ratio >= vol_threshold
+            vol_pass = high_confidence_trade or volume_ratio >= vol_threshold
         validation_checks.append({
             "name": "volume_filter",
             "value": volume_ratio,
-            "threshold": f"{vol_threshold} ({side})",
+            "threshold": (
+                f"override@{high_confidence_override_threshold:.2f}"
+                if high_confidence_trade
+                else f"{vol_threshold} ({side})"
+            ),
             "passed": vol_pass,
         })
-        if not vol_pass:
+        if not vol_pass and not high_confidence_trade:
             await self._log("INFO", f"volume_filter_rejected vol_ratio={volume_ratio:.2f} threshold={vol_threshold} side={side}")
 
         spot_sell_allowed = not (getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell())
