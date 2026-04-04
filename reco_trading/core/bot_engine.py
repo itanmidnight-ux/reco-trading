@@ -125,8 +125,15 @@ class BotEngine:
         self.state = BotState.INITIALIZING
 
         self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
-        self.symbol = normalize_symbol(settings.trading_symbol)
-        self.symbols = [normalize_symbol(sym) for sym in (settings.trading_symbols or [])] or [self.symbol]
+        configured_symbol = normalize_symbol(settings.trading_symbol)
+        self.symbol = "BTC/USDT"
+        if configured_symbol and configured_symbol != self.symbol:
+            self.logger.info(
+                "Configured startup pair %s ignored; bot starts with %s and runtime settings can override it",
+                configured_symbol,
+                self.symbol,
+            )
+        self.symbols = [self.symbol]
         self.order_manager = OrderManager(self.client, self.symbol)
         self.market_stream = MarketStream(self.client, self.symbol, settings.history_limit)
         
@@ -420,7 +427,7 @@ class BotEngine:
             )
             await self.loop_manager.start()
             
-            await self.multi_pair_manager.start()
+            await self.multi_pair_manager.start(auto_scan=False)
             self.autonomous_brain.set_bot_engine(self)
             await self.autonomous_brain.start()
             self._auto_improver_initialized = True
@@ -2576,6 +2583,7 @@ class BotEngine:
         self.symbol = normalized_symbol
         self.market_stream.symbol = normalized_symbol
         self.order_manager.symbol = normalized_symbol
+        self.multi_pair_manager.active_pair = normalized_symbol
         self.order_manager.rules = None
         self._cached_frame5 = None
         self._cached_frame15 = None
