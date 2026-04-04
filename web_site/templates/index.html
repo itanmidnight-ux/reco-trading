@@ -186,6 +186,8 @@
         
         .progress { background: var(--bg-secondary); border-radius: 6px; height: 8px; }
         .progress-bar { background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue)); border-radius: 6px; }
+        .progress-bar.negative { background: linear-gradient(90deg, #ff7f9f, #ff5f7b); }
+        .progress-bar.positive { background: linear-gradient(90deg, #22d39b, #16c784); }
         
         .log-entry { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 0.25rem 0; color: var(--text-secondary); }
         .log-entry.error { color: var(--accent-red); }
@@ -309,7 +311,7 @@
                             <div class="info-row"><span class="info-label">Balance</span><span class="info-value" id="balanceValue">$0.00</span></div>
                             <div class="info-row"><span class="info-label">BTC Balance</span><span class="info-value" id="btcBalanceValue">0.000000 BTC</span></div>
                             <div class="info-row"><span class="info-label">BTC Value</span><span class="info-value" id="btcValueValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Daily P&L</span><span class="info-value" id="dailyPnlValue">0.00%</span></div>
+                            <div class="info-row"><span class="info-label">Daily P&L</span><span class="info-value" id="dailyPnlValue">$0.00</span></div>
                             <div class="info-row"><span class="info-label">Session P&L</span><span class="info-value" id="sessionPnlValue">$0.00</span></div>
                             <div class="info-row"><span class="info-label">Unrealized P&L</span><span class="info-value" id="unrealizedPnlValue">$0.00</span></div>
                         </div>
@@ -331,6 +333,17 @@
                             <div class="info-row"><span class="info-label">Cooldown</span><span class="info-value" id="cooldownValue">READY</span></div>
                             <div class="info-row"><span class="info-label">Position</span><span class="info-value" id="hasPositionValue">None</span></div>
                             <div class="info-row"><span class="info-label">Entry Price</span><span class="info-value" id="entryPriceValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Trade ID</span><span class="info-value" id="openTradeIdValue">-</span></div>
+                            <div class="info-row"><span class="info-label">Position Notional</span><span class="info-value" id="openNotionalValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Operation P&L</span><span class="info-value" id="operationPnlValue">$0.00</span></div>
+                            <div class="info-row"><span class="info-label">Operation P&L %</span><span class="info-value" id="operationPnlPctValue">0.00%</span></div>
+                            <div class="info-row"><span class="info-label">Duration</span><span class="info-value" id="operationDurationValue">0.0m</span></div>
+                            <div class="mt-2">
+                                <div class="small text-muted mb-1">Operation P&L Meter</div>
+                                <div class="progress">
+                                    <div id="operationPnlMeter" class="progress-bar" style="width:50%"></div>
+                                </div>
+                            </div>
                             <div class="info-row"><span class="info-label">Exchange</span><span class="info-value text-green" id="exchangeStatusValue">Connected</span></div>
                             <div class="trade-control-wrap">
                                 <button class="btn btn-danger" id="stopTradeBtn" style="display:none;" onclick="stopTrade()">
@@ -978,9 +991,9 @@
             document.getElementById('btcBalanceValue').textContent = (d.btc_balance || 0).toFixed(6) + ' BTC';
             document.getElementById('btcValueValue').textContent = fmtCur(d.btc_value);
             
-            const pnl = d.daily_pnl||0;
+            const pnl = (d.daily_pnl ?? d.session_pnl ?? 0) || 0;
             const pnlEl = document.getElementById('dailyPnlValue');
-            pnlEl.textContent = (pnl>=0?'+':'')+fmtPct(pnl);
+            pnlEl.textContent = (pnl>=0?'+$':'$')+fmt(pnl,2);
             pnlEl.className = 'info-value '+(pnl>=0?'text-green':'text-red');
             
             const spnl = d.session_pnl||0;
@@ -1004,6 +1017,23 @@
             document.getElementById('cooldownValue').textContent = d.cooldown||'READY';
             document.getElementById('hasPositionValue').textContent = d.has_open_position?(d.open_position_side||'Open'):'None';
             document.getElementById('entryPriceValue').textContent = fmtCur(d.open_position_entry);
+            document.getElementById('openTradeIdValue').textContent = d.open_position_trade_id ?? '-';
+            const opNotional = d.open_position_notional_usdt || ((d.open_position_entry || 0) * (d.open_position_qty || 0));
+            document.getElementById('openNotionalValue').textContent = fmtCur(opNotional);
+            const opPnl = d.unrealized_pnl || 0;
+            const opPnlPct = (d.open_position_pnl_pct ?? (opNotional > 0 ? (opPnl / opNotional) * 100 : 0)) || 0;
+            const opDur = d.open_position_duration_min || 0;
+            const opPnlEl = document.getElementById('operationPnlValue');
+            opPnlEl.textContent = (opPnl>=0?'+$':'$') + fmt(opPnl, 2);
+            opPnlEl.className = 'info-value ' + (opPnl >= 0 ? 'text-green' : 'text-red');
+            const opPnlPctEl = document.getElementById('operationPnlPctValue');
+            opPnlPctEl.textContent = (opPnlPct>=0?'+':'') + fmt(opPnlPct, 2) + '%';
+            opPnlPctEl.className = 'info-value ' + (opPnlPct >= 0 ? 'text-green' : 'text-red');
+            document.getElementById('operationDurationValue').textContent = fmt(opDur, 1) + 'm';
+            const meter = document.getElementById('operationPnlMeter');
+            const meterPct = Math.max(0, Math.min(100, 50 + opPnlPct * 8));
+            meter.style.width = meterPct.toFixed(1) + '%';
+            meter.className = 'progress-bar ' + (opPnlPct >= 0 ? 'positive' : 'negative');
             document.getElementById('stopTradeBtn').style.display = d.has_open_position ? 'inline-block' : 'none';
             
             const exc = d.exchange_status||'UNKNOWN';

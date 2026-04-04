@@ -347,6 +347,10 @@ class BotEngine:
             "open_position_qty": None,
             "open_position_sl": None,
             "open_position_tp": None,
+            "open_position_trade_id": None,
+            "open_position_notional_usdt": 0.0,
+            "open_position_pnl_pct": 0.0,
+            "open_position_duration_min": 0.0,
             "session_streak": 0,
             "session_recommendation": "NORMAL",
             "exit_intelligence_score": 0.0,
@@ -1494,12 +1498,21 @@ class BotEngine:
                 unrealized_pnl = (price - position.entry_price) * position.quantity
             else:
                 unrealized_pnl = (position.entry_price - price) * position.quantity
+            notional_usdt = max(position.entry_price * position.quantity, 0.0)
+            pnl_pct = (unrealized_pnl / notional_usdt * 100.0) if notional_usdt > 0 else 0.0
+            duration_min = 0.0
+            if position.entry_timestamp_ms:
+                duration_min = max((time.time() * 1000 - float(position.entry_timestamp_ms)) / 60000.0, 0.0)
             self.snapshot["unrealized_pnl"] = unrealized_pnl
             self.snapshot["open_position_side"] = position.side
             self.snapshot["open_position_entry"] = position.entry_price
             self.snapshot["open_position_qty"] = position.quantity
             self.snapshot["open_position_sl"] = position.stop_loss
             self.snapshot["open_position_tp"] = position.take_profit
+            self.snapshot["open_position_trade_id"] = position.trade_id
+            self.snapshot["open_position_notional_usdt"] = notional_usdt
+            self.snapshot["open_position_pnl_pct"] = pnl_pct
+            self.snapshot["open_position_duration_min"] = duration_min
 
             structure_exit_reason = self._detect_structure_exit(position, market_data, price, used_atr)
             exit_reason = self._resolve_structure_exit_signal(position, structure_exit_reason)
@@ -1546,6 +1559,10 @@ class BotEngine:
             self.snapshot["open_position_qty"] = None
             self.snapshot["open_position_sl"] = None
             self.snapshot["open_position_tp"] = None
+            self.snapshot["open_position_trade_id"] = None
+            self.snapshot["open_position_notional_usdt"] = 0.0
+            self.snapshot["open_position_pnl_pct"] = 0.0
+            self.snapshot["open_position_duration_min"] = 0.0
             self.snapshot["exit_intelligence_score"] = 0.0
             self.snapshot["exit_intelligence_threshold"] = 0.0
             self.snapshot["exit_intelligence_reason"] = "NO_OPEN_POSITION"
@@ -2073,12 +2090,25 @@ class BotEngine:
             return rate
         return 1.0
 
-    async def _asset_to_usdt_rate(self, asset: str) -> float:
+    async def _asset_to_usdt_rate(
+        self,
+        asset: str,
+        *,
+        _visited: set[str] | None = None,
+        _depth: int = 0,
+    ) -> float:
         normalized = str(asset or "").upper().strip()
         if not normalized:
             return 0.0
         if normalized == "USDT":
             return 1.0
+        if _depth > 6:
+            return 0.0
+        if _visited is None:
+            _visited = set()
+        if normalized in _visited:
+            return 0.0
+        _visited.add(normalized)
         now = datetime.now(timezone.utc)
         cached = self._asset_to_usdt_cache.get(normalized)
         if cached and (now - cached[1]).total_seconds() < 300:
@@ -2097,7 +2127,7 @@ class BotEngine:
         for bridge in ("USDC", "FDUSD", "BUSD", "TUSD", "DAI", "BTC", "ETH", "BNB"):
             if bridge == normalized:
                 continue
-            bridge_rate = await self._asset_to_usdt_rate(bridge)
+            bridge_rate = await self._asset_to_usdt_rate(bridge, _visited=set(_visited), _depth=_depth + 1)
             if bridge_rate <= 0:
                 continue
             for pair in (f"{normalized}/{bridge}", f"{bridge}/{normalized}"):
@@ -2905,6 +2935,10 @@ class BotEngine:
                 open_position_qty=self.snapshot.get("open_position_qty"),
                 open_position_sl=self.snapshot.get("open_position_sl"),
                 open_position_tp=self.snapshot.get("open_position_tp"),
+                open_position_trade_id=self.snapshot.get("open_position_trade_id"),
+                open_position_notional_usdt=self.snapshot.get("open_position_notional_usdt", 0.0),
+                open_position_pnl_pct=self.snapshot.get("open_position_pnl_pct", 0.0),
+                open_position_duration_min=self.snapshot.get("open_position_duration_min", 0.0),
                 cooldown=self.snapshot.get("cooldown"),
                 status=self.snapshot.get("status", "INITIALIZING"),
                 bid=self.snapshot.get("bid", self.snapshot.get("price")),
