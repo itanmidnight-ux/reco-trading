@@ -206,21 +206,11 @@ class TerminalDashboard:
             decision.add_row("reason", snap.decision_reason or "-")
 
             layout = Layout(name="root")
+            width = self.console.size.width
             layout.split_column(
                 Layout(Panel(header, border_style="bright_blue"), ratio=1),
                 Layout(name="main", ratio=13),
                 Layout(Panel(Align.center(Text("Press Ctrl+C to stop • Reco Trading TUI Runtime", style="dim white")), border_style="grey37"), ratio=1),
-            )
-            layout["main"].split_row(
-                Layout(Panel(status, title="Market", border_style="cyan"), ratio=3),
-                Layout(name="center", ratio=5),
-                Layout(Panel(decision, title="Decision", border_style="yellow"), ratio=4),
-            )
-            layout["main"]["center"].split_column(
-                Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=3),
-                Layout(Panel(live_trades, border_style="bright_cyan"), ratio=4),
-                Layout(Panel(llm_gate, border_style="bright_yellow"), ratio=3),
-                Layout(Panel(event_log, border_style="white"), ratio=4),
             )
 
             if width < 110:
