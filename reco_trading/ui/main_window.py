@@ -6,12 +6,12 @@ from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QTimer
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QMainWindow, QMessageBox, QTabWidget
 
 from reco_trading.ui.state_manager import StateManager
-from reco_trading.ui.tabs.alerts_tab import AlertsTab
 from reco_trading.ui.tabs.analytics_tab import AnalyticsTab
 from reco_trading.ui.tabs.dashboard_tab import DashboardTab
 from reco_trading.ui.tabs.logs_tab import LogsTab
 from reco_trading.ui.tabs.intel_log_tab import IntelLogTab
 from reco_trading.ui.tabs.market_tab import MarketTab
+from reco_trading.ui.tabs.risk_tab import RiskTab
 from reco_trading.ui.tabs.settings_tab import SettingsTab
 from reco_trading.ui.tabs.system_tab import SystemTab
 from reco_trading.ui.tabs.strategy_tab import StrategyTab
@@ -39,6 +39,7 @@ class MainWindow(QMainWindow):
         self.analytics_tab = AnalyticsTab()
         self.strategy_tab = StrategyTab()
         self.logs_tab = LogsTab(state_manager=state_manager)
+        self.risk_tab = RiskTab()
         self.intel_log_tab = IntelLogTab()
         self.settings_tab = SettingsTab()
         self.system_tab = SystemTab()
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.analytics_tab, "Analytics")
         tabs.addTab(self.strategy_tab, "Strategy")
         tabs.addTab(self.logs_tab, "Logs")
+        tabs.addTab(self.risk_tab, "Risk")
         tabs.addTab(self.intel_log_tab, "Intel Log")
         tabs.addTab(self.settings_tab, "Settings")
         tabs.addTab(self.system_tab, "System")
@@ -71,39 +73,28 @@ class MainWindow(QMainWindow):
         self._last_state_event_at = 0.0
         self._last_ui_render_ms = 0.0
         self._ui_lag_detected = False
-        self._last_full_render_at = 0.0
 
     def _on_state(self, state: dict) -> None:
         self._last_state_event_at = time.monotonic()
         enriched_state = self._decorate_state(state)
         started_at = time.perf_counter()
-        active_tab = self.tabs.currentWidget()
-        full_refresh_due = (time.monotonic() - self._last_full_render_at) >= 1.0
-        tabs_to_update = (
+        for tab in (
             self.dashboard_tab,
             self.trades_tab,
             self.market_tab,
             self.analytics_tab,
             self.strategy_tab,
             self.logs_tab,
+            self.risk_tab,
             self.intel_log_tab,
             self.settings_tab,
             self.system_tab,
-        ) if full_refresh_due else (
-            self.dashboard_tab,
-            self.trades_tab,
-            self.logs_tab,
-            active_tab,
-        )
-        for tab in tabs_to_update:
-            if tab is None:
-                continue
+            self.ai_monitor_tab,
+        ):
             try:
                 tab.update_state(enriched_state)
             except Exception:
                 continue
-        if full_refresh_due:
-            self._last_full_render_at = time.monotonic()
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         self._last_ui_render_ms = elapsed_ms
         self._ui_lag_detected = elapsed_ms >= max(120.0, self.refresh_timer.interval() * 0.8)

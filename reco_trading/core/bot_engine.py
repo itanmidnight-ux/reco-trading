@@ -2016,21 +2016,22 @@ class BotEngine:
         self.snapshot["distance_to_support"] = intelligence.get("distance_to_support")
         self.snapshot["distance_to_resistance"] = intelligence.get("distance_to_resistance")
 
-    async def _fetch_balances(self) -> tuple[float, float, str, str, dict[str, Any]]:
+    async def _fetch_balances(self) -> tuple[float, float]:
         payload = await self.client.fetch_balance()
         base_asset, quote_asset = split_symbol(self.symbol)
         quote_asset = quote_asset or "USDT"
-        free_balances = payload.get("free") if isinstance(payload, dict) else None
-        if isinstance(free_balances, dict):
-            quote_balance = _as_float(free_balances.get(quote_asset), 0.0)
-            base_balance = _as_float(free_balances.get(base_asset), 0.0)
-            return quote_balance, base_balance, quote_asset, base_asset, payload
+
+        total_balances = payload.get("total") if isinstance(payload, dict) else None
+        if isinstance(total_balances, dict):
+            quote_balance = _as_float(total_balances.get(quote_asset), 0.0)
+            base_balance = _as_float(total_balances.get(base_asset), 0.0)
+            return quote_balance, base_balance
 
         quote = payload.get(quote_asset) if isinstance(payload, dict) else {}
         base = payload.get(base_asset) if isinstance(payload, dict) else {}
         quote_balance = _as_float((quote or {}).get("free"), 0.0)
         base_balance = _as_float((base or {}).get("free"), 0.0)
-        return quote_balance, base_balance, quote_asset, base_asset, payload
+        return quote_balance, base_balance
 
     async def _quote_to_usdt_rate(self, quote_asset: str) -> float:
         normalized = str(quote_asset or "USDT").upper()
@@ -2123,38 +2124,19 @@ class BotEngine:
         return float(total_equity_usdt)
 
     async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
-        balances = await self._fetch_balances()
-        quote_balance = 0.0
-        base_balance = 0.0
-        quote_asset = "USDT"
-        balance_payload: dict[str, Any] = {}
-        if isinstance(balances, tuple):
-            if len(balances) >= 5:
-                quote_balance, base_balance, quote_asset, _base_asset, balance_payload = balances[:5]
-            elif len(balances) >= 2:
-                quote_balance, base_balance = balances[:2]
-        elif isinstance(balances, dict):
-            # Backward compatibility with older mocks/helpers.
-            quote_balance = _as_float(balances.get("quote_balance"), 0.0)
-            base_balance = _as_float(balances.get("base_balance"), 0.0)
-            quote_asset = str(balances.get("quote_asset") or "USDT")
-            balance_payload = dict(balances.get("payload") or {})
+        usdt_balance, btc_balance = await self._fetch_balances()
         reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
-        base_value_quote = float(base_balance * reference_price)
-        total_equity_quote = float(quote_balance + base_value_quote)
-        quote_to_usdt_rate = await self._quote_to_usdt_rate(quote_asset)
-        total_equity_usdt = await self._compute_total_equity_usdt(balance_payload)
-        if total_equity_usdt <= 0:
-            total_equity_usdt = float(total_equity_quote * quote_to_usdt_rate)
+        btc_value = float(btc_balance * reference_price)
+        total_equity = float(usdt_balance + btc_value)
         session_pnl = float(await self.repository.get_session_pnl() or 0.0)
 
-        self.snapshot["balance"] = float(quote_balance)
-        self.snapshot["btc_balance"] = float(base_balance)
-        self.snapshot["btc_value"] = base_value_quote
-        self.snapshot["total_equity"] = total_equity_quote
-        self.snapshot["total_equity_usdt"] = total_equity_usdt
-        self.snapshot["equity"] = total_equity_quote
-        self.snapshot["account_currency"] = quote_asset
+        self.snapshot["balance"] = float(usdt_balance)
+        self.snapshot["btc_balance"] = float(btc_balance)
+        self.snapshot["btc_value"] = btc_value
+        self.snapshot["total_equity"] = total_equity
+        self.snapshot["total_equity_usdt"] = total_equity
+        self.snapshot["equity"] = total_equity
+        self.snapshot["account_currency"] = "USDT"
         self.snapshot["daily_pnl"] = session_pnl
         self.snapshot["session_pnl"] = session_pnl
         self.snapshot["trades_today"] = self.trades_today
@@ -2164,14 +2146,14 @@ class BotEngine:
         operable_getter = getattr(self, "_operable_equity_for_trading", None)
         if callable(profile_getter) and callable(operable_getter):
             profile = profile_getter()
-            operable_capital = operable_getter(total_equity_usdt, profile)
+            operable_capital = operable_getter(total_equity, profile)
             self.snapshot["capital_profile"] = profile.name
             self.snapshot["operable_capital_usdt"] = operable_capital
 
         if self.starting_equity is None:
-            self.starting_equity = max(total_equity_usdt, 1.0)
-        self.equity_peak = max(_as_float(self.equity_peak, total_equity_usdt), total_equity_usdt)
-        self._append_equity_point(total_equity_usdt)
+            self.starting_equity = max(total_equity, 1.0)
+        self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
+        self._append_equity_point(total_equity)
 
     def _append_equity_point(self, equity: float) -> None:
         normalized = round(float(max(equity, 0.0)), 8)
@@ -2184,10 +2166,10 @@ class BotEngine:
         open_trades = await self.repository.get_open_trades(self.symbol)
         if not open_trades:
             return
-        quote_balance, base_balance, quote_asset, _base_asset, _payload = await self._fetch_balances()
-        self.snapshot["balance"] = quote_balance
+        usdt_balance, base_balance = await self._fetch_balances()
+        self.snapshot["balance"] = usdt_balance
         self.snapshot["btc_balance"] = base_balance
-        self.snapshot["account_currency"] = quote_asset
+        self.snapshot["account_currency"] = "USDT"
         latest = open_trades[0]
         if base_balance <= 0:
             await self._log("WARNING", "open_trade_found_without_base_balance")

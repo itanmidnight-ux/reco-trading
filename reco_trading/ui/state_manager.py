@@ -27,7 +27,7 @@ class StateManager(QObject):
     def __init__(self) -> None:
         super().__init__()
         self._lock = threading.RLock()
-        self._emit_state_on_each_log = False
+        self._emit_state_on_each_log = True
         self._control_queue: list[str] = []
         self._runtime_settings_queue: list[dict[str, Any]] = []
         self._state: dict[str, Any] = {
