@@ -3237,6 +3237,26 @@ class BotEngine:
                         continue
                     lo, hi = allowed_ranges[key]
                     effective_filters[key] = min(max(_as_float(value, effective_filters.get(key, lo)), lo), hi)
+
+            trades_today = int(self.snapshot.get("trades_today", 0) or 0)
+            win_rate = _as_float(self.snapshot.get("win_rate"), 0.0)
+            daily_pnl = _as_float(self.snapshot.get("daily_pnl"), 0.0)
+
+            # Demand-aware adaptation:
+            # if market/filter combo is too restrictive and no trades are flowing, relax gradually.
+            if trades_today < 2:
+                effective_filters["min_confidence"] = max(0.36, _as_float(effective_filters.get("min_confidence"), 0.55) - 0.05)
+                effective_filters["adx_threshold"] = max(8.0, _as_float(effective_filters.get("adx_threshold"), 20.0) - 3.0)
+                effective_filters["volume_buy_threshold"] = min(_as_float(effective_filters.get("volume_buy_threshold"), 1.0), 0.90)
+                effective_filters["volume_sell_threshold"] = min(_as_float(effective_filters.get("volume_sell_threshold"), 1.0), 0.90)
+            if trades_today == 0 and daily_pnl >= 0:
+                effective_filters["min_confidence"] = max(0.34, _as_float(effective_filters.get("min_confidence"), 0.50) - 0.03)
+                effective_filters["adx_threshold"] = max(7.0, _as_float(effective_filters.get("adx_threshold"), 18.0) - 1.5)
+
+            # Protect quality if session quality drops.
+            if daily_pnl < -30.0 or (trades_today >= 3 and win_rate < 0.34):
+                effective_filters["min_confidence"] = min(0.78, _as_float(effective_filters.get("min_confidence"), 0.50) + 0.04)
+                effective_filters["adx_threshold"] = min(28.0, _as_float(effective_filters.get("adx_threshold"), 18.0) + 2.0)
             
             self.runtime_filter_config = effective_filters
             self.snapshot["autonomous_market_condition"] = market_condition

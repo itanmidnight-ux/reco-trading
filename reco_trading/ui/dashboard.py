@@ -222,6 +222,28 @@ class TerminalDashboard:
                 Layout(Panel(llm_gate, border_style="bright_yellow"), ratio=3),
                 Layout(Panel(event_log, border_style="white"), ratio=4),
             )
+
+            if width < 110:
+                # Compact mode for Android/mobile terminals and narrow SSH sessions.
+                layout["main"].split_column(
+                    Layout(Panel(status, title="Market", border_style="cyan"), ratio=3),
+                    Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=3),
+                    Layout(Panel(live_trades, border_style="bright_cyan"), ratio=4),
+                    Layout(Panel(llm_gate, border_style="bright_yellow"), ratio=3),
+                    Layout(Panel(event_log, border_style="white"), ratio=4),
+                )
+            else:
+                layout["main"].split_row(
+                    Layout(Panel(status, title="Market", border_style="cyan"), ratio=3),
+                    Layout(name="center", ratio=5),
+                    Layout(Panel(decision, title="Decision", border_style="yellow"), ratio=4),
+                )
+                layout["main"]["center"].split_column(
+                    Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=3),
+                    Layout(Panel(live_trades, border_style="bright_cyan"), ratio=4),
+                    Layout(Panel(llm_gate, border_style="bright_yellow"), ratio=3),
+                    Layout(Panel(event_log, border_style="white"), ratio=4),
+                )
             return Group(layout)
         except Exception as exc:  # noqa: BLE001
             return Panel(f"Dashboard render error: {exc}", title="Reco Trading Bot", border_style="red")
