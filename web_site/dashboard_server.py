@@ -311,6 +311,10 @@ def _get_default_snapshot() -> dict[str, Any]:
         "open_position_qty": None,
         "open_position_sl": None,
         "open_position_tp": None,
+        "open_position_trade_id": None,
+        "open_position_notional_usdt": 0.0,
+        "open_position_pnl_pct": 0.0,
+        "open_position_duration_min": 0.0,
         "trend": "NEUTRAL",
         "volatility_regime": "NORMAL",
         "order_flow": "NEUTRAL",
@@ -373,7 +377,7 @@ def _enhance_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     snapshot.setdefault("price", snapshot.get("price", 0.0))
     
     # PnL fields
-    snapshot.setdefault("daily_pnl", snapshot.get("daily_pnl", 0.0))
+    snapshot.setdefault("daily_pnl", snapshot.get("session_pnl", 0.0))
     snapshot.setdefault("session_pnl", snapshot.get("session_pnl", 0.0))
     snapshot.setdefault("unrealized_pnl", snapshot.get("unrealized_pnl", 0.0))
     
@@ -397,6 +401,10 @@ def _enhance_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     snapshot.setdefault("open_position_qty", snapshot.get("open_position_qty", 0.0))
     snapshot.setdefault("open_position_sl", snapshot.get("open_position_sl", 0.0))
     snapshot.setdefault("open_position_tp", snapshot.get("open_position_tp", 0.0))
+    snapshot.setdefault("open_position_trade_id", snapshot.get("open_position_trade_id", None))
+    snapshot.setdefault("open_position_notional_usdt", snapshot.get("open_position_notional_usdt", 0.0))
+    snapshot.setdefault("open_position_pnl_pct", snapshot.get("open_position_pnl_pct", 0.0))
+    snapshot.setdefault("open_position_duration_min", snapshot.get("open_position_duration_min", 0.0))
     
     # Market indicators
     snapshot.setdefault("trend", snapshot.get("trend", "NEUTRAL"))

@@ -191,8 +191,11 @@ def run() -> None:
     state_manager = None
     bot_thread = None
 
-    # Terminal dashboard must always run regardless of selected dashboard mode.
-    os.environ["BOT_TERMINAL_DASHBOARD"] = "1"
+    # Isolate dashboard runtimes by mode:
+    # - app/web: terminal TUI off by default (can be overridden by env)
+    # - none/headless: terminal TUI on by default
+    if "BOT_TERMINAL_DASHBOARD" not in os.environ:
+        os.environ["BOT_TERMINAL_DASHBOARD"] = "1" if dashboard_type == "none" else "0"
     
     # Create state manager for App dashboard
     if dashboard_type == 'app':

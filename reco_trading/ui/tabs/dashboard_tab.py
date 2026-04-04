@@ -91,7 +91,7 @@ class DashboardTab(QWidget):
         self.hero_cards = {
             "price": StatCard("Market Price"),
             "signal": StatCard("Signal Quality"),
-            "daily_pnl": StatCard("Session PnL"),
+            "daily_pnl": StatCard("Daily PnL"),
             "exposure": StatCard("Current Exposure"),
             "capital": StatCard("Capital Profile"),
             "operable": StatCard("Operable Capital"),
@@ -363,7 +363,10 @@ class DashboardTab(QWidget):
             self.pos_cards["tp"].set_value(_fmt_num(tp, 2), tone="positive")
             self.pos_cards["size"].set_value(_fmt_num(qty, 6))
 
-            pnl_pct = (abs(upnl) / (entry * qty) * 100) if (entry * qty) > 0 else 0.0
+            notional = float(state.get("open_position_notional_usdt") or (entry * qty) or 0.0)
+            pnl_pct = float(state.get("open_position_pnl_pct") or ((upnl / notional) * 100 if notional > 0 else 0.0))
+            duration_min = float(state.get("open_position_duration_min") or 0.0)
+            trade_id = state.get("open_position_trade_id")
             dist_sl = abs(price_value - sl) if sl > 0 else 0
             dist_tp = abs(tp - price_value) if tp > 0 else 0
             dist_sl_pct = (dist_sl / price_value * 100) if price_value > 0 else 0
@@ -386,7 +389,9 @@ class DashboardTab(QWidget):
                 f"<b style='color:#16c784;'>Take Profit:</b> <span style='color:#16c784; font-size:14px;'>{tp:.2f}</span>"
             )
             self.lt_side_entry.setText(
-                f"<b style='color:#64748b;'>Side / Entry:</b> <span style='color:#e2e8f0; font-size:14px;'>{side_value} @ {entry:.2f}</span>"
+                f"<b style='color:#64748b;'>Side / Entry:</b> "
+                f"<span style='color:#e2e8f0; font-size:14px;'>{side_value} @ {entry:.2f}</span><br>"
+                f"<span style='color:#9fb2d9;'>Trade #{trade_id if trade_id is not None else '-'} • {duration_min:.1f}m • Notional {notional:.2f} USDT</span>"
             )
             self.lt_market_price.setText(
                 f"<b style='color:#64748b;'>Market Price:</b> <span style='color:#22d3ee; font-size:14px;'>{price_value:.2f}</span>"
