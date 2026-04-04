@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from rich.console import Console, Group
 from rich.align import Align
 from rich.box import ROUNDED, SIMPLE_HEAVY
+from rich.console import Console, Group
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
@@ -50,6 +50,15 @@ class DashboardSnapshot:
     exit_intelligence_codes: list[str] = field(default_factory=list)
     exit_intelligence_events: list[dict[str, Any]] = field(default_factory=list)
     logs: list[dict[str, Any]] = field(default_factory=list)
+    unrealized_pnl: float | None = None
+    open_position_side: str | None = None
+    open_position_entry: float | None = None
+    open_position_qty: float | None = None
+    open_position_sl: float | None = None
+    open_position_tp: float | None = None
+    open_positions: list[dict[str, Any]] = field(default_factory=list)
+    llm_mode: str | None = None
+    llm_trade_confirmator: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DashboardSnapshot":
@@ -90,12 +99,19 @@ class DashboardSnapshot:
             exit_intelligence_codes=[str(item) for item in (data.get("exit_intelligence_codes") or [])],
             exit_intelligence_events=[dict(item) for item in (data.get("exit_intelligence_log") or []) if isinstance(item, Mapping)],
             logs=[dict(item) for item in (data.get("logs") or []) if isinstance(item, Mapping)],
+            unrealized_pnl=_to_float(data.get("unrealized_pnl")),
+            open_position_side=_to_text(data.get("open_position_side")),
+            open_position_entry=_to_float(data.get("open_position_entry")),
+            open_position_qty=_to_float(data.get("open_position_qty")),
+            open_position_sl=_to_float(data.get("open_position_sl")),
+            open_position_tp=_to_float(data.get("open_position_tp")),
+            open_positions=[dict(item) for item in (data.get("open_positions") or []) if isinstance(item, Mapping)],
+            llm_mode=_to_text(data.get("llm_mode")),
+            llm_trade_confirmator=dict(data.get("llm_trade_confirmator", {}) or {}),
         )
 
 
 class TerminalDashboard:
-    """Advanced Rich-based TUI dashboard component."""
-
     def __init__(self) -> None:
         self.console = Console()
 
@@ -106,25 +122,21 @@ class TerminalDashboard:
             header = Table.grid(expand=True)
             header.add_column(ratio=4)
             header.add_column(ratio=2, justify="right")
-            title = Text("Reco Trading Terminal TUI", style="bold bright_cyan")
-            subtitle = Text(f"{snap.pair or '-'}  •  {snap.timeframe or '-'}", style="cyan")
-            header.add_row(title, _status_badge(snap.state))
-            header.add_row(subtitle, _signal_badge(snap.signal))
+            header.add_row(Text("Reco Trading Terminal TUI", style="bold bright_cyan"), _status_badge(snap.state))
+            header.add_row(Text(f"{snap.pair or '-'}  •  {snap.timeframe or '-'}", style="cyan"), _signal_badge(snap.signal))
 
             status = Table.grid(expand=True)
             status.add_column()
             status.add_column()
-            status.add_row("Bot Status", _status_badge(snap.state))
-            status.add_row("Pair", snap.pair or "-")
-            status.add_row("Timeframe", snap.timeframe or "-")
             status.add_row("Price", f"[bold]{_fmt_num(snap.price, 2)}[/bold]")
             status.add_row("Spread", _fmt_num(snap.spread, 6))
             status.add_row("Trend", _trend_badge(snap.trend))
             status.add_row("ADX", _fmt_num(snap.adx, 2))
             status.add_row("Signal", _signal_badge(snap.signal))
             status.add_row("Confidence", _confidence_bar(snap.confidence))
-            status.add_row("Volatility Regime", snap.volatility_regime or "-")
+            status.add_row("Volatility", snap.volatility_regime or "-")
             status.add_row("Order Flow", snap.order_flow or "-")
+            status.add_row("Cooldown", snap.cooldown or "-")
 
             portfolio = Table.grid(expand=True)
             portfolio.add_column()
@@ -132,29 +144,57 @@ class TerminalDashboard:
             portfolio.add_row("Balance", f"{_fmt_num(snap.balance, 4)} USDT")
             portfolio.add_row("Equity", f"{_fmt_num(snap.equity, 4)} USDT")
             portfolio.add_row("Operable Capital", f"{_fmt_num(snap.operable_capital_usdt, 4)} USDT")
-            portfolio.add_row("Capital Profile", snap.capital_profile or "-")
-            pnl_style = "green" if (snap.daily_pnl or 0) >= 0 else "red"
-            portfolio.add_row("Daily PnL", f"[{pnl_style}]{_fmt_num(snap.daily_pnl, 4)} USDT[/{pnl_style}]")
+            portfolio.add_row("Daily PnL", _styled_pnl(snap.daily_pnl))
+            portfolio.add_row("Unrealized PnL", _styled_pnl(snap.unrealized_pnl))
             portfolio.add_row("Trades Today", str(snap.trades_today))
             portfolio.add_row("Win Rate", _fmt_pct(snap.win_rate))
             portfolio.add_row("Last Trade", snap.last_trade or "-")
-            portfolio.add_row("Cooldown", snap.cooldown or "-")
 
-            signal_table = Table(title="Signal Engines", expand=True, box=ROUNDED)
-            signal_table.add_column("Engine")
-            signal_table.add_column("Signal")
-            for key in ["trend", "momentum", "volume", "volatility", "structure", "order_flow"]:
-                signal_table.add_row(key.upper(), _signal_value_style(str(snap.signals.get(key, "-"))))
+            live_trades = Table(title="Live Trades", expand=True, box=ROUNDED)
+            live_trades.add_column("Side", justify="center")
+            live_trades.add_column("Qty", justify="right")
+            live_trades.add_column("Entry", justify="right")
+            live_trades.add_column("Mark", justify="right")
+            live_trades.add_column("PnL", justify="right")
+            live_trades.add_column("SL/TP", justify="right")
+            if snap.open_positions:
+                for position in snap.open_positions[:4]:
+                    live_trades.add_row(
+                        _signal_value_style(str(position.get("side", "-")).upper()),
+                        _fmt_num(_to_float(position.get("quantity")), 6),
+                        _fmt_num(_to_float(position.get("entry_price")), 4),
+                        _fmt_num(snap.price, 4),
+                        _styled_pnl(_to_float(position.get("unrealized_pnl"))),
+                        f"{_fmt_num(_to_float(position.get('stop_loss')), 4)} / {_fmt_num(_to_float(position.get('take_profit')), 4)}",
+                    )
+            elif snap.open_position_side:
+                live_trades.add_row(
+                    _signal_value_style((snap.open_position_side or "-").upper()),
+                    _fmt_num(snap.open_position_qty, 6),
+                    _fmt_num(snap.open_position_entry, 4),
+                    _fmt_num(snap.price, 4),
+                    _styled_pnl(snap.unrealized_pnl),
+                    f"{_fmt_num(snap.open_position_sl, 4)} / {_fmt_num(snap.open_position_tp, 4)}",
+                )
+            else:
+                live_trades.add_row("-", "-", "-", "-", "[dim]No active trade[/dim]", "-")
 
-            health = Table(title="System Health", expand=True, box=ROUNDED)
-            health.add_column("Metric")
-            health.add_column("Value")
-            health.add_row("API latency p95", f"{_fmt_num(snap.api_latency_p95_ms, 2)} ms")
-            health.add_row("Stale market data", _confidence_bar(1.0 - (snap.stale_market_data_ratio or 0.0)))
-            health.add_row("Reconnections", str(snap.exchange_reconnections))
-            health.add_row("Circuit breaker trips", str(snap.circuit_breaker_trips))
-            health.add_row("DB", snap.database_status or "-")
-            health.add_row("Exchange", snap.exchange_status or "-")
+            llm_gate = Table(title="LLM Final Gate", expand=True, box=ROUNDED)
+            llm_gate.add_column("Field")
+            llm_gate.add_column("Value")
+            llm_gate.add_row("Mode", (snap.llm_mode or "base").upper())
+            llm_gate.add_row("Analyzed", str(snap.llm_trade_confirmator.get("total_analyzed", 0)))
+            llm_gate.add_row("Confirmed", str(snap.llm_trade_confirmator.get("confirmed", 0)))
+            llm_gate.add_row("Rejected", str(snap.llm_trade_confirmator.get("rejected", 0)))
+            llm_gate.add_row("Avg Latency", f"{_fmt_num(_to_float(snap.llm_trade_confirmator.get('avg_analysis_time_ms')), 2)} ms")
+
+            event_log = Table(title="Execution Feed", expand=True, box=ROUNDED)
+            event_log.add_column("T", width=8, no_wrap=True)
+            event_log.add_column("L", width=7, no_wrap=True)
+            event_log.add_column("Event", overflow="fold")
+            for log in (snap.logs or [])[-8:]:
+                level = str(log.get("level", "INFO")).upper()
+                event_log.add_row(str(log.get("time", "--:--:--")), _log_level_badge(level), str(log.get("message", ""))[:200])
 
             decision = Table(title="Decision Trace", expand=True, box=SIMPLE_HEAVY)
             decision.add_column("Field")
@@ -165,44 +205,22 @@ class TerminalDashboard:
                 decision.add_row(f"gate:{gate}", str(value))
             decision.add_row("reason", snap.decision_reason or "-")
 
-            exit_intel = Table(title="Exit Intelligence", expand=True)
-            exit_intel.add_column("Field")
-            exit_intel.add_column("Value")
-            exit_intel.add_row("score", _fmt_num(snap.exit_intelligence_score, 4))
-            exit_intel.add_row("threshold", _fmt_num(snap.exit_intelligence_threshold, 4))
-            exit_intel.add_row("reason", snap.exit_intelligence_reason or "-")
-            exit_intel.add_row("codes", ",".join(snap.exit_intelligence_codes) if snap.exit_intelligence_codes else "-")
-            latest_event = snap.exit_intelligence_events[-1] if snap.exit_intelligence_events else {}
-            latest_event_text = (
-                f"trade={latest_event.get('trade_id', '-')} "
-                f"score={_fmt_num(_to_float(latest_event.get('score')), 4)} "
-                f"reason={latest_event.get('reason', '-')}"
-                if latest_event
-                else "-"
-            )
-            exit_intel.add_row("latest_event", latest_event_text)
-
-            footer = Align.center(
-                Text("Press Ctrl+C to stop • Reco Trading TUI Runtime", style="dim white"),
-                vertical="middle",
-            )
-
             layout = Layout(name="root")
             layout.split_column(
                 Layout(Panel(header, border_style="bright_blue"), ratio=1),
-                Layout(name="main", ratio=10),
-                Layout(Panel(footer, border_style="grey37"), ratio=1),
+                Layout(name="main", ratio=13),
+                Layout(Panel(Align.center(Text("Press Ctrl+C to stop • Reco Trading TUI Runtime", style="dim white")), border_style="grey37"), ratio=1),
             )
             layout["main"].split_row(
                 Layout(Panel(status, title="Market", border_style="cyan"), ratio=3),
-                Layout(name="center", ratio=3),
+                Layout(name="center", ratio=5),
                 Layout(Panel(decision, title="Decision", border_style="yellow"), ratio=4),
             )
             layout["main"]["center"].split_column(
-                Layout(Panel(portfolio, title="Portfolio & Risk", border_style="green"), ratio=3),
-                Layout(Panel(signal_table, title="Signal Matrix", border_style="magenta"), ratio=4),
-                Layout(Panel(health, border_style="bright_green"), ratio=3),
-                Layout(Panel(exit_intel, border_style="bright_magenta"), ratio=3),
+                Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=3),
+                Layout(Panel(live_trades, border_style="bright_cyan"), ratio=4),
+                Layout(Panel(llm_gate, border_style="bright_yellow"), ratio=3),
+                Layout(Panel(event_log, border_style="white"), ratio=4),
             )
             return Group(layout)
         except Exception as exc:  # noqa: BLE001
@@ -269,10 +287,37 @@ def _signal_value_style(value: str) -> str:
 
 
 def _confidence_bar(value: float | None, width: int = 18) -> str:
-    if value is None:
-        return "-"
-    clamped = max(0.0, min(1.0, float(value)))
+    clamped = _normalize_confidence(value)
     filled = int(clamped * width)
     empty = width - filled
     color = "green" if clamped >= 0.7 else "yellow" if clamped >= 0.45 else "red"
     return f"[{color}]{'█' * filled}{'░' * empty}[/{color}] {clamped * 100:5.1f}%"
+
+
+def _normalize_confidence(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    normalized = float(value)
+    if normalized > 1.0:
+        normalized = normalized / 100.0 if normalized <= 100.0 else 1.0
+    return max(0.0, min(1.0, normalized))
+
+
+def _styled_pnl(value: float | None) -> str:
+    if value is None:
+        return "-"
+    if value > 0:
+        return f"[bold green]+{value:.4f} USDT[/bold green]"
+    if value < 0:
+        return f"[bold red]{value:.4f} USDT[/bold red]"
+    return "[white]0.0000 USDT[/white]"
+
+
+def _log_level_badge(level: str) -> str:
+    if level in {"ERROR", "CRITICAL"}:
+        return "[bold white on red] ERROR [/bold white on red]"
+    if level in {"WARNING", "WARN"}:
+        return "[bold black on yellow] WARN [/bold black on yellow]"
+    if level == "DEBUG":
+        return "[bold black on white] DEBUG [/bold black on white]"
+    return "[bold black on green] INFO [/bold black on green]"

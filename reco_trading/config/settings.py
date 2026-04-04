@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     llm_remote_endpoint: str = "https://api.openai.com/v1/chat/completions"
     llm_remote_model: str = "gpt-4o-mini"
     llm_remote_api_key: str = ""
+    llm_local_keep_alive: str = "20m"
+    llm_local_num_ctx: int = 256
+    llm_local_num_predict: int = 4
+    llm_local_top_p: float = 0.9
+    llm_local_temperature: float = 0.0
+    llm_local_healthcheck_enabled: bool = True
 
     # =========================
     # SIGNAL THRESHOLDS
