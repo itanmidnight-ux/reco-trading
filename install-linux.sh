@@ -281,6 +281,10 @@ log_success "Dependencias del sistema verificadas"
 # LLM MODE SELECTION
 # ============================================
 
+LLM_MODE="base"
+LLM_REMOTE_ENDPOINT="https://api.openai.com/v1/chat/completions"
+LLM_REMOTE_MODEL="gpt-4o-mini"
+LLM_REMOTE_API_KEY=""
 DASHBOARD_AUTH_ENABLED="true"
 DASHBOARD_AUTH_MODE="token"
 DASHBOARD_USERNAME="admin"
@@ -304,6 +308,33 @@ PY
         DASHBOARD_API_TOKEN="$(date +%s)_$RANDOM"
     fi
 fi
+
+log_info "Selecciona modo de decisión LLM..."
+echo "  1) base (sin LLM para decisión final)"
+echo "  2) llm_remote (API externa)"
+read -p "Elige una opción (1/2): " -n 1 -r
+
+echo ""
+case "$REPLY" in
+    2)
+        LLM_MODE="llm_remote"
+        read -p "Endpoint API remota [${LLM_REMOTE_ENDPOINT}]: " INPUT_REMOTE_ENDPOINT
+        if [[ -n "${INPUT_REMOTE_ENDPOINT}" ]]; then
+            LLM_REMOTE_ENDPOINT="${INPUT_REMOTE_ENDPOINT}"
+        fi
+        read -p "Modelo remoto [${LLM_REMOTE_MODEL}]: " INPUT_REMOTE_MODEL
+        if [[ -n "${INPUT_REMOTE_MODEL}" ]]; then
+            LLM_REMOTE_MODEL="${INPUT_REMOTE_MODEL}"
+        fi
+        read -p "API Key remota (opcional): " INPUT_REMOTE_KEY
+        if [[ -n "${INPUT_REMOTE_KEY}" ]]; then
+            LLM_REMOTE_API_KEY="${INPUT_REMOTE_KEY}"
+        fi
+        ;;
+    *)
+        LLM_MODE="base"
+        ;;
+esac
 
 
 # ============================================
@@ -539,7 +570,10 @@ DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
 
 # LLM Mode
-# Usar valor por defecto interno (base)
+LLM_MODE=${LLM_MODE}
+LLM_REMOTE_ENDPOINT=${LLM_REMOTE_ENDPOINT}
+LLM_REMOTE_MODEL=${LLM_REMOTE_MODEL}
+LLM_REMOTE_API_KEY=${LLM_REMOTE_API_KEY}
 
 # Dashboard Security
 DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED}
@@ -583,7 +617,10 @@ DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
 
 # LLM Mode
-# Usar valor por defecto interno (base)
+LLM_MODE=${LLM_MODE}
+LLM_REMOTE_ENDPOINT=${LLM_REMOTE_ENDPOINT}
+LLM_REMOTE_MODEL=${LLM_REMOTE_MODEL}
+LLM_REMOTE_API_KEY=${LLM_REMOTE_API_KEY}
 
 # Dashboard Security
 DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED}
@@ -628,7 +665,10 @@ DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
 
 # LLM Mode
-# Usar valor por defecto interno (base)
+LLM_MODE=${LLM_MODE}
+LLM_REMOTE_ENDPOINT=${LLM_REMOTE_ENDPOINT}
+LLM_REMOTE_MODEL=${LLM_REMOTE_MODEL}
+LLM_REMOTE_API_KEY=${LLM_REMOTE_API_KEY}
 
 # Dashboard Security
 DASHBOARD_AUTH_ENABLED=${DASHBOARD_AUTH_ENABLED}
@@ -642,6 +682,10 @@ EOF
     log_success ".env generado"
 fi
 
+upsert_env_key ".env" "LLM_MODE" "${LLM_MODE}"
+upsert_env_key ".env" "LLM_REMOTE_ENDPOINT" "${LLM_REMOTE_ENDPOINT}"
+upsert_env_key ".env" "LLM_REMOTE_MODEL" "${LLM_REMOTE_MODEL}"
+upsert_env_key ".env" "LLM_REMOTE_API_KEY" "${LLM_REMOTE_API_KEY}"
 upsert_env_key ".env" "DASHBOARD_AUTH_ENABLED" "${DASHBOARD_AUTH_ENABLED}"
 upsert_env_key ".env" "DASHBOARD_AUTH_MODE" "${DASHBOARD_AUTH_MODE}"
 upsert_env_key ".env" "DASHBOARD_USERNAME" "${DASHBOARD_USERNAME}"
