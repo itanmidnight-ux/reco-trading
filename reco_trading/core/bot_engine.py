@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os as _os
 import time
@@ -70,7 +71,6 @@ except ImportError:
     _META_LEARNING_AVAILABLE = False
 
 from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
-from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
 from reco_trading.core.integrations import initialize_all_modules, get_system_status, create_default_config
 from reco_trading.core.autonomous_brain import AutonomousTradingBrain, create_autonomous_brain
 from reco_trading.core.emergency_systems import EmergencySystem, DataValidator
@@ -125,15 +125,8 @@ class BotEngine:
         self.state = BotState.INITIALIZING
 
         self.client = BinanceClient(settings.binance_api_key, settings.binance_api_secret, settings.binance_testnet)
-        configured_symbol = normalize_symbol(settings.trading_symbol)
-        self.symbol = "BTC/USDT"
-        if configured_symbol and configured_symbol != self.symbol:
-            self.logger.info(
-                "Configured startup pair %s ignored; bot starts with %s and runtime settings can override it",
-                configured_symbol,
-                self.symbol,
-            )
-        self.symbols = [self.symbol]
+        self.symbol = normalize_symbol(settings.trading_symbol)
+        self.symbols = [normalize_symbol(sym) for sym in (settings.trading_symbols or [])] or [self.symbol]
         self.order_manager = OrderManager(self.client, self.symbol)
         self.market_stream = MarketStream(self.client, self.symbol, settings.history_limit)
         
@@ -165,7 +158,14 @@ class BotEngine:
                 bool(getattr(self.settings, "ui_state_emit_on_each_log", False))
             )
         if bool(getattr(self.settings, "low_ram_mode", True)):
+            original_limit = settings.history_limit
             settings.history_limit = max(120, min(int(settings.history_limit), 220))
+            if settings.history_limit != original_limit:
+                self.logger.warning(
+                    "history_limit clamped by low_ram_mode: %d → %d. "
+                    "Indicators requiring >%d candles may be inaccurate.",
+                    original_limit, settings.history_limit, settings.history_limit
+                )
         self.trades_today = 0
         self.win_count = 0
         self.start_time = time.time()
@@ -254,6 +254,12 @@ class BotEngine:
             remote_endpoint=str(getattr(self.settings, "llm_remote_endpoint", "https://api.openai.com/v1/chat/completions")),
             remote_model=str(getattr(self.settings, "llm_remote_model", "gpt-4o-mini")),
             remote_api_key=str(getattr(self.settings, "llm_remote_api_key", "")),
+            local_keep_alive=str(getattr(self.settings, "llm_local_keep_alive", "20m")),
+            local_num_ctx=int(getattr(self.settings, "llm_local_num_ctx", 256)),
+            local_num_predict=int(getattr(self.settings, "llm_local_num_predict", 4)),
+            local_top_p=float(getattr(self.settings, "llm_local_top_p", 0.9)),
+            local_temperature=float(getattr(self.settings, "llm_local_temperature", 0.0)),
+            local_healthcheck_enabled=bool(getattr(self.settings, "llm_local_healthcheck_enabled", True)),
         )
         self._configure_llm_runtime_mode()
         self.log_analyzer = LLMLogAnalyzer()
@@ -285,6 +291,9 @@ class BotEngine:
         self._last_confirmation_indicator_ts: datetime | None = None
         self._market_analysis_cancelled = False
         self._pending_pair_switch: str | None = None
+        self._last_dashboard_render_ts: float = 0.0
+        self._last_dashboard_render_digest: str = ""
+        self._dashboard_min_render_interval_seconds: float = 0.20
 
         self.dashboard = TerminalDashboard()
         self.snapshot: dict[str, Any] = {
@@ -354,10 +363,7 @@ class BotEngine:
             "open_position_qty": None,
             "open_position_sl": None,
             "open_position_tp": None,
-            "open_position_trade_id": None,
-            "open_position_notional_usdt": 0.0,
-            "open_position_pnl_pct": 0.0,
-            "open_position_duration_min": 0.0,
+            "open_positions": [],
             "session_streak": 0,
             "session_recommendation": "NORMAL",
             "exit_intelligence_score": 0.0,
@@ -427,7 +433,7 @@ class BotEngine:
             )
             await self.loop_manager.start()
             
-            await self.multi_pair_manager.start(auto_scan=False)
+            await self.multi_pair_manager.start()
             self.autonomous_brain.set_bot_engine(self)
             await self.autonomous_brain.start()
             self._auto_improver_initialized = True
@@ -448,14 +454,25 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
 
-            terminal_dashboard_enabled = str(_os.getenv("BOT_TERMINAL_DASHBOARD", "1")).strip().lower() in {"1", "true", "yes", "on"}
+            terminal_dashboard_enabled = bool(self.terminal_tui_enabled)
             live_context: AbstractContextManager[Any]
             if terminal_dashboard_enabled:
-                live_context = Live(self.dashboard.render(self.snapshot), refresh_per_second=2, transient=False)
+                import sys
+                _tui_fps = max(1, min(int(getattr(self, "terminal_tui_refresh_per_second", 4)), 10))
+                _has_tty = sys.stdout.isatty()
+                live_context = Live(
+                    self.dashboard.render(self.snapshot),
+                    refresh_per_second=_tui_fps,
+                    transient=False,
+                    auto_refresh=False,
+                    screen=_has_tty,  # screen=True solo si hay TTY real
+                    vertical_overflow="crop",
+                )
             else:
                 live_context = _NoopLive()
 
             with live_context as live:
+                self._safe_live_update(live, force=True)
                 while True:
                     try:
                         await self._process_control_requests()
@@ -960,14 +977,7 @@ class BotEngine:
         adx_value = _as_float(self.snapshot.get("adx"), 0.0)
         adx_threshold = self._effective_adx_threshold()
         
-        high_confidence_override_threshold = max(
-            0.60,
-            min(
-                _as_float(self.runtime_filter_config.get("high_confidence_override_threshold"), 0.65),
-                0.90,
-            ),
-        )
-        high_confidence_trade = confidence >= high_confidence_override_threshold
+        high_confidence_trade = confidence >= 0.75
         if high_confidence_trade:
             adx_pass = True
         else:
@@ -976,11 +986,7 @@ class BotEngine:
         validation_checks.append({
             "name": "adx_threshold",
             "value": adx_value,
-            "threshold": (
-                f"override@{high_confidence_override_threshold:.2f}"
-                if high_confidence_trade
-                else f">= {adx_threshold}"
-            ),
+            "threshold": f">= {adx_threshold}",
             "passed": adx_pass,
         })
         if not adx_pass and not high_confidence_trade:
@@ -1002,11 +1008,7 @@ class BotEngine:
         validation_checks.append({
             "name": "rsi_filter",
             "value": rsi_value,
-            "threshold": (
-                f"override@{high_confidence_override_threshold:.2f}"
-                if high_confidence_trade
-                else f"{rsi_threshold} ({side})"
-            ),
+            "threshold": f"{rsi_threshold} ({side})",
             "passed": rsi_pass,
         })
         if not rsi_pass and not high_confidence_trade:
@@ -1015,21 +1017,17 @@ class BotEngine:
         volume_ratio = _as_float(self.snapshot.get("volume_ratio"), 1.0)
         if side == "BUY":
             vol_threshold = self.runtime_filter_config.get("volume_buy_threshold", 0.80)
-            vol_pass = high_confidence_trade or volume_ratio >= vol_threshold
+            vol_pass = volume_ratio >= vol_threshold
         else:
             vol_threshold = self.runtime_filter_config.get("volume_sell_threshold", 0.80)
-            vol_pass = high_confidence_trade or volume_ratio >= vol_threshold
+            vol_pass = volume_ratio >= vol_threshold
         validation_checks.append({
             "name": "volume_filter",
             "value": volume_ratio,
-            "threshold": (
-                f"override@{high_confidence_override_threshold:.2f}"
-                if high_confidence_trade
-                else f"{vol_threshold} ({side})"
-            ),
+            "threshold": f"{vol_threshold} ({side})",
             "passed": vol_pass,
         })
-        if not vol_pass and not high_confidence_trade:
+        if not vol_pass:
             await self._log("INFO", f"volume_filter_rejected vol_ratio={volume_ratio:.2f} threshold={vol_threshold} side={side}")
 
         spot_sell_allowed = not (getattr(self.settings, "spot_only_mode", True) and side == "SELL" and not self._can_execute_spot_sell())
@@ -1505,21 +1503,12 @@ class BotEngine:
                 unrealized_pnl = (price - position.entry_price) * position.quantity
             else:
                 unrealized_pnl = (position.entry_price - price) * position.quantity
-            notional_usdt = max(position.entry_price * position.quantity, 0.0)
-            pnl_pct = (unrealized_pnl / notional_usdt * 100.0) if notional_usdt > 0 else 0.0
-            duration_min = 0.0
-            if position.entry_timestamp_ms:
-                duration_min = max((time.time() * 1000 - float(position.entry_timestamp_ms)) / 60000.0, 0.0)
             self.snapshot["unrealized_pnl"] = unrealized_pnl
             self.snapshot["open_position_side"] = position.side
             self.snapshot["open_position_entry"] = position.entry_price
             self.snapshot["open_position_qty"] = position.quantity
             self.snapshot["open_position_sl"] = position.stop_loss
             self.snapshot["open_position_tp"] = position.take_profit
-            self.snapshot["open_position_trade_id"] = position.trade_id
-            self.snapshot["open_position_notional_usdt"] = notional_usdt
-            self.snapshot["open_position_pnl_pct"] = pnl_pct
-            self.snapshot["open_position_duration_min"] = duration_min
 
             structure_exit_reason = self._detect_structure_exit(position, market_data, price, used_atr)
             exit_reason = self._resolve_structure_exit_signal(position, structure_exit_reason)
@@ -1566,10 +1555,6 @@ class BotEngine:
             self.snapshot["open_position_qty"] = None
             self.snapshot["open_position_sl"] = None
             self.snapshot["open_position_tp"] = None
-            self.snapshot["open_position_trade_id"] = None
-            self.snapshot["open_position_notional_usdt"] = 0.0
-            self.snapshot["open_position_pnl_pct"] = 0.0
-            self.snapshot["open_position_duration_min"] = 0.0
             self.snapshot["exit_intelligence_score"] = 0.0
             self.snapshot["exit_intelligence_threshold"] = 0.0
             self.snapshot["exit_intelligence_reason"] = "NO_OPEN_POSITION"
@@ -2059,21 +2044,22 @@ class BotEngine:
         self.snapshot["distance_to_support"] = intelligence.get("distance_to_support")
         self.snapshot["distance_to_resistance"] = intelligence.get("distance_to_resistance")
 
-    async def _fetch_balances(self) -> tuple[float, float, str, str, dict[str, Any]]:
+    async def _fetch_balances(self) -> tuple[float, float]:
         payload = await self.client.fetch_balance()
         base_asset, quote_asset = split_symbol(self.symbol)
         quote_asset = quote_asset or "USDT"
-        free_balances = payload.get("free") if isinstance(payload, dict) else None
-        if isinstance(free_balances, dict):
-            quote_balance = _as_float(free_balances.get(quote_asset), 0.0)
-            base_balance = _as_float(free_balances.get(base_asset), 0.0)
-            return quote_balance, base_balance, quote_asset, base_asset, payload
+
+        total_balances = payload.get("total") if isinstance(payload, dict) else None
+        if isinstance(total_balances, dict):
+            quote_balance = _as_float(total_balances.get(quote_asset), 0.0)
+            base_balance = _as_float(total_balances.get(base_asset), 0.0)
+            return quote_balance, base_balance
 
         quote = payload.get(quote_asset) if isinstance(payload, dict) else {}
         base = payload.get(base_asset) if isinstance(payload, dict) else {}
         quote_balance = _as_float((quote or {}).get("free"), 0.0)
         base_balance = _as_float((base or {}).get("free"), 0.0)
-        return quote_balance, base_balance, quote_asset, base_asset, payload
+        return quote_balance, base_balance
 
     async def _quote_to_usdt_rate(self, quote_asset: str) -> float:
         normalized = str(quote_asset or "USDT").upper()
@@ -2097,25 +2083,12 @@ class BotEngine:
             return rate
         return 1.0
 
-    async def _asset_to_usdt_rate(
-        self,
-        asset: str,
-        *,
-        _visited: set[str] | None = None,
-        _depth: int = 0,
-    ) -> float:
+    async def _asset_to_usdt_rate(self, asset: str) -> float:
         normalized = str(asset or "").upper().strip()
         if not normalized:
             return 0.0
         if normalized == "USDT":
             return 1.0
-        if _depth > 6:
-            return 0.0
-        if _visited is None:
-            _visited = set()
-        if normalized in _visited:
-            return 0.0
-        _visited.add(normalized)
         now = datetime.now(timezone.utc)
         cached = self._asset_to_usdt_cache.get(normalized)
         if cached and (now - cached[1]).total_seconds() < 300:
@@ -2134,7 +2107,7 @@ class BotEngine:
         for bridge in ("USDC", "FDUSD", "BUSD", "TUSD", "DAI", "BTC", "ETH", "BNB"):
             if bridge == normalized:
                 continue
-            bridge_rate = await self._asset_to_usdt_rate(bridge, _visited=set(_visited), _depth=_depth + 1)
+            bridge_rate = await self._asset_to_usdt_rate(bridge)
             if bridge_rate <= 0:
                 continue
             for pair in (f"{normalized}/{bridge}", f"{bridge}/{normalized}"):
@@ -2179,38 +2152,19 @@ class BotEngine:
         return float(total_equity_usdt)
 
     async def _refresh_account_snapshot(self, current_price: float | None = None) -> None:
-        balances = await self._fetch_balances()
-        quote_balance = 0.0
-        base_balance = 0.0
-        quote_asset = "USDT"
-        balance_payload: dict[str, Any] = {}
-        if isinstance(balances, tuple):
-            if len(balances) >= 5:
-                quote_balance, base_balance, quote_asset, _base_asset, balance_payload = balances[:5]
-            elif len(balances) >= 2:
-                quote_balance, base_balance = balances[:2]
-        elif isinstance(balances, dict):
-            # Backward compatibility with older mocks/helpers.
-            quote_balance = _as_float(balances.get("quote_balance"), 0.0)
-            base_balance = _as_float(balances.get("base_balance"), 0.0)
-            quote_asset = str(balances.get("quote_asset") or "USDT")
-            balance_payload = dict(balances.get("payload") or {})
+        usdt_balance, btc_balance = await self._fetch_balances()
         reference_price = max(_as_float(current_price, _as_float(self.snapshot.get("price"), 0.0)), 0.0)
-        base_value_quote = float(base_balance * reference_price)
-        total_equity_quote = float(quote_balance + base_value_quote)
-        quote_to_usdt_rate = await self._quote_to_usdt_rate(quote_asset)
-        total_equity_usdt = await self._compute_total_equity_usdt(balance_payload)
-        if total_equity_usdt <= 0:
-            total_equity_usdt = float(total_equity_quote * quote_to_usdt_rate)
+        btc_value = float(btc_balance * reference_price)
+        total_equity = float(usdt_balance + btc_value)
         session_pnl = float(await self.repository.get_session_pnl() or 0.0)
 
-        self.snapshot["balance"] = float(quote_balance)
-        self.snapshot["btc_balance"] = float(base_balance)
-        self.snapshot["btc_value"] = base_value_quote
-        self.snapshot["total_equity"] = total_equity_quote
-        self.snapshot["total_equity_usdt"] = total_equity_usdt
-        self.snapshot["equity"] = total_equity_quote
-        self.snapshot["account_currency"] = quote_asset
+        self.snapshot["balance"] = float(usdt_balance)
+        self.snapshot["btc_balance"] = float(btc_balance)
+        self.snapshot["btc_value"] = btc_value
+        self.snapshot["total_equity"] = total_equity
+        self.snapshot["total_equity_usdt"] = total_equity
+        self.snapshot["equity"] = total_equity
+        self.snapshot["account_currency"] = "USDT"
         self.snapshot["daily_pnl"] = session_pnl
         self.snapshot["session_pnl"] = session_pnl
         self.snapshot["trades_today"] = self.trades_today
@@ -2220,14 +2174,14 @@ class BotEngine:
         operable_getter = getattr(self, "_operable_equity_for_trading", None)
         if callable(profile_getter) and callable(operable_getter):
             profile = profile_getter()
-            operable_capital = operable_getter(total_equity_usdt, profile)
+            operable_capital = operable_getter(total_equity, profile)
             self.snapshot["capital_profile"] = profile.name
             self.snapshot["operable_capital_usdt"] = operable_capital
 
         if self.starting_equity is None:
-            self.starting_equity = max(total_equity_usdt, 1.0)
-        self.equity_peak = max(_as_float(self.equity_peak, total_equity_usdt), total_equity_usdt)
-        self._append_equity_point(total_equity_usdt)
+            self.starting_equity = max(total_equity, 1.0)
+        self.equity_peak = max(_as_float(self.equity_peak, total_equity), total_equity)
+        self._append_equity_point(total_equity)
 
     def _append_equity_point(self, equity: float) -> None:
         normalized = round(float(max(equity, 0.0)), 8)
@@ -2240,10 +2194,10 @@ class BotEngine:
         open_trades = await self.repository.get_open_trades(self.symbol)
         if not open_trades:
             return
-        quote_balance, base_balance, quote_asset, _base_asset, _payload = await self._fetch_balances()
-        self.snapshot["balance"] = quote_balance
+        usdt_balance, base_balance = await self._fetch_balances()
+        self.snapshot["balance"] = usdt_balance
         self.snapshot["btc_balance"] = base_balance
-        self.snapshot["account_currency"] = quote_asset
+        self.snapshot["account_currency"] = "USDT"
         latest = open_trades[0]
         if base_balance <= 0:
             await self._log("WARNING", "open_trade_found_without_base_balance")
@@ -2555,7 +2509,13 @@ class BotEngine:
         filter_config = sanitized.get("filter_config", {})
         if filter_config:
             self._apply_symbol_filter_config(filter_config)
-        
+        elif symbol_switched:
+            # Al cambiar de mercado desde dashboard, refrescar filtros de inmediato
+            # para evitar mezclar umbrales del par anterior.
+            self._apply_symbol_filter_config(self._get_default_filter_config())
+            self.snapshot["autonomous_filters"] = dict(self.runtime_filter_config)
+            self.snapshot["autonomous_filter_reason"] = "symbol_switch_immediate_refresh"
+
         if symbol_switched:
             self.snapshot["pair"] = self.symbol
         if persist:
@@ -2583,7 +2543,6 @@ class BotEngine:
         self.symbol = normalized_symbol
         self.market_stream.symbol = normalized_symbol
         self.order_manager.symbol = normalized_symbol
-        self.multi_pair_manager.active_pair = normalized_symbol
         self.order_manager.rules = None
         self._cached_frame5 = None
         self._cached_frame15 = None
@@ -2648,6 +2607,23 @@ class BotEngine:
             risk_cap=_as_float(risk_cap, profile.risk_per_trade_fraction) if risk_cap is not None else None,
             allocation_cap=_as_float(allocation_cap, profile.max_trade_balance_fraction) if allocation_cap is not None else None,
         )
+
+        # Perfil de micro-capital: mejorar operatividad cuando el balance es muy bajo
+        # sin desactivar protecciones críticas.
+        if equity > 0 and equity <= 15.0:
+            micro_risk = min(max(optimized.risk_per_trade_fraction, 0.015), 0.03)
+            micro_allocation = min(max(optimized.max_trade_balance_fraction, 0.35), 0.65)
+            optimized = optimized.__class__(
+                risk_per_trade_fraction=micro_risk,
+                max_trade_balance_fraction=micro_allocation,
+                capital_reserve_ratio=min(max(optimized.capital_reserve_ratio, 0.03), 0.10),
+                min_cash_buffer_usdt=min(max(optimized.min_cash_buffer_usdt, 0.5), 1.5),
+                capital_limit_usdt=max(_as_float(optimized.capital_limit_usdt, equity), equity),
+                dynamic_exit_enabled=bool(optimized.dynamic_exit_enabled),
+                confidence_boost_multiplier=max(_as_float(optimized.confidence_boost_multiplier, 1.0), 1.03),
+                optimization_reason=f"{optimized.optimization_reason} | micro_balance_profile",
+            )
+
         return {
             "risk_per_trade_fraction": optimized.risk_per_trade_fraction,
             "max_trade_balance_fraction": optimized.max_trade_balance_fraction,
@@ -2903,14 +2879,49 @@ class BotEngine:
             return True
         return datetime.now(timezone.utc) - self.last_close_time >= timedelta(minutes=self._effective_cooldown_minutes())
 
-    def _safe_live_update(self, live: Any) -> None:
+    def _safe_live_update(self, live: Any, force: bool = False) -> None:
         try:
+            now = time.monotonic()
+            if not force and (now - self._last_dashboard_render_ts) < self._dashboard_min_render_interval_seconds:
+                return
+            digest = hashlib.sha1(
+                repr(
+                    (
+                        self.snapshot.get("status"),
+                        self.snapshot.get("price"),
+                        self.snapshot.get("signal"),
+                        self.snapshot.get("confidence"),
+                        self.snapshot.get("daily_pnl"),
+                        self.snapshot.get("unrealized_pnl"),
+                        self.snapshot.get("open_positions"),
+                        self.snapshot.get("llm_trade_confirmator"),
+                        (self.snapshot.get("logs") or [])[-6:],
+                    )
+                ).encode("utf-8", errors="ignore")
+            ).hexdigest()
+            if not force and digest == self._last_dashboard_render_digest:
+                return
             if hasattr(live, "update"):
-                live.update(self.dashboard.render(self.snapshot))
+                live.update(self.dashboard.render(self.snapshot), refresh=True)
+                self._last_dashboard_render_ts = now
+                self._last_dashboard_render_digest = digest
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("dashboard_render_error: %s", exc)
 
     def _sync_ui_state(self) -> None:
+        self.snapshot["open_positions"] = [
+            {
+                "trade_id": getattr(position, "trade_id", None),
+                "symbol": getattr(position, "symbol", self.symbol),
+                "side": getattr(position, "side", None),
+                "quantity": _as_float(getattr(position, "quantity", None), 0.0),
+                "entry_price": _as_float(getattr(position, "entry_price", None), 0.0),
+                "stop_loss": _as_float(getattr(position, "stop_loss", None), 0.0),
+                "take_profit": _as_float(getattr(position, "take_profit", None), 0.0),
+                "unrealized_pnl": self.snapshot.get("unrealized_pnl", 0.0),
+            }
+            for position in list(getattr(self.position_manager, "positions", []) or [])
+        ]
         if not self.state_manager:
             return
         try:
@@ -2943,10 +2954,6 @@ class BotEngine:
                 open_position_qty=self.snapshot.get("open_position_qty"),
                 open_position_sl=self.snapshot.get("open_position_sl"),
                 open_position_tp=self.snapshot.get("open_position_tp"),
-                open_position_trade_id=self.snapshot.get("open_position_trade_id"),
-                open_position_notional_usdt=self.snapshot.get("open_position_notional_usdt", 0.0),
-                open_position_pnl_pct=self.snapshot.get("open_position_pnl_pct", 0.0),
-                open_position_duration_min=self.snapshot.get("open_position_duration_min", 0.0),
                 cooldown=self.snapshot.get("cooldown"),
                 status=self.snapshot.get("status", "INITIALIZING"),
                 bid=self.snapshot.get("bid", self.snapshot.get("price")),
@@ -3215,7 +3222,12 @@ class BotEngine:
             "take_profit_atr_multiplier": _as_float(filter_config.get("take_profit_atr_multiplier"), 2.5),
             "min_confidence": _as_float(filter_config.get("min_confidence"), 0.55),
         }
+        self.base_filter_config = self._calibrate_filter_config_with_recent_market_data(self.base_filter_config)
         self.runtime_filter_config = dict(self.base_filter_config)
+        # Re-aplicar ajustes LLM si está en modo local (se habrían sobreescrito)
+        if str(getattr(self.settings, "llm_mode", "base")).lower() == "llm_local":
+            self._configure_llm_runtime_mode()
+            self.logger.info("LLM runtime filters re-applied after symbol config update")
         self.logger.info(f"Applied filter config for {self.symbol}: {self.runtime_filter_config}")
 
     def _apply_autonomous_filters(self) -> None:
@@ -3262,10 +3274,47 @@ class BotEngine:
                         continue
                     lo, hi = allowed_ranges[key]
                     effective_filters[key] = min(max(_as_float(value, effective_filters.get(key, lo)), lo), hi)
+
+            trades_today = int(self.snapshot.get("trades_today", 0) or 0)
+            win_rate = _as_float(self.snapshot.get("win_rate"), 0.0)
+            daily_pnl = _as_float(self.snapshot.get("daily_pnl"), 0.0)
+            stale_ratio = _as_float(self.snapshot.get("stale_market_data_ratio"), 0.0)
+            signal_quality = _as_float(self.snapshot.get("signal_quality_score"), 0.0)
+            consecutive_losses = int(self.snapshot.get("consecutive_losses", 0) or 0)
+            total_equity = _as_float(
+                self.snapshot.get("total_equity"),
+                _as_float(self.snapshot.get("equity"), _as_float(self.snapshot.get("balance"), 0.0)),
+            )
+
+            # Relajación controlada por falta de actividad — un solo ajuste acumulado
+            if trades_today == 0 and daily_pnl >= 0:
+                # Sin trades y sin pérdidas: relajar moderadamente para buscar entrada
+                _BASE_CONF = self.base_filter_config.get("min_confidence", 0.45)
+                _BASE_ADX = self.base_filter_config.get("adx_threshold", 15.0)
+                effective_filters["min_confidence"] = max(_BASE_CONF - 0.06, 0.38)
+                effective_filters["adx_threshold"] = max(_BASE_ADX - 3.0, 9.0)
+                effective_filters["volume_buy_threshold"] = min(
+                    effective_filters.get("volume_buy_threshold", 1.0), 0.85
+                )
+            elif trades_today < 2 and daily_pnl >= -10.0:
+                # Pocos trades pero sin pérdida grave: relajar levemente
+                _BASE_CONF = self.base_filter_config.get("min_confidence", 0.45)
+                _BASE_ADX = self.base_filter_config.get("adx_threshold", 15.0)
+                effective_filters["min_confidence"] = max(_BASE_CONF - 0.03, 0.42)
+                effective_filters["adx_threshold"] = max(_BASE_ADX - 1.5, 11.0)
+
+            # Protect quality if session quality drops.
+            if daily_pnl < -30.0 or (trades_today >= 3 and win_rate < 0.34):
+                effective_filters["min_confidence"] = min(0.78, _as_float(effective_filters.get("min_confidence"), 0.50) + 0.04)
+                effective_filters["adx_threshold"] = min(28.0, _as_float(effective_filters.get("adx_threshold"), 18.0) + 2.0)
             
             self.runtime_filter_config = effective_filters
             self.snapshot["autonomous_market_condition"] = market_condition
             self.snapshot["autonomous_filters"] = effective_filters.copy()
+            self.snapshot["autonomous_filter_reason"] = (
+                f"market={market_condition} stale_ratio={stale_ratio:.3f} "
+                f"signal_quality={signal_quality:.3f} consecutive_losses={consecutive_losses}"
+            )
             
         except Exception as e:
             self.logger.warning(f"Failed to apply autonomous filters: {e}")
@@ -3289,42 +3338,86 @@ class BotEngine:
         normalized_symbol = self.symbol.replace("/", "").upper()
         default_configs = {
             "BTCUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.0008, "atr_high_threshold": 0.030,
-                "stop_loss_atr_multiplier": 1.5, "take_profit_atr_multiplier": 2.5, "min_confidence": 0.40,
+                "adx_threshold": 16.0, "rsi_buy_threshold": 47.0, "rsi_sell_threshold": 53.0,
+                "volume_buy_threshold": 1.05, "volume_sell_threshold": 0.85,
+                "atr_low_threshold": 0.0010, "atr_high_threshold": 0.022,
+                "stop_loss_atr_multiplier": 1.5, "take_profit_atr_multiplier": 2.4, "min_confidence": 0.58,
             },
             "ETHUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.001, "atr_high_threshold": 0.040,
-                "stop_loss_atr_multiplier": 1.6, "take_profit_atr_multiplier": 2.6, "min_confidence": 0.40,
+                "adx_threshold": 17.0, "rsi_buy_threshold": 47.0, "rsi_sell_threshold": 53.0,
+                "volume_buy_threshold": 1.08, "volume_sell_threshold": 0.86,
+                "atr_low_threshold": 0.0012, "atr_high_threshold": 0.028,
+                "stop_loss_atr_multiplier": 1.6, "take_profit_atr_multiplier": 2.5, "min_confidence": 0.60,
             },
             "SOLUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.002, "atr_high_threshold": 0.060,
-                "stop_loss_atr_multiplier": 2.0, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.40,
+                "adx_threshold": 19.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
+                "volume_buy_threshold": 1.12, "volume_sell_threshold": 0.88,
+                "atr_low_threshold": 0.0022, "atr_high_threshold": 0.045,
+                "stop_loss_atr_multiplier": 2.0, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.63,
             },
             "BNBUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.70, "volume_sell_threshold": 0.70,
-                "atr_low_threshold": 0.001, "atr_high_threshold": 0.050,
-                "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 2.8, "min_confidence": 0.45,
+                "adx_threshold": 17.0, "rsi_buy_threshold": 47.0, "rsi_sell_threshold": 53.0,
+                "volume_buy_threshold": 1.07, "volume_sell_threshold": 0.86,
+                "atr_low_threshold": 0.0014, "atr_high_threshold": 0.030,
+                "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 2.7, "min_confidence": 0.60,
             },
             "XRPUSDT": {
-                "adx_threshold": 10.0, "rsi_buy_threshold": 45.0, "rsi_sell_threshold": 55.0,
-                "volume_buy_threshold": 0.80, "volume_sell_threshold": 0.95,
-                "atr_low_threshold": 0.002, "atr_high_threshold": 0.080,
-                "stop_loss_atr_multiplier": 2.2, "take_profit_atr_multiplier": 3.5, "min_confidence": 0.40,
+                "adx_threshold": 18.0, "rsi_buy_threshold": 49.0, "rsi_sell_threshold": 51.0,
+                "volume_buy_threshold": 1.10, "volume_sell_threshold": 0.90,
+                "atr_low_threshold": 0.0025, "atr_high_threshold": 0.060,
+                "stop_loss_atr_multiplier": 2.2, "take_profit_atr_multiplier": 3.4, "min_confidence": 0.62,
             },
         }
         return default_configs.get(normalized_symbol, {
-            "adx_threshold": 12.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
-            "volume_buy_threshold": 0.90, "volume_sell_threshold": 0.85,
-            "atr_low_threshold": 0.001, "atr_high_threshold": 0.040,
-            "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 3.0, "min_confidence": 0.45,
+            "adx_threshold": 18.0, "rsi_buy_threshold": 48.0, "rsi_sell_threshold": 52.0,
+            "volume_buy_threshold": 1.08, "volume_sell_threshold": 0.88,
+            "atr_low_threshold": 0.0012, "atr_high_threshold": 0.035,
+            "stop_loss_atr_multiplier": 1.8, "take_profit_atr_multiplier": 2.8, "min_confidence": 0.60,
         })
+
+    def _calibrate_filter_config_with_recent_market_data(self, config: dict[str, float]) -> dict[str, float]:
+        """
+        Ajusta límites de filtros con datos recientes del mercado actual.
+        Mantiene límites conservadores para evitar pasar señales falsas.
+        """
+        calibrated = dict(config)
+        frame = getattr(self, "_cached_frame5", None)
+        try:
+            if frame is None or len(frame) < 40:
+                return calibrated
+            required = {"atr", "close", "volume", "vol_ma20", "adx"}
+            if not required.issubset(set(frame.columns)):
+                return calibrated
+
+            atr_ratio = (frame["atr"] / frame["close"]).replace([float("inf"), float("-inf")], float("nan")).dropna()
+            vol_ratio = (frame["volume"] / frame["vol_ma20"]).replace([float("inf"), float("-inf")], float("nan")).dropna()
+            adx_series = frame["adx"].replace([float("inf"), float("-inf")], float("nan")).dropna()
+            if len(atr_ratio) < 20 or len(vol_ratio) < 20 or len(adx_series) < 20:
+                return calibrated
+
+            atr_low_q = float(atr_ratio.quantile(0.20))
+            atr_high_q = float(atr_ratio.quantile(0.85))
+            adx_med = float(adx_series.tail(80).median())
+            vol_med = float(vol_ratio.tail(80).median())
+
+            calibrated["atr_low_threshold"] = min(max(atr_low_q * 0.95, 0.0005), 0.0200)
+            calibrated["atr_high_threshold"] = min(max(atr_high_q * 1.10, calibrated["atr_low_threshold"] + 0.001), 0.0900)
+            calibrated["adx_threshold"] = min(max((calibrated.get("adx_threshold", 16.0) + adx_med) / 2.0, 12.0), 30.0)
+            calibrated["volume_buy_threshold"] = min(max((calibrated.get("volume_buy_threshold", 1.0) + vol_med) / 2.0, 0.85), 1.45)
+            calibrated["min_confidence"] = min(max(calibrated.get("min_confidence", 0.58), 0.50), 0.85)
+            if hasattr(self, "logger"):
+                self.logger.info(
+                    "market_filter_calibrated symbol=%s adx=%.2f atr_low=%.5f atr_high=%.5f vol_buy=%.2f",
+                    self.symbol,
+                    calibrated["adx_threshold"],
+                    calibrated["atr_low_threshold"],
+                    calibrated["atr_high_threshold"],
+                    calibrated["volume_buy_threshold"],
+                )
+        except Exception as exc:
+            if hasattr(self, "logger"):
+                self.logger.warning("market_filter_calibration_failed symbol=%s reason=%s", self.symbol, exc)
+        return calibrated
 
     def _effective_adx_threshold(self) -> float:
         return self.runtime_filter_config.get("adx_threshold", 10.0)

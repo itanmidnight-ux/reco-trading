@@ -70,15 +70,3 @@ def test_safe_exchange_call_cancels_when_thread_executor_is_shutdown() -> None:
         assert str(exc) == "executor_shutdown"
     else:
         raise AssertionError("Expected asyncio.CancelledError")
-
-
-def test_book_ticker_stream_url_uses_spot_testnet_endpoint() -> None:
-    client = BinanceClient(api_key="", api_secret="", testnet=True, trading_mode="spot")
-    url = client._book_ticker_stream_url("btcusdt")
-    assert url == "wss://stream.testnet.binance.vision/ws/btcusdt@bookTicker"
-
-
-def test_book_ticker_stream_url_uses_mainnet_endpoint_by_default() -> None:
-    client = BinanceClient(api_key="", api_secret="", testnet=False, trading_mode="spot")
-    url = client._book_ticker_stream_url("btcusdt")
-    assert url == "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"

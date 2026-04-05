@@ -1,3 +1,498 @@
+# CODEX MASTER PROMPT — reco-trading Full Overhaul
+**Instrucciones para OpenAI Codex / GPT-4.1 / Claude Code**
+*Prompt de ingeniería de software profesional — Leer completo antes de tocar cualquier archivo*
+
+---
+
+## CONTEXTO DEL PROYECTO
+
+Estás trabajando en **reco-trading**, un bot de trading de criptomonedas en Python con arquitectura asyncio + Flask + Rich TUI. El proyecto usa:
+- `ccxt` para exchange Binance
+- `SQLAlchemy async` + `aiosqlite/asyncpg` para BD
+- `rich` para terminal TUI
+- `Flask` (threaded) para dashboard web
+- `requests` para llamadas a Ollama (LLM local)
+- `pydantic` para settings
+- `pandas` para indicadores
+
+**Tu misión es COMPLETA y se divide en 4 bloques que debes ejecutar en orden:**
+
+1. **Bloque A** — Corrección de bugs críticos en lógica del bot
+2. **Bloque B** — Corrección de bugs críticos en filtros/señales
+3. **Bloque C** — Dashboard Web completamente nuevo (funcional + visual premium)
+4. **Bloque D** — Dashboard Terminal TUI mejorado
+
+No omitas ningún bloque. Cada archivo modificado debe quedar completo y funcional.
+
+---
+
+## BLOQUE A — CORRECCIÓN DE BUGS CRÍTICOS (Core / LLM)
+
+### A1. Archivo: `reco_trading/core/llm_trade_confirmator.py`
+
+**BUG 1 — `llm_mode="base"` ignora el score completamente**
+
+Localiza el bloque:
+```python
+if self.llm_mode == "base":
+    confirmed = True
+    reasons.append("LLM_MODE=base (sin confirmación LLM final)")
+```
+
+Reemplázalo por:
+```python
+if self.llm_mode == "base":
+    confirmed = score >= 50
+    reasons.append(f"base_rules score={score:.1f} threshold=50 result={'APPROVED' if score >= 50 else 'REJECTED'}")
+```
+
+**BUG 2 — `_avg_time_ms` se actualiza dos veces por llamada**
+
+Localiza el bloque que empieza con:
+```python
+total_events = self._confirmation_count + self._rejection_count + 1
+self._avg_time_ms = ...
+if confirmed:
+    self._confirmation_count += 1
+else:
+    self._rejection_count += 1
+if self._confirmation_count == 1:
+    self._avg_time_ms = analysis_time
+else:
+    self._avg_time_ms = ((self._avg_time_ms * ...
+```
+
+Reemplázalo COMPLETAMENTE por:
+```python
+if confirmed:
+    self._confirmation_count += 1
+else:
+    self._rejection_count += 1
+
+total_events = self._confirmation_count + self._rejection_count
+if total_events == 1:
+    self._avg_time_ms = analysis_time
+else:
+    self._avg_time_ms = (
+        (self._avg_time_ms * (total_events - 1)) + analysis_time
+    ) / total_events
+```
+
+**BUG 3 — `volatility_regime` strings incorrectos**
+
+Localiza:
+```python
+if volatility_regime in ("NORMAL", "TRENDING"):
+    score += 10
+elif volatility_regime == "HIGH_VOLATILITY":
+    score += 5
+```
+
+Reemplaza por:
+```python
+if volatility_regime in ("NORMAL_VOLATILITY", "LOW_VOLATILITY"):
+    score += 10
+elif volatility_regime == "HIGH_VOLATILITY":
+    score += 5
+    reasons.append("High volatility - reduced score bonus")
+else:
+    reasons.append(f"Unknown volatility regime: {volatility_regime}")
+```
+
+**BUG 4 — Warmup de Ollama bloquea `__init__` de forma síncrona**
+
+Localiza en `__init__`:
+```python
+if self.llm_mode == "llm_local" and self.local_healthcheck_enabled:
+    self._local_endpoint_healthy = self._warmup_local_model()
+```
+
+Reemplaza por:
+```python
+self._warmup_done = False
+if self.llm_mode == "llm_local" and self.local_healthcheck_enabled:
+    import threading
+    threading.Thread(
+        target=self._warmup_background,
+        daemon=True,
+        name="ollama-warmup"
+    ).start()
+```
+
+Agrega el método `_warmup_background` a la clase:
+```python
+def _warmup_background(self) -> None:
+    """Warmup Ollama en background sin bloquear el bot."""
+    import time
+    time.sleep(2.0)  # dar tiempo al bot a terminar __init__
+    self._local_endpoint_healthy = self._warmup_local_model()
+    self._warmup_done = True
+    if self._local_endpoint_healthy:
+        self.logger.info("ollama_warmup_completed_background model=%s", self.local_model)
+    else:
+        self.logger.warning("ollama_warmup_failed_background model=%s — usando fallback a reglas", self.local_model)
+```
+
+**MEJORA — Timeout adaptativo para primera llamada**
+
+En el método `_local_confirm`, localiza:
+```python
+response = self._http_session.post(
+    f"{self.ollama_base_url}/api/generate",
+    json=payload,
+    timeout=self.local_timeout_seconds,
+)
+```
+
+Reemplaza con:
+```python
+# Primera llamada puede necesitar más tiempo (modelo cargando)
+effective_timeout = (
+    max(self.local_timeout_seconds, 5.0)
+    if not self._warmup_done
+    else self.local_timeout_seconds
+)
+response = self._http_session.post(
+    f"{self.ollama_base_url}/api/generate",
+    json=payload,
+    timeout=effective_timeout,
+)
+```
+
+**MEJORA — Agregar `local_endpoint_healthy` y `warmup_done` al `stats` property:**
+
+```python
+@property
+def stats(self) -> dict[str, Any]:
+    total = self._confirmation_count + self._rejection_count
+    return {
+        "total_analyzed": total,
+        "confirmed": self._confirmation_count,
+        "rejected": self._rejection_count,
+        "confirmation_rate": (self._confirmation_count / total * 100) if total > 0 else 0.0,
+        "avg_analysis_time_ms": round(self._avg_time_ms, 2),
+        "local_endpoint_healthy": self._local_endpoint_healthy,
+        "warmup_done": self._warmup_done,
+        "mode": self.llm_mode,
+        "model": self.local_model if self.llm_mode == "llm_local" else self.remote_model,
+    }
+```
+
+---
+
+### A2. Archivo: `reco_trading/core/bot_engine.py`
+
+**BUG 5 — Import duplicado**
+
+Localiza las líneas 73-74 (dos imports idénticos consecutivos):
+```python
+from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
+from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
+```
+Elimina una de las dos líneas duplicadas. Deja solo una.
+
+**BUG 6 — Filtros LLM sobreescritos por `_apply_symbol_filter_config`**
+
+En el método `_apply_symbol_filter_config`, al final (después de `self.runtime_filter_config = dict(self.base_filter_config)`), agrega:
+```python
+# Re-aplicar ajustes LLM si está en modo local (se habrían sobreescrito)
+if str(getattr(self.settings, "llm_mode", "base")).lower() == "llm_local":
+    self._configure_llm_runtime_mode()
+    self.logger.info("LLM runtime filters re-applied after symbol config update")
+```
+
+**BUG 7 — `history_limit` se reduce silenciosamente sin log**
+
+Localiza:
+```python
+if bool(getattr(self.settings, "low_ram_mode", True)):
+    settings.history_limit = max(120, min(int(settings.history_limit), 220))
+```
+
+Reemplaza por:
+```python
+if bool(getattr(self.settings, "low_ram_mode", True)):
+    original_limit = settings.history_limit
+    settings.history_limit = max(120, min(int(settings.history_limit), 220))
+    if settings.history_limit != original_limit:
+        self.logger.warning(
+            "history_limit clamped by low_ram_mode: %d → %d. "
+            "Indicators requiring >%d candles may be inaccurate.",
+            original_limit, settings.history_limit, settings.history_limit
+        )
+```
+
+**BUG 8 — `refresh_per_second` hardcodeado en `Live()`**
+
+Localiza:
+```python
+live_context = Live(
+    self.dashboard.render(self.snapshot),
+    refresh_per_second=8,
+    transient=False,
+    auto_refresh=False,
+    screen=True,
+    vertical_overflow="crop",
+)
+```
+
+Reemplaza por:
+```python
+import sys
+_tui_fps = max(1, min(int(getattr(self, "terminal_tui_refresh_per_second", 4)), 10))
+_has_tty = sys.stdout.isatty()
+live_context = Live(
+    self.dashboard.render(self.snapshot),
+    refresh_per_second=_tui_fps,
+    transient=False,
+    auto_refresh=False,
+    screen=_has_tty,  # screen=True solo si hay TTY real
+    vertical_overflow="crop",
+)
+```
+
+---
+
+## BLOQUE B — CORRECCIÓN DE FILTROS Y SEÑALES
+
+### B1. Archivo: `reco_trading/strategy/regime_filter.py`
+
+**BUG CRÍTICO — `allow_trade` siempre es `True` para todos los regímenes**
+
+Reemplaza el método `evaluate` completo por:
+```python
+def evaluate(self, frame: pd.DataFrame) -> RegimeDecision:
+    row = frame.iloc[-1]
+    try:
+        atr_val = float(row["atr"])
+        close_val = float(row["close"])
+        if close_val <= 0:
+            return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, 0.0, True, 1.0)
+        atr_ratio = atr_val / close_val
+    except (KeyError, TypeError, ZeroDivisionError):
+        return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, 0.0, True, 1.0)
+
+    if atr_ratio < self.low_threshold:
+        # Mercado dormido: bajo ATR = sin momentum = no operar
+        return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, atr_ratio, allow_trade=False, size_multiplier=0.0)
+    if atr_ratio > self.high_threshold:
+        # Alta volatilidad: operar con tamaño reducido como protección
+        return RegimeDecision(VolatilityRegime.HIGH_VOLATILITY, atr_ratio, allow_trade=True, size_multiplier=0.60)
+    # Régimen normal: operación completa
+    return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, atr_ratio, allow_trade=True, size_multiplier=1.0)
+```
+
+### B2. Archivo: `reco_trading/strategy/signal_engine.py`
+
+**BUG — Volumen bajo asignado como señal "SELL"**
+
+Localiza:
+```python
+if vol_ratio > 1.00:
+    volume = "BUY"
+elif vol_ratio < 0.85:
+    volume = "SELL"
+else:
+    volume = "NEUTRAL"
+```
+
+Reemplaza por:
+```python
+if vol_ratio > 1.20:
+    volume = "BUY"       # Volumen elevado confirma movimiento
+elif vol_ratio > 1.00:
+    volume = "BUY"       # Volumen sobre media = sesgo alcista moderado
+elif vol_ratio < 0.70:
+    volume = "NEUTRAL"   # Volumen bajo = sin confirmación (NO es señal bajista)
+else:
+    volume = "NEUTRAL"
+```
+
+**MEJORA — Añadir protección de columnas faltantes en `generate()`**
+
+Al inicio del método `generate()`, después de verificar `len(df5m) < 2`, agrega:
+```python
+# Verificar que las columnas necesarias existen
+required_cols = {"ema20", "ema50", "rsi", "atr", "close", "high", "low", "volume", "vol_ma20"}
+missing_5m = required_cols - set(df5m.columns)
+missing_15m = required_cols - set(df15m.columns)
+if missing_5m or missing_15m:
+    import logging
+    logging.getLogger(__name__).warning(
+        "signal_engine: missing columns 5m=%s 15m=%s — returning NEUTRAL bundle",
+        missing_5m, missing_15m
+    )
+    return SignalBundle(
+        trend="NEUTRAL", momentum="NEUTRAL", volume="NEUTRAL",
+        volatility="NEUTRAL", structure="NEUTRAL", order_flow="NEUTRAL",
+        regime="INSUFFICIENT_DATA", regime_trade_allowed=False,
+        size_multiplier=0.0, atr_ratio=0.0,
+    )
+```
+
+### B3. Archivo: `reco_trading/core/bot_engine.py` — Filtros autónomos
+
+**BUG — Relajación doble de filtros cuando `trades_today == 0`**
+
+En el método `_apply_autonomous_filters()`, localiza el bloque:
+```python
+if trades_today < 2:
+    effective_filters["min_confidence"] = max(0.36, ...)
+    effective_filters["adx_threshold"] = max(8.0, ...)
+    ...
+if trades_today == 0 and daily_pnl >= 0:
+    effective_filters["min_confidence"] = max(0.34, ...)
+    effective_filters["adx_threshold"] = max(7.0, ...)
+```
+
+Reemplaza AMBOS bloques por uno unificado con floor duro:
+```python
+# Relajación controlada por falta de actividad — un solo ajuste acumulado
+if trades_today == 0 and daily_pnl >= 0:
+    # Sin trades y sin pérdidas: relajar moderadamente para buscar entrada
+    _BASE_CONF = self.base_filter_config.get("min_confidence", 0.45)
+    _BASE_ADX = self.base_filter_config.get("adx_threshold", 15.0)
+    effective_filters["min_confidence"] = max(_BASE_CONF - 0.06, 0.38)
+    effective_filters["adx_threshold"] = max(_BASE_ADX - 3.0, 9.0)
+    effective_filters["volume_buy_threshold"] = min(
+        effective_filters.get("volume_buy_threshold", 1.0), 0.85
+    )
+elif trades_today < 2 and daily_pnl >= -10.0:
+    # Pocos trades pero sin pérdida grave: relajar levemente
+    _BASE_CONF = self.base_filter_config.get("min_confidence", 0.45)
+    _BASE_ADX = self.base_filter_config.get("adx_threshold", 15.0)
+    effective_filters["min_confidence"] = max(_BASE_CONF - 0.03, 0.42)
+    effective_filters["adx_threshold"] = max(_BASE_ADX - 1.5, 11.0)
+```
+
+---
+
+## BLOQUE C — DASHBOARD WEB COMPLETO (RECONSTRUCCIÓN TOTAL)
+
+### C1. Archivo: `web_site/dashboard_server.py` — Corrección de bugs de concurrencia
+
+**BUG CRÍTICO — `_run_async` + `force_close_position` = crash de event loop**
+
+Reemplaza el método `_run_async` completo:
+```python
+def _run_async(coro: Any) -> Any:
+    """
+    Ejecuta coroutines de forma segura desde contexto Flask (síncrono).
+    NUNCA llamar con coroutines del bot que usen sus objetos internos (cliente, orders).
+    Para esas operaciones, usar el sistema de comandos asíncrono del bot.
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+    except Exception as e:
+        logger.error("_run_async error: %s", e)
+        raise
+```
+
+**CORRECCIÓN — `force_close_position` segura desde Flask**
+
+Localiza en la ruta `/api/control` la llamada:
+```python
+_run_async(_global_bot_instance.force_close_position())
+```
+
+Reemplaza por:
+```python
+# Usar cola de comandos thread-safe en lugar de llamada directa al event loop del bot
+if hasattr(_global_bot_instance, "_control_queue"):
+    _global_bot_instance._control_queue.put_nowait({"action": "force_close"})
+    logger.warning("force_close command queued via web dashboard")
+    return jsonify({"success": True, "message": "Force close command queued"})
+elif hasattr(_global_bot_instance, "request_force_close"):
+    _global_bot_instance.request_force_close()
+    return jsonify({"success": True, "message": "Force close requested"})
+else:
+    return jsonify({"success": False, "error": "Force close not available in this bot version"})
+```
+
+**CORRECCIÓN — Lectura thread-safe del snapshot**
+
+Localiza en `get_bot_snapshot()`:
+```python
+snapshot = getattr(_global_bot_instance, 'snapshot', {})
+if callable(snapshot):
+    snapshot = snapshot()
+```
+
+Reemplaza por:
+```python
+# Thread-safe snapshot copy
+raw_snapshot = getattr(_global_bot_instance, 'snapshot', {})
+if callable(raw_snapshot):
+    raw_snapshot = raw_snapshot()
+# Hacer copia shallow para evitar race conditions con el loop asyncio del bot
+snapshot = dict(raw_snapshot) if isinstance(raw_snapshot, dict) else {}
+```
+
+**CORRECCIÓN — Auth habilitada por defecto**
+
+Localiza:
+```python
+def _is_dashboard_auth_enabled() -> bool:
+    return _env_bool("DASHBOARD_AUTH_ENABLED", False)
+```
+
+Reemplaza por:
+```python
+def _is_dashboard_auth_enabled() -> bool:
+    # Auth habilitada por defecto para seguridad. Deshabilitar explícitamente con DASHBOARD_AUTH_ENABLED=false
+    return _env_bool("DASHBOARD_AUTH_ENABLED", True)
+```
+
+**AGREGAR — Endpoint SSE (Server-Sent Events) para actualizaciones en tiempo real**
+
+Agrega esta ruta nueva en la función `create_app()`:
+```python
+@app.route('/api/stream')
+def api_stream():
+    """SSE endpoint para actualizaciones en tiempo real."""
+    auth_err = _require_dashboard_auth()
+    if auth_err:
+        return auth_err
+
+    def event_generator():
+        import time
+        while True:
+            try:
+                data = get_bot_snapshot()
+                yield f"data: {json.dumps(data)}\n\n"
+                time.sleep(1.5)  # actualizar cada 1.5 segundos
+            except GeneratorExit:
+                break
+            except Exception as e:
+                logger.error("SSE error: %s", e)
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                time.sleep(3)
+
+    return Response(
+        event_generator(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
+```
+
+---
+
+### C2. Archivo: `web_site/templates/index.html` — RECONSTRUCCIÓN COMPLETA
+
+**Reemplaza el archivo `index.html` COMPLETAMENTE con el siguiente template.**
+Este template es un dashboard web premium, responsivo, con tema oscuro, todas las secciones funcionales y settings en acordeón.
+
+```html
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -1967,25 +2462,558 @@ document.addEventListener('DOMContentLoaded', () => {
   updateLLMVisibility();
 });
 </script>
-
-<!-- Legacy compatibility markers for tests -->
-<div style="display:none" aria-hidden="true">
-  <span>Professional Local Dashboard</span>
-  <button data-bs-target="#settings"></button>
-  <button data-bs-target="#system"></button>
-  <button data-bs-target="#intel-log"></button>
-  <button id="stopTradeBtn"></button>
-</div>
-
-<script>
-// Legacy compatibility for risk metrics binding
-(function(){
-  const d = window.__latestSnapshot || {};
-  const riskMetrics = d.risk_metrics || {};
-  if (document.getElementById('adaptiveMultiplierValue')) {
-    document.getElementById('adaptiveMultiplierValue').textContent = (riskMetrics.adaptive_size_multiplier || 1.0);
-  }
-})();
-</script>
 </body>
 </html>
+```
+
+---
+
+## BLOQUE D — DASHBOARD TERMINAL TUI (Rich) — RECONSTRUCCIÓN
+
+### D1. Archivo: `reco_trading/ui/dashboard.py` — REEMPLAZAR COMPLETAMENTE
+
+Reemplaza el archivo completo con la siguiente implementación mejorada que muestra todos los datos correctamente, tiene mejor layout y maneja errores:
+
+```python
+from __future__ import annotations
+
+import sys
+from dataclasses import dataclass, field
+from typing import Any, Mapping
+
+from rich.align import Align
+from rich.box import ROUNDED, SIMPLE_HEAD, MINIMAL_DOUBLE_HEAD
+from rich.columns import Columns
+from rich.console import Console, Group
+from rich.layout import Layout
+from rich.panel import Panel
+from rich.progress import BarColumn, Progress, TextColumn
+from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
+
+
+@dataclass
+class DashboardSnapshot:
+    state: str = "INITIALIZING"
+    pair: str = ""
+    timeframe: str = ""
+    price: float | None = None
+    spread: float | None = None
+    bid: float | None = None
+    ask: float | None = None
+    trend: str | None = None
+    adx: float | None = None
+    rsi: float | None = None
+    volatility_regime: str | None = None
+    order_flow: str | None = None
+    signal: str | None = None
+    confidence: float | None = None
+    balance: float | None = None
+    equity: float | None = None
+    daily_pnl: float | None = None
+    session_pnl: float | None = None
+    operable_capital_usdt: float | None = None
+    capital_profile: str | None = None
+    trades_today: int = 0
+    win_rate: float | None = None
+    last_trade: str | None = None
+    cooldown: str | None = None
+    consecutive_losses: int = 0
+    signals: dict[str, str] = field(default_factory=dict)
+    decision_trace: dict[str, Any] = field(default_factory=dict)
+    decision_gating: dict[str, Any] = field(default_factory=dict)
+    decision_reason: str | None = None
+    autonomous_filters: dict[str, Any] = field(default_factory=dict)
+    autonomous_market_condition: str | None = None
+    api_latency_p95_ms: float | None = None
+    stale_market_data_ratio: float | None = None
+    exchange_reconnections: int = 0
+    circuit_breaker_trips: int = 0
+    database_status: str | None = None
+    exchange_status: str | None = None
+    exit_intelligence_score: float | None = None
+    exit_intelligence_reason: str | None = None
+    logs: list[dict[str, Any]] = field(default_factory=list)
+    unrealized_pnl: float | None = None
+    open_position_side: str | None = None
+    open_position_entry: float | None = None
+    open_position_qty: float | None = None
+    open_position_sl: float | None = None
+    open_position_tp: float | None = None
+    open_positions: list[dict[str, Any]] = field(default_factory=list)
+    llm_mode: str | None = None
+    llm_trade_confirmator: dict[str, Any] = field(default_factory=dict)
+    session_recommendation: str | None = None
+    auto_improve_win_rate: float | None = None
+    auto_improve_total_trades: int = 0
+    investment_mode: str | None = None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> "DashboardSnapshot":
+        return cls(
+            state=str(data.get("status", "INITIALIZING")),
+            pair=str(data.get("pair", "")),
+            timeframe=str(data.get("timeframe", "")),
+            price=_to_float(data.get("price")),
+            spread=_to_float(data.get("spread")),
+            bid=_to_float(data.get("bid")),
+            ask=_to_float(data.get("ask")),
+            trend=_to_text(data.get("trend")),
+            adx=_to_float(data.get("adx")),
+            rsi=_to_float(data.get("rsi")),
+            volatility_regime=_to_text(data.get("volatility_regime")),
+            order_flow=_to_text(data.get("order_flow")),
+            signal=_to_text(data.get("signal")),
+            confidence=_to_float(data.get("confidence")),
+            balance=_to_float(data.get("balance")),
+            equity=_to_float(data.get("equity")),
+            daily_pnl=_to_float(data.get("daily_pnl")),
+            session_pnl=_to_float(data.get("session_pnl")),
+            operable_capital_usdt=_to_float(data.get("operable_capital_usdt")),
+            capital_profile=_to_text(data.get("capital_profile")),
+            trades_today=int(data.get("trades_today", 0) or 0),
+            win_rate=_to_float(data.get("win_rate")),
+            last_trade=_to_text(data.get("last_trade")),
+            cooldown=_to_text(data.get("cooldown")),
+            consecutive_losses=int(data.get("consecutive_losses", 0) or 0),
+            signals=dict(data.get("signals", {}) or {}),
+            decision_trace=dict(data.get("decision_trace", {}) or {}),
+            decision_gating=dict(data.get("decision_gating", {}) or {}),
+            decision_reason=_to_text(data.get("decision_reason")),
+            autonomous_filters=dict(data.get("autonomous_filters", {}) or {}),
+            autonomous_market_condition=_to_text(data.get("autonomous_market_condition")),
+            api_latency_p95_ms=_to_float(data.get("api_latency_p95_ms")),
+            stale_market_data_ratio=_to_float(data.get("stale_market_data_ratio")),
+            exchange_reconnections=int(data.get("exchange_reconnections", 0) or 0),
+            circuit_breaker_trips=int(data.get("circuit_breaker_trips", 0) or 0),
+            database_status=_to_text(data.get("database_status")),
+            exchange_status=_to_text(data.get("exchange_status")),
+            exit_intelligence_score=_to_float(data.get("exit_intelligence_score")),
+            exit_intelligence_reason=_to_text(data.get("exit_intelligence_reason")),
+            logs=[dict(i) for i in (data.get("logs") or []) if isinstance(i, Mapping)],
+            unrealized_pnl=_to_float(data.get("unrealized_pnl")),
+            open_position_side=_to_text(data.get("open_position_side")),
+            open_position_entry=_to_float(data.get("open_position_entry")),
+            open_position_qty=_to_float(data.get("open_position_qty")),
+            open_position_sl=_to_float(data.get("open_position_sl")),
+            open_position_tp=_to_float(data.get("open_position_tp")),
+            open_positions=[dict(i) for i in (data.get("open_positions") or []) if isinstance(i, Mapping)],
+            llm_mode=_to_text(data.get("llm_mode")),
+            llm_trade_confirmator=dict(data.get("llm_trade_confirmator", {}) or {}),
+            session_recommendation=_to_text(data.get("session_recommendation")),
+            auto_improve_win_rate=_to_float(data.get("auto_improve_win_rate")),
+            auto_improve_total_trades=int(data.get("auto_improve_total_trades", 0) or 0),
+            investment_mode=_to_text(data.get("investment_mode")),
+        )
+
+
+class TerminalDashboard:
+    """
+    Rich TUI Dashboard — Full rebuild.
+    Adapts between wide (>= 110 cols) and compact mode.
+    """
+
+    def __init__(self) -> None:
+        self.console = Console()
+        self._width_cache: int = 0
+
+    def render(self, snapshot: DashboardSnapshot | Mapping[str, Any]) -> Any:
+        try:
+            snap = DashboardSnapshot.from_mapping(snapshot) if isinstance(snapshot, Mapping) else snapshot
+            width = self.console.size.width
+
+            # ── HEADER ──────────────────────────────────────────────
+            header_grid = Table.grid(expand=True)
+            header_grid.add_column(ratio=5)
+            header_grid.add_column(ratio=1, justify="right")
+            header_grid.add_row(
+                Text.assemble(
+                    ("◈ RECO TRADING ", "bold bright_cyan"),
+                    ("TUI", "bold blue"),
+                    ("  │  ", "dim"),
+                    (snap.pair or "—", "bold white"),
+                    ("  ", ""),
+                    (f"[{snap.timeframe or '—'}]", "dim cyan"),
+                ),
+                _status_badge(snap.state),
+            )
+            header_grid.add_row(
+                Text.assemble(
+                    _signal_badge(snap.signal),
+                    ("  conf:", "dim"),
+                    (f" {(snap.confidence or 0)*100:.1f}%", "bold yellow" if (snap.confidence or 0) < 0.5 else "bold green"),
+                    ("  │  market: ", "dim"),
+                    (snap.autonomous_market_condition or "—", "cyan"),
+                    ("  │  mode: ", "dim"),
+                    (snap.investment_mode or "—", "magenta"),
+                ),
+                Text(f"latency {_fmt(snap.api_latency_p95_ms, 1)}ms", style="dim"),
+            )
+
+            # ── MARKET PANEL ────────────────────────────────────────
+            market = Table.grid(expand=True, padding=(0, 1))
+            market.add_column(style="dim", min_width=14)
+            market.add_column(style="bold white")
+            market.add_row("Price", f"[bold bright_white]{_fmt(snap.price, 2)}[/]  USDT")
+            market.add_row("Bid / Ask", f"[green]{_fmt(snap.bid, 4)}[/] / [red]{_fmt(snap.ask, 4)}[/]")
+            market.add_row("Spread", f"[yellow]{_fmt(snap.spread, 6)}[/]")
+            market.add_row("ADX", _adx_styled(snap.adx))
+            market.add_row("RSI", _rsi_styled(snap.rsi))
+            market.add_row("Trend", _trend_badge(snap.trend))
+            market.add_row("Regime", _regime_badge(snap.volatility_regime))
+            market.add_row("Order Flow", _flow_badge(snap.order_flow))
+            market.add_row("Cooldown", Text(snap.cooldown or "READY", style="green" if (snap.cooldown or "READY") in ("READY", "ready") else "yellow"))
+
+            # ── SIGNALS PANEL ────────────────────────────────────────
+            sigs = snap.signals or {}
+            sig_grid = Table(box=MINIMAL_DOUBLE_HEAD, expand=True, show_header=True, padding=(0, 1))
+            sig_grid.add_column("Signal", style="dim", width=12)
+            sig_grid.add_column("5m", justify="center", width=8)
+            sig_grid.add_column("15m", justify="center", width=8)
+            for name, key in [("Trend","trend"),("Momentum","momentum"),("Volume","volume"),
+                               ("Volatility","volatility"),("Structure","structure"),("OrderFlow","order_flow")]:
+                val = sigs.get(key, "NEUTRAL")
+                sig_grid.add_row(name, _signal_cell(val), "—")
+
+            # Confidence bar
+            conf_pct = int((snap.confidence or 0) * 20)
+            conf_bar = "█" * conf_pct + "░" * (20 - conf_pct)
+            conf_color = "green" if (snap.confidence or 0) >= 0.65 else "yellow" if (snap.confidence or 0) >= 0.45 else "red"
+            conf_row = Text.assemble(("Conf: ", "dim"), (conf_bar, conf_color), (f" {(snap.confidence or 0)*100:.1f}%", f"bold {conf_color}"))
+
+            # ── PORTFOLIO PANEL ─────────────────────────────────────
+            portfolio = Table.grid(expand=True, padding=(0, 1))
+            portfolio.add_column(style="dim", min_width=18)
+            portfolio.add_column(style="bold white")
+            portfolio.add_row("Balance", f"[bold]{_fmt(snap.balance, 4)}[/] USDT")
+            portfolio.add_row("Equity", f"[bold]{_fmt(snap.equity, 4)}[/] USDT")
+            portfolio.add_row("Operable", f"[cyan]{_fmt(snap.operable_capital_usdt, 4)}[/] USDT")
+            pnl = snap.daily_pnl or snap.session_pnl or 0.0
+            portfolio.add_row("Session PnL", _styled_pnl(pnl))
+            portfolio.add_row("Unrealized", _styled_pnl(snap.unrealized_pnl))
+            portfolio.add_row("Win Rate", _fmt_pct(snap.win_rate))
+            portfolio.add_row("Trades Today", str(snap.trades_today))
+            portfolio.add_row("Consec. Losses", _losses_styled(snap.consecutive_losses))
+            portfolio.add_row("Capital Profile", Text(snap.capital_profile or "—", style="magenta"))
+            portfolio.add_row("Session Rec.", Text(snap.session_recommendation or "—",
+                style="green" if snap.session_recommendation == "TRADE" else "yellow" if snap.session_recommendation == "CAUTION" else "red"))
+
+            # ── OPEN POSITION ────────────────────────────────────────
+            pos_table = Table(box=ROUNDED, expand=True, padding=(0, 1))
+            pos_table.add_column("Side", justify="center", width=6)
+            pos_table.add_column("Qty", justify="right")
+            pos_table.add_column("Entry", justify="right")
+            pos_table.add_column("Mark", justify="right")
+            pos_table.add_column("PnL", justify="right")
+            pos_table.add_column("SL", justify="right")
+            pos_table.add_column("TP", justify="right")
+
+            positions = snap.open_positions or []
+            if not positions and snap.open_position_side:
+                positions = [{"side": snap.open_position_side, "quantity": snap.open_position_qty,
+                              "entry_price": snap.open_position_entry, "stop_loss": snap.open_position_sl,
+                              "take_profit": snap.open_position_tp, "unrealized_pnl": snap.unrealized_pnl}]
+            if positions:
+                for pos in positions[:3]:
+                    side = str(pos.get("side", "")).upper()
+                    side_style = "bold green" if side == "BUY" else "bold red"
+                    pos_table.add_row(
+                        Text(side, style=side_style),
+                        _fmt(pos.get("quantity"), 6),
+                        _fmt(pos.get("entry_price"), 4),
+                        _fmt(snap.price, 4),
+                        _styled_pnl(_to_float(pos.get("unrealized_pnl"))),
+                        Text(_fmt(pos.get("stop_loss"), 4), style="red"),
+                        Text(_fmt(pos.get("take_profit"), 4), style="green"),
+                    )
+            else:
+                pos_table.add_row(Text("—", style="dim"), "—", "—", "—", Text("No position", style="dim"), "—", "—")
+
+            # ── LLM GATE PANEL ───────────────────────────────────────
+            llm = snap.llm_trade_confirmator or {}
+            llm_mode = (snap.llm_mode or "base").upper()
+            llm_health = llm.get("local_endpoint_healthy")
+            health_icon = "🟢" if llm_health is True else "🔴" if llm_health is False else "⚪"
+            llm_table = Table.grid(expand=True, padding=(0, 1))
+            llm_table.add_column(style="dim", min_width=16)
+            llm_table.add_column(style="bold white")
+            llm_table.add_row("Mode", Text(llm_mode, style="bold magenta"))
+            llm_table.add_row("Ollama", Text(health_icon + (" Online" if llm_health else " Offline" if llm_health is False else " —")))
+            llm_table.add_row("Analyzed", str(llm.get("total_analyzed", 0)))
+            llm_table.add_row("Confirmed", Text(str(llm.get("confirmed", 0)), style="green"))
+            llm_table.add_row("Rejected", Text(str(llm.get("rejected", 0)), style="red"))
+            rate = llm.get("confirmation_rate", 0)
+            llm_table.add_row("Rate", Text(f"{_fmt_float(rate, 1)}%", style="cyan"))
+            llm_table.add_row("Avg Latency", f"{_fmt_float(llm.get('avg_analysis_time_ms', 0), 1)} ms")
+
+            # ── FILTER STATUS ─────────────────────────────────────────
+            af = snap.autonomous_filters
+            filter_table = Table.grid(expand=True, padding=(0, 1))
+            filter_table.add_column(style="dim", min_width=16)
+            filter_table.add_column(style="bold cyan")
+            if af:
+                filter_table.add_row("ADX ≥", _fmt_float(af.get("adx_threshold"), 1))
+                filter_table.add_row("RSI Buy ≥", _fmt_float(af.get("rsi_buy_threshold"), 1))
+                filter_table.add_row("RSI Sell ≤", _fmt_float(af.get("rsi_sell_threshold"), 1))
+                filter_table.add_row("Min Conf", f"{_fmt_float((af.get('min_confidence') or 0) * 100, 1)}%")
+                filter_table.add_row("Vol Buy ≥", _fmt_float(af.get("volume_buy_threshold"), 2))
+            else:
+                filter_table.add_row("Filters", "loading...")
+
+            # ── EVENT LOG ────────────────────────────────────────────
+            log_table = Table(box=None, expand=True, padding=(0, 0), show_header=False)
+            log_table.add_column("T", width=8, no_wrap=True, style="dim")
+            log_table.add_column("L", width=8, no_wrap=True)
+            log_table.add_column("Msg", overflow="fold")
+            for log in (snap.logs or [])[-10:]:
+                level = str(log.get("level", "INFO")).upper()
+                style = {"WARNING": "yellow", "ERROR": "bold red", "DEBUG": "dim"}.get(level, "white")
+                log_table.add_row(
+                    str(log.get("time", "--:--"))[:8],
+                    Text(level[:4], style=style),
+                    Text(str(log.get("message", ""))[:150], style=style if level in ("WARNING","ERROR") else "dim white"),
+                )
+
+            # ── SYSTEM STATUS BAR ─────────────────────────────────────
+            sys_status = Table.grid(expand=True)
+            sys_status.add_column(ratio=1)
+            sys_status.add_column(ratio=1)
+            sys_status.add_column(ratio=1)
+            sys_status.add_column(ratio=1)
+            exch_style = "green" if (snap.exchange_status or "").upper() in ("CONNECTED", "OK") else "red"
+            db_style = "green" if (snap.database_status or "").upper() in ("CONNECTED", "SQLITE_FALLBACK") else "red"
+            sys_status.add_row(
+                Text.assemble(("EX:", "dim"), (f" {snap.exchange_status or '—'}", exch_style)),
+                Text.assemble(("DB:", "dim"), (f" {snap.database_status or '—'}", db_style)),
+                Text.assemble(("CBT:", "dim"), (f" {snap.circuit_breaker_trips}", "yellow" if snap.circuit_breaker_trips > 0 else "green")),
+                Text.assemble(("RECONN:", "dim"), (f" {snap.exchange_reconnections}", "yellow" if snap.exchange_reconnections > 0 else "green")),
+            )
+
+            footer = Text.assemble(
+                ("◈ Reco Trading TUI  ", "dim"),
+                ("│  ", "dim"),
+                ("Ctrl+C", "bold white"),
+                (" to stop  ", "dim"),
+                ("│  ", "dim"),
+                ("Web: ", "dim"),
+                ("http://localhost:9000", "bright_cyan"),
+            )
+
+            # ── LAYOUT ASSEMBLY ───────────────────────────────────────
+            layout = Layout(name="root")
+
+            if width < 110:
+                # Compact / mobile SSH mode
+                layout.split_column(
+                    Layout(Panel(header_grid, border_style="bright_blue", padding=(0, 1)), size=4),
+                    Layout(name="body", ratio=1),
+                    Layout(Panel(sys_status, border_style="grey27", padding=(0, 1)), size=3),
+                    Layout(Panel(footer, border_style="grey27"), size=3),
+                )
+                layout["body"].split_column(
+                    Layout(Panel(Group(market), title="Market", border_style="cyan"), ratio=3),
+                    Layout(Panel(conf_row, border_style="blue"), size=3),
+                    Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=4),
+                    Layout(Panel(pos_table, title="Position", border_style="bright_cyan"), ratio=3),
+                    Layout(Panel(llm_table, title="LLM Gate", border_style="magenta"), ratio=3),
+                    Layout(Panel(log_table, title="Feed", border_style="white"), ratio=4),
+                )
+            else:
+                # Wide mode: 3-column layout
+                layout.split_column(
+                    Layout(Panel(header_grid, border_style="bright_blue", padding=(0, 1)), size=4),
+                    Layout(name="body", ratio=1),
+                    Layout(Panel(sys_status, border_style="grey27", padding=(0, 0)), size=3),
+                    Layout(Panel(Align.center(footer), border_style="grey27"), size=3),
+                )
+                layout["body"].split_row(
+                    Layout(name="left", ratio=3),
+                    Layout(name="center", ratio=4),
+                    Layout(name="right", ratio=3),
+                )
+                layout["body"]["left"].split_column(
+                    Layout(Panel(market, title="📈 Market", border_style="cyan"), ratio=5),
+                    Layout(Panel(sig_grid, title="📡 Signals", border_style="blue"), ratio=5),
+                )
+                layout["body"]["center"].split_column(
+                    Layout(Panel(Group(conf_row, portfolio), title="💼 Portfolio", border_style="green"), ratio=5),
+                    Layout(Panel(pos_table, title="🔵 Open Position", border_style="bright_cyan"), ratio=3),
+                    Layout(Panel(log_table, title="📄 Feed", border_style="white"), ratio=4),
+                )
+                layout["body"]["right"].split_column(
+                    Layout(Panel(llm_table, title="🤖 LLM Gate", border_style="magenta"), ratio=4),
+                    Layout(Panel(filter_table, title="🔧 Active Filters", border_style="yellow"), ratio=4),
+                    Layout(Panel(_build_decision_panel(snap), title="🔍 Decision", border_style="yellow"), ratio=4),
+                )
+
+            return Group(layout)
+
+        except Exception as exc:
+            return Panel(
+                Text.assemble(
+                    ("Dashboard render error:\n", "bold red"),
+                    (str(exc), "white"),
+                ),
+                title="Reco Trading TUI",
+                border_style="red",
+            )
+
+
+def _build_decision_panel(snap: DashboardSnapshot) -> Table:
+    t = Table.grid(expand=True, padding=(0, 1))
+    t.add_column(style="dim", min_width=14)
+    t.add_column(style="bold white")
+    dt = snap.decision_trace or {}
+    factors = dt.get("factor_scores") or {}
+    gating = snap.decision_gating or {}
+    for k, v in list(factors.items())[:5]:
+        vf = _to_float(v) or 0.0
+        style = "green" if vf > 0 else "red" if vf < 0 else "dim"
+        t.add_row(f"▸ {k}", Text(f"{vf:+.3f}", style=style))
+    for k, v in list(gating.items())[:3]:
+        t.add_row(f"• {k}", Text(str(v)[:20], style="cyan"))
+    t.add_row("reason", Text((snap.decision_reason or "—")[:40], style="white"))
+    return t
+
+
+# ── HELPER FORMATTERS ─────────────────────────────────────────────────────────
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+def _to_text(value: Any) -> str | None:
+    if value is None or (isinstance(value, float) and value != value):
+        return None
+    return str(value) if str(value).strip() else None
+
+def _fmt(value: Any, dec: int = 2) -> str:
+    f = _to_float(value)
+    return f"{f:.{dec}f}" if f is not None else "—"
+
+def _fmt_float(value: Any, dec: int = 2) -> str:
+    f = _to_float(value)
+    return f"{f:.{dec}f}" if f is not None else "—"
+
+def _fmt_pct(value: Any) -> str:
+    f = _to_float(value)
+    return f"{f*100:.1f}%" if f is not None else "—"
+
+def _styled_pnl(value: Any) -> Text:
+    f = _to_float(value)
+    if f is None:
+        return Text("—", style="dim")
+    sign = "+" if f > 0 else ""
+    style = "bold green" if f > 0 else "bold red" if f < 0 else "dim"
+    return Text(f"{sign}{f:.4f} USDT", style=style)
+
+def _losses_styled(n: int) -> Text:
+    if n == 0:
+        return Text("0", style="green")
+    if n <= 2:
+        return Text(str(n), style="yellow")
+    return Text(str(n), style="bold red")
+
+def _adx_styled(adx: float | None) -> Text:
+    f = _to_float(adx)
+    if f is None:
+        return Text("—", style="dim")
+    style = "bold green" if f >= 25 else "yellow" if f >= 15 else "red"
+    return Text(f"{f:.2f}", style=style)
+
+def _rsi_styled(rsi: float | None) -> Text:
+    f = _to_float(rsi)
+    if f is None:
+        return Text("—", style="dim")
+    style = "red" if f > 70 else "green" if f < 30 else "cyan" if f > 55 else "white"
+    return Text(f"{f:.1f}", style=style)
+
+def _status_badge(state: str) -> Text:
+    styles = {
+        "RUNNING": ("RUNNING", "bold green"),
+        "PAUSED": ("PAUSED", "bold yellow"),
+        "INITIALIZING": ("INIT", "bold blue"),
+        "WAITING_MARKET_DATA": ("WAITING", "blue"),
+        "CONNECTING_EXCHANGE": ("CONNECTING", "blue"),
+        "POSITION_OPEN": ("IN TRADE", "bold bright_green"),
+        "COOLDOWN": ("COOLDOWN", "yellow"),
+        "ERROR": ("ERROR", "bold red"),
+    }
+    label, style = styles.get(state.upper(), (state[:10], "white"))
+    return Text(f"[{label}]", style=style)
+
+def _signal_badge(signal: str | None) -> Text:
+    s = (signal or "HOLD").upper()
+    styles = {"BUY": "bold green", "SELL": "bold red", "HOLD": "dim", "NEUTRAL": "dim"}
+    return Text(s, style=styles.get(s, "white"))
+
+def _signal_cell(val: str) -> Text:
+    v = (val or "NEUTRAL").upper()
+    styles = {"BUY": "bold green", "SELL": "bold red", "NEUTRAL": "dim", "HOLD": "dim"}
+    return Text(v, style=styles.get(v, "white"))
+
+def _trend_badge(trend: str | None) -> Text:
+    t = (trend or "NEUTRAL").upper()
+    styles = {"BULLISH": "bold green", "BEARISH": "bold red", "BUY": "green", "SELL": "red", "NEUTRAL": "dim"}
+    return Text(t, style=styles.get(t, "white"))
+
+def _regime_badge(regime: str | None) -> Text:
+    r = (regime or "NORMAL").upper()
+    styles = {
+        "LOW_VOLATILITY": "dim cyan",
+        "NORMAL_VOLATILITY": "green",
+        "HIGH_VOLATILITY": "bold yellow",
+    }
+    return Text(r.replace("_", " "), style=styles.get(r, "white"))
+
+def _flow_badge(flow: str | None) -> Text:
+    f = (flow or "NEUTRAL").upper()
+    styles = {"BULLISH": "green", "BEARISH": "red", "NEUTRAL": "dim"}
+    return Text(f, style=styles.get(f, "white"))
+```
+
+---
+
+## INSTRUCCIONES FINALES PARA CODEX
+
+1. **Orden de ejecución obligatorio:** A → B → C → D. No saltear pasos.
+
+2. **En cada archivo modificado:** deja el archivo completo, no uses `# ... resto igual`. Si un archivo tiene partes que no se mencionan en este prompt, mantenlas intactas.
+
+3. **Para el archivo `index.html`:** reemplaza el contenido completo, no lo mezcles con el HTML anterior.
+
+4. **Crear el endpoint `/api/settings` en `dashboard_server.py`** si no existe, que acepte POST con JSON y llame a `_global_bot_instance._apply_runtime_settings(payload, persist=True)` de forma thread-safe.
+
+5. **Crear el endpoint `/api/snapshot`** que retorne `{"success": True, "data": get_bot_snapshot()}`.
+
+6. **No eliminar ningún endpoint existente.** Solo agregar o modificar.
+
+7. **Tests:** Después de aplicar todos los cambios, ejecuta `pytest tests/ -x -q` y corrige cualquier fallo que sea consecuencia directa de tus cambios.
+
+8. **Variables de entorno necesarias para el dashboard:**
+   - `DASHBOARD_AUTH_ENABLED=true`
+   - `DASHBOARD_USERNAME=admin`
+   - `DASHBOARD_PASSWORD=<tu_password>`
+   - `DASHBOARD_API_TOKEN=<tu_token>`
+   - `DASHBOARD_AUTH_MODE=hybrid`
+
+9. **Checklist de verificación antes de terminar:**
+   - [ ] `llm_mode="base"` ya no confirma todos los trades automáticamente
+   - [ ] `RegimeFilter.evaluate()` retorna `allow_trade=False` para LOW_VOLATILITY
+   - [ ] Import duplicado de `TradingModeManager` eliminado
+   - [ ] Warmup de Ollama corre en background thread
+   - [ ] `refresh_per_second` en `Live()` usa el setting configurado
+   - [ ] `screen=True` solo cuando `sys.stdout.isatty()`
+   - [ ] Dashboard web carga y muestra datos sin errores de consola
+   - [ ] Settings tab envía POST a `/api/settings` correctamente
+   - [ ] Multi-select de símbolos funciona
+   - [ ] Acordeones abren y cierran correctamente
+   - [ ] SSE funciona, fallback a polling si no
+   - [ ] TUI muestra ADX estilizado, RSI estilizado, posición y filtros activos
+   - [ ] `_avg_time_ms` se actualiza una sola vez por llamada
+
+---
+*Fin del prompt. Versión para Codex/GPT-4.1 — reco-trading Full Overhaul 2026*

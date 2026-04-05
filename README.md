@@ -1,133 +1,86 @@
-# Reco Trading Bot v4.0
+# Reco Trading
 
-Plataforma avanzada de trading algorítmico con ejecución multi-módulo, analítica en tiempo real, panel web protegido y dashboard de terminal tipo **TUI** profesional.
+Bot de trading algorítmico para cripto con arquitectura asíncrona, motor de riesgo, dashboard web en tiempo real (SSE) y dashboard terminal (Rich TUI).
 
----
-
-## Tabla de contenido
-
-1. [Resumen](#resumen)
-2. [Novedades recientes](#novedades-recientes)
-3. [Arquitectura](#arquitectura)
-4. [Instalación](#instalación)
-5. [Configuración `.env`](#configuración-env)
-6. [Dashboard web seguro (token/basic)](#dashboard-web-seguro-tokenbasic)
-7. [Acceso remoto desde celular u otro dispositivo](#acceso-remoto-desde-celular-u-otro-dispositivo)
-8. [Docker y hardening de puertos](#docker-y-hardening-de-puertos)
-9. [Dashboards disponibles](#dashboards-disponibles)
-10. [Troubleshooting](#troubleshooting)
-11. [Desarrollo y pruebas](#desarrollo-y-pruebas)
+## Contenido
+- [Características](#características)
+- [Arquitectura](#arquitectura)
+- [Requisitos](#requisitos)
+- [Instalación rápida](#instalación-rápida)
+- [Configuración `.env`](#configuración-env)
+- [Ejecución](#ejecución)
+- [Dashboard web (seguridad)](#dashboard-web-seguridad)
+- [Docker](#docker)
+- [Operación y tuning de filtros](#operación-y-tuning-de-filtros)
+- [Testing](#testing)
+- [Troubleshooting](#troubleshooting)
+- [Aviso importante](#aviso-importante)
 
 ---
 
-## Resumen
+## Características
 
-**Reco Trading Bot** integra:
-
-- Motor de trading con control de riesgo y módulos de inteligencia de mercado.
-- Integración LLM en 3 modos: `base`, `llm_local`, `llm_remote`.
-- Dashboard web (Flask) con fallback a DB cuando no hay bot en memoria.
-- API complementaria (FastAPI) para endpoints runtime.
-- Dashboard de terminal **TUI** en Rich para operación headless profesional.
-
----
-
-## Novedades recientes
-
-### 1) Modos LLM integrados
-- `base`: confirmación final por reglas.
-- `llm_local`: confirmación local con Ollama.
-- `llm_remote`: confirmación por proveedor remoto (API compatible OpenAI-style).
-
-### 2) Seguridad de dashboard web por `.env`
-- Autenticación configurable por variables de entorno:
-  - `DASHBOARD_AUTH_ENABLED`
-  - `DASHBOARD_AUTH_MODE` (`token`, `basic`, `hybrid`)
-  - `DASHBOARD_API_TOKEN`
-  - `DASHBOARD_USERNAME`
-  - `DASHBOARD_PASSWORD`
-
-### 3) Instaladores autónomos (Linux / Windows)
-- Los instaladores ahora agregan y actualizan automáticamente variables de dashboard y LLM en `.env`.
-- Generación automática de token de dashboard.
-
-### 4) Docker endurecido
-- Puertos ligados a `127.0.0.1` para reducir superficie de exposición.
-- Flujo listo para túnel Cloudflared sobre dashboard web.
-
-### 5) Optimización de latencia y datos en tiempo real
-- Integración de caché de ticker en tiempo real vía WebSocket de Binance (`bookTicker`) con fallback REST automático.
-- Menor overhead HTTP para precio bid/ask y mejor respuesta de dashboard.
-
-### 6) Control operativo unificado `Stop Trade`
-- Botón **Stop Trade** visible cuando existe una posición abierta en App y Web dashboard.
-- Endpoint web `/api/control/stop_trade` conectado a cierre forzado de posición.
-
-### 7) Perfil automático para `llm_local` (Ollama)
-- Ajuste automático de perfil de baja RAM y filtros mínimos al detectar `LLM_MODE=llm_local`.
-- Confirmación LLM local optimizada para respuestas más rápidas con timeouts y opciones de inferencia compacta.
-
-### 8) Auto Stop profesional (Break-even + Trailing + Time Stop)
-- Break-even automático configurable por porcentaje de beneficio.
-- Trailing Stop adaptativo por régimen de volatilidad (delta distinto en baja/alta volatilidad).
-- Cierre automático por tiempo máximo de operación para evitar exposición extendida.
+- **Motor de trading asíncrono** con control de riesgo, sizing adaptativo y filtros por régimen.
+- **Validación de señales multi-factor** (tendencia, momentum, volumen, estructura, volatilidad).
+- **Adaptación automática de filtros** según actividad, calidad de señal y estado de sesión.
+- **Soporte micro-balance** para cuentas pequeñas con ajuste dinámico de umbrales.
+- **Dashboard web Flask** con endpoint SSE (`/api/stream`) y controles operativos.
+- **Dashboard terminal Rich (TUI)** para operación headless en VPS/servidor.
+- **Persistencia** SQLite/PostgreSQL/MySQL vía SQLAlchemy async.
+- **Modo de decisión LLM configurable**: `base` o `llm_remote`.
 
 ---
 
 ## Arquitectura
 
 ```text
-Reco Trading
-├── Motor principal (state machine + loop manager + risk)
-├── Capa AI/LLM
-│   ├── Confirmador de trade LLM
-│   └── Análisis y auto-fix
-├── Persistencia
-│   ├── SQLite / PostgreSQL / MySQL
-│   └── Repository asíncrono
-├── Dashboards
-│   ├── Desktop App (PySide6)
-│   ├── Web Dashboard (Flask)
-│   └── Terminal TUI (Rich)
-└── API runtime (FastAPI)
+reco_trading/
+├── core/               # Motor principal, estado, runtime settings, ejecución
+├── strategy/           # Señales, filtros de régimen, confluencia
+├── risk/               # Perfiles de capital, optimizer de inversión, sizing
+├── database/           # Repository async y modelos
+├── ui/                 # Dashboard terminal (Rich) + UI state
+├── web_site/           # Dashboard web Flask + template SSE
+└── api/                # API complementaria
 ```
 
 ---
 
-## Instalación
+## Requisitos
 
-## Linux
+- Python **3.11+**
+- Linux / Windows
+- API Key y Secret de Binance (testnet recomendado para primeras pruebas)
+
+Opcional:
+- PostgreSQL/MySQL para persistencia avanzada
+- Docker + Docker Compose
+
+---
+
+## Instalación rápida
+
+### Linux
 
 ```bash
 chmod +x install-linux.sh
 ./install-linux.sh
 ```
 
-## Windows CMD
-
-```bat
-install-windows.bat
-```
-
-## Windows PowerShell
+### Windows (PowerShell)
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass
 .\install-windows-powershell.ps1
 ```
 
-## Docker (builder integral)
-
-```bash
-chmod +x docker-build.sh
-./docker-build.sh
-```
+> Los instaladores generan/actualizan `.env` y dejan el proyecto listo para ejecutar.
 
 ---
 
 ## Configuración `.env`
 
-Ejemplo mínimo recomendado:
+Ejemplo base recomendado:
 
 ```env
 # Exchange
@@ -135,156 +88,135 @@ BINANCE_API_KEY=TU_API_KEY
 BINANCE_API_SECRET=TU_API_SECRET
 BINANCE_TESTNET=true
 CONFIRM_MAINNET=false
-ENVIRONMENT=testnet
-RUNTIME_PROFILE=paper
+
+# Runtime
+TRADING_SYMBOL=BTC/USDT
+PRIMARY_TIMEFRAME=5m
+CONFIRMATION_TIMEFRAME=15m
 
 # Database (elige una)
 DATABASE_URL=sqlite+aiosqlite:///./data/reco_trading.db
-# POSTGRES_DSN=postgresql+asyncpg://user:pass@localhost:5432/reco_trading_prod
-# MYSQL_DSN=mysql+aiomysql://user:pass@localhost:3306/reco_trading_prod
+# POSTGRES_DSN=postgresql+asyncpg://user:pass@localhost:5432/reco_trading
+# MYSQL_DSN=mysql+aiomysql://user:pass@localhost:3306/reco_trading
 
-# LLM
+# LLM decision mode
 LLM_MODE=base
-LLM_LOCAL_MODEL=qwen2.5:0.5b
-OLLAMA_BASE_URL=http://localhost:11434
 LLM_REMOTE_ENDPOINT=https://api.openai.com/v1/chat/completions
 LLM_REMOTE_MODEL=gpt-4o-mini
 LLM_REMOTE_API_KEY=
 
-# Dashboard Security
+# Dashboard security
 DASHBOARD_AUTH_ENABLED=true
 DASHBOARD_AUTH_MODE=token
 DASHBOARD_USERNAME=admin
 DASHBOARD_PASSWORD=admin
-DASHBOARD_API_TOKEN=TU_TOKEN_GENERADO
+DASHBOARD_API_TOKEN=CAMBIA_ESTE_TOKEN
 ```
 
-> Los instaladores generan/agregan automáticamente estas claves para reducir configuración manual.
-
 ---
 
-## Dashboard web seguro (token/basic)
+## Ejecución
 
-Con `DASHBOARD_AUTH_ENABLED=true`:
-
-- `DASHBOARD_AUTH_MODE=token` → usa token.
-- `DASHBOARD_AUTH_MODE=basic` → usuario/clave.
-- `DASHBOARD_AUTH_MODE=hybrid` → acepta ambos.
-
-El frontend web usa `authFetch` y envía el token en `X-Dashboard-Token` cuando está disponible.
-
----
-
-## Acceso remoto desde celular u otro dispositivo
-
-### Opción recomendada: Cloudflared Tunnel
-
-El script `docker-build.sh` puede levantar túnel hacia:
+### Entorno local
 
 ```bash
-cloudflared tunnel --url http://localhost:9000
+source .venv/bin/activate
+python -m reco_trading.main
 ```
 
-### Cómo entrar desde otro dispositivo
+### Script helper
 
-1. Abre la URL pública del túnel.
-2. Agrega el token en la URL la primera vez:
-   - `https://tu-url.trycloudflare.com/?token=TU_TOKEN`
-3. El frontend guarda el token localmente para próximas peticiones.
-
-> También puedes usar `Authorization: Bearer <token>` o `X-Dashboard-Token` en clientes personalizados.
+```bash
+./run.sh
+```
 
 ---
 
-## Docker y hardening de puertos
+## Dashboard web (seguridad)
 
-- Dashboard web ligado a loopback (`127.0.0.1:9000`).
-- API auxiliar, DB, Redis y Ollama también en loopback cuando aplica.
-- Menor exposición de red por defecto.
+- URL local por defecto: `http://127.0.0.1:9000`
+- Endpoints principales:
+  - `/api/health`
+  - `/api/snapshot`
+  - `/api/stream` (SSE tiempo real)
+  - `/api/settings` (runtime settings)
+  - `/api/control/<action>`
 
-Si necesitas exposición controlada, usa reverse proxy/TLS o túnel autenticado.
+Autenticación:
+- `DASHBOARD_AUTH_MODE=token` (recomendado)
+- `DASHBOARD_AUTH_MODE=basic`
+- `DASHBOARD_AUTH_MODE=hybrid`
 
 ---
 
-## Dashboards disponibles
+## Docker
 
-## 1) Web Dashboard
-- Control operativo (`pause`, `resume`, `emergency`).
-- Trades, analytics, risk y estado de módulos.
-- Fallback a DB si el bot no está en memoria.
+Levantar stack:
 
-## 2) Desktop Dashboard (PySide6)
-- UI gráfica local con tabs especializadas.
+```bash
+docker compose up -d --build
+```
 
-## 3) Terminal TUI (Rich) — **mejorado**
-- Layout multi-panel profesional.
-- Badges visuales de estado/señal.
-- Barras de confianza y visuales de salud del sistema.
-- Diseñado para operación headless en VPS/servidor.
+Servicios incluidos:
+- `app` (bot + dashboard web)
+- `api` (API complementaria)
+- `postgres`
+- `redis`
 
-### No conecta Ollama en modo local
-- Revisa `OLLAMA_BASE_URL`.
-- Verifica que el modelo exista (`ollama list`).
+Puertos expuestos en loopback (`127.0.0.1`) para reducir superficie de ataque.
+
+---
+
+## Operación y tuning de filtros
+
+El bot usa configuración base por símbolo y ajuste adaptativo en runtime:
+
+- Recalibración de filtros por datos recientes de mercado.
+- Relax/tighten por actividad (`trades_today`), calidad (`signal_quality_score`) y riesgo.
+- Refuerzo anti-falsas señales con controles sobre ADX/confianza/volumen.
+- Modo micro-balance para mantener operatividad en cuentas pequeñas.
+
+Recomendación operativa:
+1. Empezar en **testnet**.
+2. Observar 24–72h de telemetría (`autonomous_filters`, `autonomous_filter_reason`, `micro_balance_mode`).
+3. Ajustar umbrales gradualmente (no cambios agresivos de una sola vez).
+
+---
+
+## Testing
+
+Ejecutar suite principal:
+
+```bash
+pytest tests/ -x -q
+```
+
+Chequeos de sintaxis útiles:
+
+```bash
+python -m py_compile reco_trading/main.py web_site/dashboard_server.py reco_trading/core/bot_engine.py
+bash -n run.sh install-linux.sh
+```
+
+---
 
 ## Troubleshooting
 
-### El dashboard devuelve `Unauthorized`
-- Verifica:
-  - `DASHBOARD_AUTH_ENABLED=true`
-  - modo correcto en `DASHBOARD_AUTH_MODE`
-  - **si usas `token`**: define `DASHBOARD_API_TOKEN` y entra con Token.
-  - **si usas `basic`**: define `DASHBOARD_USERNAME` y `DASHBOARD_PASSWORD`.
-  - **si usas `hybrid`**: si defines token y usuario/clave, el login exigirá ambos factores.
+### 1) `Unauthorized` en web dashboard
+- Verifica `DASHBOARD_AUTH_ENABLED`, `DASHBOARD_AUTH_MODE`, token/credenciales.
 
-### El dashboard inicia pero no llegan precio/balance/equity
-- Verifica exchange + entorno:
-  - `BINANCE_TESTNET=true` para Spot Testnet.
-  - `ENVIRONMENT=testnet` y `RUNTIME_PROFILE=paper` durante pruebas.
-  - API keys vigentes de Testnet (las llaves de testnet pueden expirar por inactividad).
-- Endpoint WS Spot usado por el bot:
-  - testnet: `wss://stream.testnet.binance.vision/ws/<symbol>@bookTicker`
-  - mainnet: `wss://stream.binance.com:9443/ws/<symbol>@bookTicker`
-- Si no hay datos en websocket, el bot hace fallback REST para ticker; revisa conectividad de red y reloj del sistema.
+### 2) Pocos trades
+- Revisa `min_confidence`, `adx_threshold`, `volume_buy_threshold`.
+- Verifica `autonomous_filter_reason` y `micro_balance_mode` en snapshot.
 
-### No conecta Ollama en modo local
-- Revisa `OLLAMA_BASE_URL`.
-- Verifica que el modelo exista (`ollama list`).
+### 3) Sin datos de mercado / señales neutras constantes
+- Revisa conectividad con exchange y frescura de datos (`stale_market_data_ratio`).
 
-### El bot no inicia en Docker
-- Revisa logs:
+### 4) Error DB
+- Confirma DSN y disponibilidad del motor (SQLite/Postgres/MySQL).
 
-```bash
-docker logs reco-trading --tail 200
-```
+---
 
-```bash
-pytest -q tests/test_web_dashboard_connection_and_layout.py tests/test_web_dashboard_db_and_balance.py
-```
+## Aviso importante
 
-## Desarrollo y pruebas
-
-### Pruebas recomendadas
-
-```bash
-pytest -q tests/test_web_dashboard_connection_and_layout.py tests/test_web_dashboard_db_and_balance.py
-```
-
-### Validaciones de sintaxis útiles
-
-```bash
-python -m py_compile web_site/dashboard_server.py
-bash -n install-linux.sh
-bash -n docker-build.sh
-```
-
-- credenciales reales fuera de repositorio,
-- revisión de riesgos antes de habilitar mainnet,
-- y validación en testnet previo a producción.
-
-## Nota final
-
-Este proyecto está orientado a operación profesional y evolución continua. Mantén siempre:
-
-- credenciales reales fuera de repositorio,
-- revisión de riesgos antes de habilitar mainnet,
-- y validación en testnet previo a producción.
+Este software es educativo/técnico y **no constituye asesoramiento financiero**. Operar cripto implica alto riesgo. Usa testnet y gestión de riesgo estricta antes de operar en real.

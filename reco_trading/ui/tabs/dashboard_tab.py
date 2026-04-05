@@ -31,11 +31,11 @@ class AnimatedButton(QPushButton):
         self._hover_anim.setDuration(140)
         self._hover_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-    def enterEvent(self, event) -> None:
+    def enterEvent(self, event) -> None:  # type: ignore[override]
         self._animate_width(self._base_min_width + 10)
         super().enterEvent(event)
 
-    def leaveEvent(self, event) -> None:
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
         self._animate_width(self._base_min_width)
         super().leaveEvent(event)
 
@@ -69,19 +69,11 @@ class DashboardTab(QWidget):
 
         self.top_bar = QLabel("BTC/USDT | - | NEUTRAL | INITIALIZING")
         self.top_bar.setObjectName("statusRibbon")
-        self.top_bar.setStyleSheet(
-            "padding:8px 12px; border-radius:12px; "
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1f2a44, stop:1 #111827);"
-            "color:#d9e6ff; border:1px solid #2f3b59;"
-        )
         root.addWidget(self.top_bar)
 
         self.capital_banner = QLabel("Profile UNKNOWN • Operable capital -- • Reserve --")
         self.capital_banner.setObjectName("smallMetricValue")
         self.capital_banner.setWordWrap(True)
-        self.capital_banner.setStyleSheet(
-            "padding:6px 10px; border-radius:10px; background:#111827; border:1px solid #243049; color:#b8c7e3;"
-        )
         root.addWidget(self.capital_banner)
 
         self.hero_panel = self._panel()
@@ -91,7 +83,7 @@ class DashboardTab(QWidget):
         self.hero_cards = {
             "price": StatCard("Market Price"),
             "signal": StatCard("Signal Quality"),
-            "daily_pnl": StatCard("Daily PnL"),
+            "daily_pnl": StatCard("Session PnL"),
             "exposure": StatCard("Current Exposure"),
             "capital": StatCard("Capital Profile"),
             "operable": StatCard("Operable Capital"),
@@ -99,45 +91,6 @@ class DashboardTab(QWidget):
         for i, card in enumerate(self.hero_cards.values()):
             hero_layout.addWidget(card, i // 3, i % 3)
         root.addWidget(self.hero_panel)
-
-        self.live_trade_panel = self._panel()
-        lt_layout = QGridLayout(self.live_trade_panel)
-        lt_layout.setContentsMargins(10, 10, 10, 10)
-        lt_layout.setSpacing(8)
-        lt_layout.addWidget(self._title("Live Trade"), 0, 0, 1, 6)
-
-        self.lt_current_price = self._lt_stat("Current Price", "-")
-        lt_layout.addWidget(self.lt_current_price, 1, 0)
-
-        self.lt_pnl = self._lt_stat("Real-Time PnL", "0.0000 USDT")
-        lt_layout.addWidget(self.lt_pnl, 1, 1)
-
-        self.lt_pnl_pct = self._lt_stat("PnL %", "0.00%")
-        lt_layout.addWidget(self.lt_pnl_pct, 1, 2)
-
-        self.lt_sl = self._lt_stat("Stop Loss", "-")
-        lt_layout.addWidget(self.lt_sl, 1, 3)
-
-        self.lt_tp = self._lt_stat("Take Profit", "-")
-        lt_layout.addWidget(self.lt_tp, 1, 4)
-
-        self.lt_side_entry = self._lt_stat("Side / Entry", "-")
-        lt_layout.addWidget(self.lt_side_entry, 1, 5)
-
-        self.lt_market_price = self._lt_stat("Market Price", "-")
-        lt_layout.addWidget(self.lt_market_price, 2, 0)
-
-        self.lt_distance_sl = self._lt_stat("Distance to SL", "-")
-        lt_layout.addWidget(self.lt_distance_sl, 2, 1)
-
-        self.lt_distance_tp = self._lt_stat("Distance to TP", "-")
-        lt_layout.addWidget(self.lt_distance_tp, 2, 2)
-
-        self.lt_auto_stop = self._lt_stat("Auto-Stop Limits", "SL: - | TP: -")
-        lt_layout.addWidget(self.lt_auto_stop, 2, 3, 1, 3)
-
-        root.addWidget(self.live_trade_panel)
-        self.live_trade_panel.setVisible(False)
 
         self.position_panel = self._panel()
         position_layout = QGridLayout(self.position_panel)
@@ -226,14 +179,6 @@ class DashboardTab(QWidget):
         self.execution_insight.setWordWrap(True)
         self.execution_insight.setObjectName("metricLabel")
         activity_layout.addWidget(self.execution_insight)
-        self.health_label = QLabel("Health: waiting metrics")
-        self.health_label.setWordWrap(True)
-        self.health_label.setObjectName("metricLabel")
-        activity_layout.addWidget(self.health_label)
-        self.decision_trace_label = QLabel("Decision trace unavailable")
-        self.decision_trace_label.setWordWrap(True)
-        self.decision_trace_label.setObjectName("metricLabel")
-        activity_layout.addWidget(self.decision_trace_label)
 
         self.chart_panel = self._panel()
         self.chart_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -247,18 +192,6 @@ class DashboardTab(QWidget):
         body.addWidget(self.account_panel, 0, 1)
         body.addWidget(self.activity_panel, 1, 0)
         body.addWidget(self.chart_panel, 1, 1)
-
-    def _lt_stat(self, label: str, value: str) -> QLabel:
-        w = QLabel()
-        w.setWordWrap(True)
-        w.setStyleSheet(
-            "QLabel {"
-            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #131c2e, stop:1 #0f172a);"
-            "border:1px solid #243049; border-radius:10px; padding:8px;"
-            "}"
-        )
-        w.setText(f"<b style='color:#64748b;'>{label}:</b> <span style='color:#e2e8f0;'>{value}</span>")
-        return w
 
     def _build_controls(self) -> QFrame:
         panel = self._panel()
@@ -275,8 +208,8 @@ class DashboardTab(QWidget):
         self.resume_btn = AnimatedButton("Resume Bot")
         self.emergency_btn = AnimatedButton("Emergency Stop")
         self.emergency_btn.setStyleSheet("QPushButton { background:#ea3943; color:#e6e8ee; }")
-        self.close_active_trade_btn = AnimatedButton("STOP TRADE")
-        self.close_active_trade_btn.setStyleSheet("QPushButton { background:#ef4444; color:#ffffff; font-weight:700; }")
+        self.close_active_trade_btn = AnimatedButton("CLOSE ACTIVE TRADE")
+        self.close_active_trade_btn.setStyleSheet("QPushButton { background:#f0b90b; color:#111827; font-weight:700; }")
         self.close_active_trade_btn.setVisible(False)
 
         layout.addWidget(self.start_btn)
@@ -320,12 +253,6 @@ class DashboardTab(QWidget):
     def _panel(self) -> QFrame:
         panel = QFrame()
         panel.setObjectName("panelCard")
-        panel.setStyleSheet(
-            "QFrame#panelCard {"
-            "background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #131c2e, stop:1 #0f172a);"
-            "border:1px solid #243049; border-radius:14px;"
-            "}"
-        )
         return panel
 
     def _title(self, title: str) -> QLabel:
@@ -343,11 +270,8 @@ class DashboardTab(QWidget):
         self.close_active_trade_btn.setVisible(bool(state.get("has_open_position", False)))
         has_position = bool(state.get("has_open_position", False))
         self.position_panel.setVisible(has_position)
-        self.live_trade_panel.setVisible(has_position)
-
-        price_value = float(state.get("current_price", state.get("price", 0)) or 0)
-
         if has_position:
+            price_value = float(state.get("current_price", state.get("price", 0)) or 0)
             entry = float(state.get("open_position_entry") or 0)
             qty = float(state.get("open_position_qty") or 0)
             sl = float(state.get("open_position_sl") or 0)
@@ -363,68 +287,12 @@ class DashboardTab(QWidget):
             self.pos_cards["tp"].set_value(_fmt_num(tp, 2), tone="positive")
             self.pos_cards["size"].set_value(_fmt_num(qty, 6))
 
-            notional = float(state.get("open_position_notional_usdt") or (entry * qty) or 0.0)
-            pnl_pct = float(state.get("open_position_pnl_pct") or ((upnl / notional) * 100 if notional > 0 else 0.0))
-            duration_min = float(state.get("open_position_duration_min") or 0.0)
-            trade_id = state.get("open_position_trade_id")
-            dist_sl = abs(price_value - sl) if sl > 0 else 0
-            dist_tp = abs(tp - price_value) if tp > 0 else 0
-            dist_sl_pct = (dist_sl / price_value * 100) if price_value > 0 else 0
-            dist_tp_pct = (dist_tp / price_value * 100) if price_value > 0 else 0
-
-            self.lt_current_price.setText(
-                f"<b style='color:#64748b;'>Current Price:</b> <span style='color:#e2e8f0; font-size:15px;'>{price_value:.2f}</span>"
-            )
-            pnl_color = "#16c784" if upnl >= 0 else "#ea3943"
-            self.lt_pnl.setText(
-                f"<b style='color:#64748b;'>Real-Time PnL:</b> <span style='color:{pnl_color}; font-size:15px; font-weight:700;'>{upnl:+.4f} USDT</span>"
-            )
-            self.lt_pnl_pct.setText(
-                f"<b style='color:#64748b;'>PnL %:</b> <span style='color:{pnl_color}; font-size:15px;'>{pnl_pct:.2f}%</span>"
-            )
-            self.lt_sl.setText(
-                f"<b style='color:#ea3943;'>Stop Loss:</b> <span style='color:#ea3943; font-size:14px;'>{sl:.2f}</span>"
-            )
-            self.lt_tp.setText(
-                f"<b style='color:#16c784;'>Take Profit:</b> <span style='color:#16c784; font-size:14px;'>{tp:.2f}</span>"
-            )
-            self.lt_side_entry.setText(
-                f"<b style='color:#64748b;'>Side / Entry:</b> "
-                f"<span style='color:#e2e8f0; font-size:14px;'>{side_value} @ {entry:.2f}</span><br>"
-                f"<span style='color:#9fb2d9;'>Trade #{trade_id if trade_id is not None else '-'} • {duration_min:.1f}m • Notional {notional:.2f} USDT</span>"
-            )
-            self.lt_market_price.setText(
-                f"<b style='color:#64748b;'>Market Price:</b> <span style='color:#22d3ee; font-size:14px;'>{price_value:.2f}</span>"
-            )
-            self.lt_distance_sl.setText(
-                f"<b style='color:#ea3943;'>Distance to SL:</b> <span style='color:#ea3943;'>{dist_sl:.2f} ({dist_sl_pct:.2f}%)</span>"
-            )
-            self.lt_distance_tp.setText(
-                f"<b style='color:#16c784;'>Distance to TP:</b> <span style='color:#16c784;'>{dist_tp:.2f} ({dist_tp_pct:.2f}%)</span>"
-            )
-            sl_color = "#ea3943"
-            tp_color = "#16c784"
-            self.lt_auto_stop.setText(
-                f"<b style='color:#64748b;'>Auto-Stop Limits:</b><br>"
-                f"  <span style='color:{sl_color};'>SL: {sl:.2f}</span>  |  "
-                f"<span style='color:{tp_color};'>TP: {tp:.2f}</span>"
-            )
-        else:
-            for lbl in [self.lt_current_price, self.lt_pnl, self.lt_pnl_pct, self.lt_sl, self.lt_tp,
-                        self.lt_side_entry, self.lt_market_price, self.lt_distance_sl, self.lt_distance_tp,
-                        self.lt_auto_stop]:
-                lbl.setText(lbl.text().split(":</b>")[0] + ":</b> <span style='color:#64748b;'>-</span>")
-
         signal = str(state.get("signal", "NEUTRAL")).upper()
         confidence = max(0, min(100, int(float(state.get("confidence", 0)) * 100)))
         self.top_bar.setText(
             f"{pair}  •  Price {price}  •  {signal} {confidence}%  •  {status.replace('_', ' ').title()}"
         )
-        self.top_bar.setStyleSheet(
-            "padding:8px 12px; border-radius:12px; "
-            "background:qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #1f2a44, stop:1 #111827); "
-            f"color: {status_color(status)}; border:1px solid #2f3b59;"
-        )
+        self.top_bar.setStyleSheet(f"color: {status_color(status)};")
         capital_profile = str(state.get("capital_profile") or risk_metrics.get("capital_profile") or "UNKNOWN")
         operable_capital = _as_float(state.get("operable_capital_usdt", risk_metrics.get("operable_capital_usdt")), 0.0)
         reserve_ratio = _as_float(state.get("capital_reserve_ratio", risk_metrics.get("capital_reserve_ratio")), 0.0)
@@ -432,10 +300,6 @@ class DashboardTab(QWidget):
         self.capital_banner.setText(
             f"Profile {capital_profile} • Operable capital {_fmt_num(operable_capital, 2)} USDT • "
             f"Reserve {reserve_ratio * 100:.1f}% • Buffer {_fmt_num(cash_buffer, 2)} USDT"
-        )
-        banner_tint = "#16324f" if operable_capital > 0 else "#4a2c2c"
-        self.capital_banner.setStyleSheet(
-            f"padding:6px 10px; border-radius:10px; background:{banner_tint}; border:1px solid #2f3b59; color:#d6e4ff;"
         )
 
         exposure = _as_float(risk_metrics.get("current_exposure"), 0.0)
@@ -533,20 +397,6 @@ class DashboardTab(QWidget):
                 ]
             )
         )
-        latency_p95 = _as_float(state.get("api_latency_p95_ms"), 0.0)
-        stale_ratio = _as_float(state.get("stale_market_data_ratio"), 0.0)
-        reconnects = int(state.get("exchange_reconnections", 0) or 0)
-        breaker = int(state.get("circuit_breaker_trips", 0) or 0)
-        db_status = str(state.get("database_status", "UNKNOWN"))
-        ex_status = str(state.get("exchange_status", "UNKNOWN"))
-        self.health_label.setText(
-            f"Health p95={latency_p95:.1f}ms • stale={stale_ratio:.1%} • reconnect={reconnects} • CB={breaker} • DB={db_status} • EX={ex_status}"
-        )
-        trace = state.get("decision_trace", {}) or {}
-        factor_scores = trace.get("factor_scores", {}) if isinstance(trace, dict) else {}
-        compact_scores = ", ".join(f"{k}:{float(v):+.2f}" for k, v in list(factor_scores.items())[:4]) or "n/a"
-        decision_reason = str(state.get("decision_reason", "-"))
-        self.decision_trace_label.setText(f"Decision trace: {compact_scores} • reason={decision_reason}")
         self.chart.update_from_snapshot(state)
 
 

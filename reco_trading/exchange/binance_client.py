@@ -368,15 +368,8 @@ class BinanceClient:
         task = asyncio.create_task(self._run_ticker_stream(normalized_symbol))
         self._ticker_stream_tasks[normalized_symbol] = task
 
-    def _book_ticker_stream_url(self, normalized_symbol: str) -> str:
-        if self.testnet and str(self.trading_mode).lower() == "spot":
-            base = "wss://stream.testnet.binance.vision/ws"
-        else:
-            base = "wss://stream.binance.com:9443/ws"
-        return f"{base}/{normalized_symbol}@bookTicker"
-
     async def _run_ticker_stream(self, normalized_symbol: str) -> None:
-        stream_url = self._book_ticker_stream_url(normalized_symbol)
+        stream_url = f"wss://stream.binance.com:9443/ws/{normalized_symbol}@bookTicker"
         reconnect_delay = 1.0
         while True:
             try:

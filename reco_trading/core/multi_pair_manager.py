@@ -125,21 +125,18 @@ class MultiPairManager:
         self._circuit_breaker_until: datetime | None = None
         self._consecutive_scan_errors = 0
 
-    async def start(self, *, auto_scan: bool = False) -> None:
+    async def start(self) -> None:
         self._is_running = True
         await self._initialize_pairs()
-
+        
         self.logger.info(f"Multi-pair manager initialized with {len(self.default_pairs)} pairs")
-        if not auto_scan:
-            self.logger.info("Multi-pair auto-scan is disabled; waiting for explicit user request")
-            return
-
+        
         await self._scan_all_pairs()
         await self._select_best_pair()
-
+        
         best = self.pairs_metrics.get(self.active_pair)
         self.logger.info(f"Initial best pair: {self.active_pair} (opportunity: {best.opportunity_score if best else 0:.3f})")
-
+        
         self._scan_task = asyncio.create_task(self._scan_loop())
         self.logger.info(f"Multi-pair manager started with {len(self.default_pairs)} pairs")
 

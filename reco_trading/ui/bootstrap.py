@@ -37,22 +37,7 @@ def _format_log(log: object) -> dict:
 
 
 async def hydrate_state_from_database(settings: Any, state_manager: object) -> None:
-    # Use database fallback: PostgreSQL -> MySQL -> SQLite
-    dsn = None
-    if settings.postgres_dsn:
-        dsn = settings.postgres_dsn
-    elif settings.mysql_dsn:
-        dsn = settings.mysql_dsn
-    elif settings.database_url:
-        dsn = settings.database_url
-    else:
-        import os
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        os.makedirs(os.path.join(project_root, "data"), exist_ok=True)
-        db_path = os.path.join(project_root, "data", "reco_trading.db")
-        dsn = f"sqlite:///{db_path}"
-    
-    repository = Repository(dsn)
+    repository = Repository(settings.postgres_dsn)
     try:
         await repository.setup()
         trades = await repository.get_recent_trades(limit=200)
