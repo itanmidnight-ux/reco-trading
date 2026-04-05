@@ -73,7 +73,10 @@ async def _verify_database_connection(settings: Settings) -> str:
         dsn = f"sqlite+aiosqlite:///{db_path}"
     repository = Repository(dsn)
     try:
-        await repository.setup()
+        if hasattr(repository, "verify_connectivity"):
+            await repository.verify_connectivity()
+        else:
+            await repository.setup()
         return dsn
     finally:
         await repository.close()
@@ -124,9 +127,8 @@ def run() -> None:
         asyncio.run(_verify_database_connection(settings))
         logger.info("Database connection verified successfully")
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Database unavailable at startup (bot usará fallback SQLite automático): %s", exc
-        )
+        logger.error("Database unavailable at startup: %s", exc)
+        sys.exit(1)
 
     # FIX A2: Bot thread arranca ANTES que Flask para que tenga tiempo de inicializarse
     bot_thread = threading.Thread(

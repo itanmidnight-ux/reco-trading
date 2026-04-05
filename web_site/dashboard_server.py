@@ -9,10 +9,20 @@ import os
 import socket
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from flask import Flask, render_template, jsonify, Response, request
+
+try:
+    import jwt
+except Exception:  # pragma: no cover - optional dependency
+    jwt = None
+
+try:
+    from flask_sock import Sock
+except Exception:  # pragma: no cover - optional dependency
+    Sock = None
 
 from reco_trading.database.repository import Repository
 
@@ -22,6 +32,12 @@ _global_bot_instance: Any = None
 _bot_instance_getter: Callable | None = None
 _fallback_repository: Repository | None = None
 _app: Flask | None = None
+_sock: Sock | None = None
+_connected_clients: list[Any] = []
+_connected_clients_lock = threading.Lock()
+
+JWT_SECRET = os.getenv("DASHBOARD_JWT_SECRET", "your-secret-key-change-this")
+JWT_EXPIRATION_HOURS = 24
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -44,6 +60,53 @@ def _dashboard_user() -> str:
 
 def _dashboard_password() -> str:
     return str(os.getenv("DASHBOARD_PASSWORD", "")).strip()
+
+def _create_jwt_token(username: str) -> str:
+    if jwt is None:
+        issued = int(datetime.now(timezone.utc).timestamp())
+        payload = f"{username}:{issued}"
+        signature = hmac.new(JWT_SECRET.encode("utf-8"), payload.encode("utf-8"), "sha256").hexdigest()
+        return base64.urlsafe_b64encode(f"{payload}:{signature}".encode("utf-8")).decode("utf-8")
+    payload = {
+        "username": username,
+        "exp": datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRATION_HOURS),
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+
+def _verify_jwt_token(token: str) -> dict | None:
+    if jwt is None:
+        try:
+            decoded = base64.urlsafe_b64decode(token.encode("utf-8")).decode("utf-8")
+            username, issued_str, signature = decoded.split(":", 2)
+            payload = f"{username}:{issued_str}"
+            expected = hmac.new(JWT_SECRET.encode("utf-8"), payload.encode("utf-8"), "sha256").hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                return None
+            issued = datetime.fromtimestamp(int(issued_str), tz=timezone.utc)
+            if datetime.now(timezone.utc) - issued > timedelta(hours=JWT_EXPIRATION_HOURS):
+                return None
+            return {"username": username, "iat": issued_str}
+        except Exception:
+            return None
+    try:
+        return jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+    except Exception:
+        return None
+
+
+def _require_auth(f):
+    from functools import wraps
+
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not token or not _verify_jwt_token(token):
+            return _unauthorized_response()
+        return f(*args, **kwargs)
+
+    return decorated_function
 
 
 def _unauthorized_response() -> Response:
@@ -570,9 +633,34 @@ def _enhance_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     return snapshot
 
 
+async def broadcast_trade_execution(trade_data: dict[str, Any]) -> None:
+    message = json.dumps(
+        {
+            "type": "trade_execution",
+            "symbol": trade_data.get("symbol"),
+            "side": trade_data.get("side"),
+            "price": float(trade_data.get("price", 0.0)),
+        }
+    )
+    stale_clients: list[Any] = []
+    with _connected_clients_lock:
+        clients = list(_connected_clients)
+    for client in clients:
+        try:
+            client.send(message)
+        except Exception as exc:
+            logger.error("Error broadcasting to client: %s", exc)
+            stale_clients.append(client)
+    if stale_clients:
+        with _connected_clients_lock:
+            for client in stale_clients:
+                if client in _connected_clients:
+                    _connected_clients.remove(client)
+
+
 def create_app() -> Flask:
     """Create and configure Flask app."""
-    global _app
+    global _app, _sock
 
     # Resolve template and static folders relative to this file's location
     _web_site_dir = os.path.dirname(os.path.abspath(__file__))
@@ -581,6 +669,21 @@ def create_app() -> Flask:
 
     app = Flask(__name__, template_folder=_template_dir, static_folder=_static_dir)
     app.config['JSON_SORT_KEYS'] = False
+    if Sock is not None and _sock is None:
+        _sock = Sock(app)
+
+        @_sock.route("/ws")
+        def websocket(ws):
+            with _connected_clients_lock:
+                _connected_clients.append(ws)
+            try:
+                while True:
+                    if ws.receive() is None:
+                        break
+            finally:
+                with _connected_clients_lock:
+                    if ws in _connected_clients:
+                        _connected_clients.remove(ws)
 
     # Global error handlers to prevent Internal Server Error pages
     @app.errorhandler(Exception)
@@ -596,23 +699,29 @@ def create_app() -> Flask:
     def _handle_500(e):
         return jsonify({"success": False, "error": "Internal server error"}), 500
 
-    @app.route('/')
+    @app.route("/")
     def index():
         try:
-            return render_template('index.html')
+            return render_template("index.html")
         except Exception as e:
             logger.exception("Error rendering index: %s", e)
             return "<h1>Dashboard Error</h1><p>Could not load dashboard template.</p>", 500
 
-    @app.route('/api/auth/login', methods=['POST'])
+    @app.route("/login", methods=["GET"])
+    def serve_login():
+        return render_template("login.html")
+
+    @app.route("/api/auth/login", methods=["POST"])
     def api_auth_login():
         payload = request.get_json(silent=True) or {}
-        ok, reason = _validate_login_payload(payload)
-        if not ok:
-            response = jsonify({"success": False, "error": reason})
-            response.status_code = 401
-            return response
-        return jsonify({"success": True})
+        username = str(payload.get("username") or payload.get("user") or "").strip()
+        password = str(payload.get("password") or "").strip()
+        configured_user = _dashboard_user()
+        configured_password = _dashboard_password()
+        if configured_user and configured_password:
+            if hmac.compare_digest(username, configured_user) and hmac.compare_digest(password, configured_password):
+                return jsonify({"success": True, "token": _create_jwt_token(username)})
+        return jsonify({"success": False, "error": "Invalid credentials"}), 401
     
     @app.route('/api/snapshot')
     def api_snapshot():
@@ -664,21 +773,21 @@ def create_app() -> Flask:
             },
         )
 
-    @app.route('/api/status')
+    @app.route("/api/status", methods=["GET"])
+    @_require_auth
     def api_status():
-        unauthorized = _require_dashboard_auth()
-        if unauthorized:
-            return unauthorized
+        bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
         snapshot = get_bot_snapshot()
-        return jsonify({
-            "status": snapshot.get("status", "UNKNOWN"),
-            "pair": snapshot.get("pair", "N/A"),
-            "signal": snapshot.get("signal", "HOLD"),
-            "confidence": snapshot.get("confidence", 0),
-            "price": snapshot.get("current_price", snapshot.get("price", 0)),
-            "daily_pnl": snapshot.get("daily_pnl", 0),
-            "has_open_position": snapshot.get("has_open_position", False),
-        })
+        return jsonify(
+            {
+                "symbol": str(getattr(bot, "symbol", snapshot.get("pair", "BTC/USDT"))),
+                "status": snapshot.get("status", "UNKNOWN"),
+                "balance": float(snapshot.get("balance", 0) or 0),
+                "pnl": float(snapshot.get("daily_pnl", 0) or 0),
+                "win_rate": float(snapshot.get("win_rate", 0) or 0),
+                "open_positions": len(getattr(getattr(bot, "position_manager", None), "positions", []) or []),
+            }
+        )
     
     @app.route('/api/health')
     def api_health():
@@ -746,14 +855,47 @@ def create_app() -> Flask:
             logger.error(f"Error sending control: {e}")
             return jsonify({"success": False, "error": str(e)})
     
-    @app.route('/api/trades')
+    @app.route("/api/trades", methods=["GET"])
+    @_require_auth
     def api_trades():
-        unauthorized = _require_dashboard_auth()
-        if unauthorized:
-            return unauthorized
-        snapshot = get_bot_snapshot()
-        trades = snapshot.get("trade_history", [])
-        return jsonify(trades)
+        try:
+            trades, source = _fetch_trades(limit=200)
+            if source == "database":
+                trade_rows = []
+                for t in trades:
+                    trade_rows.append(
+                        {
+                            "id": str(t.id),
+                            "symbol": t.symbol,
+                            "side": t.side,
+                            "entry_price": float(t.entry_price or 0.0),
+                            "current_price": float(t.exit_price or t.entry_price or 0.0),
+                            "quantity": float(t.quantity or 0.0),
+                            "pnl": float(t.pnl or 0.0),
+                            "status": str(t.status or "").lower(),
+                            "created_at": (t.timestamp.isoformat() if t.timestamp else datetime.now().isoformat()),
+                        }
+                    )
+                return jsonify({"trades": trade_rows})
+            return jsonify({"trades": []})
+        except Exception as e:
+            logger.error("Error getting trades: %s", e)
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/trades/<trade_id>/stop", methods=["POST"])
+    @_require_auth
+    def api_stop_trade(trade_id: str):
+        bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
+        if not bot:
+            return jsonify({"success": False, "error": "Bot not available"}), 503
+        try:
+            state_manager = getattr(bot, "state_manager", None)
+            if state_manager and hasattr(state_manager, "request_force_close"):
+                state_manager.request_force_close()
+                return jsonify({"success": True, "message": "Trade stop requested", "trade_id": trade_id})
+            return jsonify({"success": False, "error": "Stop trade not available"}), 503
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
     
     @app.route('/api/all_trades')
     def api_all_trades():
@@ -960,55 +1102,37 @@ def create_app() -> Flask:
         analytics = snapshot.get("analytics", {})
         return jsonify(analytics)
     
-    @app.route('/api/settings', methods=['GET', 'POST'])
+    @app.route("/api/settings", methods=["GET"])
+    @_require_auth
     def api_settings():
-        unauthorized = _require_dashboard_auth()
-        if unauthorized:
-            return unauthorized
-        if _global_bot_instance is None:
-            return jsonify({})
-
-        if request.method == 'POST':
-            payload = request.get_json(silent=True) or {}
-            if hasattr(_global_bot_instance, "state_manager") and hasattr(_global_bot_instance.state_manager, "push_runtime_settings"):
-                _global_bot_instance.state_manager.push_runtime_settings(payload)
-                return jsonify({"success": True, "message": "Settings queued", "data": payload})
-            if hasattr(_global_bot_instance, "_apply_runtime_settings"):
-                # Fallback cuando no hay state manager: dejar solicitud para que el loop del bot la procese
-                _global_bot_instance.snapshot["runtime_settings_request"] = payload
-                return jsonify({"success": True, "message": "Settings enqueued via snapshot", "data": payload})
-
-            runtime_payload = {
-                "default_pair": payload.get("default_pair") or payload.get("trading_symbol") or "",
-                "default_timeframe": payload.get("default_timeframe") or payload.get("timeframe") or "",
-                "quote_currency": payload.get("quote_currency") or "USDT",
-                "investment_mode": payload.get("investment_mode") or "Balanced",
-                "risk_per_trade_fraction": payload.get("risk_per_trade_fraction", 0.01),
-                "max_trade_balance_fraction": payload.get("max_trade_balance_fraction", 0.20),
-                "capital_limit_usdt": payload.get("capital_limit_usdt", 0),
-                "capital_reserve_ratio": payload.get("capital_reserve_ratio", 0.15),
-                "min_cash_buffer_usdt": payload.get("min_cash_buffer_usdt", 10.0),
-                "dynamic_exit_enabled": payload.get("dynamic_exit_enabled", False),
+        bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
+        if not bot:
+            return jsonify({"success": False, "error": "Bot not available"}), 503
+        return jsonify(
+            {
+                "symbol": str(getattr(bot, "symbol", "BTC/USDT")),
+                "max_position_size": float(getattr(getattr(bot, "settings", None), "max_trade_balance_fraction", 0.0) or 0.0),
+                "risk_per_trade": float(getattr(getattr(bot, "settings", None), "risk_per_trade_fraction", 0.0) or 0.0),
+                "enable_short": not bool(getattr(getattr(bot, "settings", None), "spot_only_mode", True)),
             }
-            _global_bot_instance.snapshot["runtime_settings_request"] = runtime_payload
-            runtime_current = dict(_global_bot_instance.snapshot.get("runtime_settings", {}) or {})
-            runtime_current.update(runtime_payload)
-            _global_bot_instance.snapshot["runtime_settings"] = runtime_current
-            return jsonify({"success": True, "runtime_settings": runtime_current})
+        )
 
+    @app.route("/api/settings/pair", methods=["POST"])
+    @_require_auth
+    def api_update_pair():
+        bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
+        if not bot:
+            return jsonify({"success": False, "error": "Bot not available"}), 503
+        data = request.get_json(silent=True) or {}
+        new_symbol = str(data.get("symbol", "")).strip()
+        if not new_symbol:
+            return jsonify({"success": False, "error": "Symbol required"}), 400
         try:
-            settings = getattr(_global_bot_instance, 'settings', None)
-            runtime = dict(_global_bot_instance.snapshot.get("runtime_settings", {}) or {})
-            if settings:
-                return jsonify({
-                    "trading_symbol": runtime.get("default_pair", getattr(settings, 'trading_symbol', 'BTCUSDT')),
-                    "timeframe": runtime.get("default_timeframe", getattr(settings, 'primary_timeframe', '5m')),
-                    "confidence_threshold": getattr(settings, 'confidence_threshold', 0.70),
-                    "runtime_settings": runtime,
-                })
+            bot.symbol = new_symbol
+            setattr(bot, "_pending_pair_switch", new_symbol)
+            return jsonify({"success": True, "message": f"Pair updated to {new_symbol}"})
         except Exception as e:
-            logger.error(f"Error getting settings: {e}")
-        return jsonify({})
+            return jsonify({"success": False, "error": str(e)}), 500
     
     @app.route('/api/autonomous')
     def api_autonomous():

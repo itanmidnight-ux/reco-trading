@@ -245,35 +245,9 @@ class BotEngine:
         
         self.logger.info("Lightweight ML mode: TFT/NBEATS/Meta-learning disabled for low RAM usage")
         
-        from reco_trading.core.llm_trade_confirmator import LLMTradeConfirmator
-        from reco_trading.core.llm_systems.log_analyzer import LLMLogAnalyzer
-        from reco_trading.core.llm_systems.auto_fix_coordinator import AutoFixCoordinator
-
-        self.trade_confirmator = LLMTradeConfirmator(
-            llm_mode=str(getattr(self.settings, "llm_mode", "base")),
-            local_model=str(getattr(self.settings, "llm_local_model", "qwen2.5:0.5b")),
-            ollama_base_url=str(getattr(self.settings, "ollama_base_url", "http://localhost:11434")),
-            remote_endpoint=str(getattr(self.settings, "llm_remote_endpoint", "https://api.openai.com/v1/chat/completions")),
-            remote_model=str(getattr(self.settings, "llm_remote_model", "gpt-4o-mini")),
-            remote_api_key=str(getattr(self.settings, "llm_remote_api_key", "")),
-            local_keep_alive=str(getattr(self.settings, "llm_local_keep_alive", "20m")),
-            local_num_ctx=int(getattr(self.settings, "llm_local_num_ctx", 256)),
-            local_num_predict=int(getattr(self.settings, "llm_local_num_predict", 4)),
-            local_top_p=float(getattr(self.settings, "llm_local_top_p", 0.9)),
-            local_temperature=float(getattr(self.settings, "llm_local_temperature", 0.0)),
-            local_healthcheck_enabled=bool(getattr(self.settings, "llm_local_healthcheck_enabled", True)),
-        )
-        self._configure_llm_runtime_mode()
-        self.log_analyzer = LLMLogAnalyzer()
-        self.auto_fix_coordinator = AutoFixCoordinator(
-            log_analyzer=self.log_analyzer,
-            pause_callback=lambda: setattr(self, "manual_pause", True),
-            resume_callback=lambda: setattr(self, "manual_pause", False),
-            refresh_callback=self._on_auto_fix_refresh,
-            check_interval_seconds=max(60, int(getattr(self.settings, "llm_fix_cycle_interval_seconds", 3600))),
-            cleanup_interval_seconds=max(3600, int(getattr(self.settings, "llm_cleanup_interval_seconds", 86400))),
-        )
-        self.logger.info("LLM systems initialized: TradeConfirmator, LogAnalyzer, AutoFixCoordinator")
+        self.log_analyzer = None
+        self.auto_fix_coordinator = None
+        self.logger.info("LLM systems disabled: Using filter-based validation only")
         
         self.trading_mode_manager = TradingModeManager(self.client)
         self.ws_manager = WebSocketManager(self.client)
@@ -354,7 +328,6 @@ class BotEngine:
             "optimization_reason": None,
             "live_trade_risk_fraction": None,
             "live_trade_max_allocation_fraction": None,
-            "llm_mode": str(getattr(self.settings, "llm_mode", "base")).lower(),
             "database_status": "CONNECTING",
             "exchange_status": "CONNECTING",
             "confluence_score": None,
@@ -444,14 +417,7 @@ class BotEngine:
             self._start_ml_auto_training()
             
             self.snapshot["market_analysis"]["ai_connected"] = True
-            self.snapshot["llm_trade_confirmator"] = self.trade_confirmator.stats
             self._sync_ui_state()
-            
-            try:
-                await self.auto_fix_coordinator.start()
-                self.logger.info("AutoFixCoordinator started")
-            except Exception as afc_exc:
-                self.logger.warning(f"AutoFixCoordinator failed to start: {afc_exc}")
             
             await self._set_state(BotState.WAITING_MARKET_DATA, "ready")
             self._sync_ui_state()
@@ -534,43 +500,26 @@ class BotEngine:
                             intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
                             self._apply_market_intelligence_snapshot(intelligence)
                             if intelligence.get("approved"):
-                                confirmation = await asyncio.to_thread(
-                                    self.trade_confirmator.confirm_trade,
-                                    symbol=self.symbol,
-                                    side=str(analysis.get("side", "HOLD")),
-                                    entry_price=float(market_data.get("price", 0)),
-                                    quantity=float(analysis.get("quantity", 0)),
-                                    signal=str(analysis.get("signal", "HOLD")),
-                                    confidence=float(analysis.get("confidence", 0)),
-                                    trend=str(analysis.get("trend", "NEUTRAL")),
-                                    adx=float(analysis.get("adx", 0)),
-                                    volatility_regime=str(self.snapshot.get("volatility_regime", "NORMAL")),
-                                    order_flow=str(analysis.get("order_flow", "NEUTRAL")),
-                                    spread=float(market_data.get("spread", 0)),
-                                    atr=float(market_data.get("atr", 0)),
-                                    volume=float(market_data.get("volume", 0)),
-                                    risk_per_trade=self._effective_risk_per_trade_fraction(),
-                                    daily_pnl=float(self.snapshot.get("daily_pnl", 0) or 0),
-                                    trades_today=int(self.snapshot.get("trades_today", 0)),
-                                    max_trades_per_day=int(self.settings.max_trades_per_day),
+                                await self._log(
+                                    "INFO",
+                                    f"trade_approved by filter_validation side={analysis.get('side')} confidence={float(analysis.get('confidence', 0.0)):.2f}",
                                 )
-                                if not confirmation.confirmed:
-                                    await self._log("WARNING", f"llm_trade_rejected reason={confirmation.reason} time={confirmation.analysis_time_ms:.1f}ms")
-                                    await self._log_trade_cycle_summary(
-                                        analysis=analysis,
-                                        decision="REJECTED",
-                                        reason=f"LLM_CONFIRM_REJECT: {confirmation.reason}",
-                                        filter_checks=list(analysis.get("validation_checks", [])),
-                                    )
-                                else:
-                                    await self._log("INFO", f"llm_trade_confirmed time={confirmation.analysis_time_ms:.1f}ms")
-                                    await self._log_trade_cycle_summary(
-                                        analysis=analysis,
-                                        decision="APPROVED",
-                                        reason="TRADE_LLM_CONFIRMED",
-                                        filter_checks=list(analysis.get("validation_checks", [])),
-                                    )
-                                    await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                                await self._log_trade_cycle_summary(
+                                    analysis=analysis,
+                                    decision="APPROVED",
+                                    reason="FILTER_VALIDATION_PASSED",
+                                    filter_checks=list(analysis.get("validation_checks", [])),
+                                )
+                                await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                                try:
+                                    from web_site.dashboard_server import broadcast_trade_execution
+                                    await broadcast_trade_execution({
+                                        "symbol": self.symbol,
+                                        "side": str(analysis.get("side")),
+                                        "price": float(market_data.get("price", 0)),
+                                    })
+                                except Exception as broadcast_exc:
+                                    self.logger.debug("broadcast_trade_execution_failed: %s", broadcast_exc)
                             else:
                                 rejection_reason = str(intelligence.get("reason", "MARKET_INTELLIGENCE_REJECT"))
                                 await self._set_state(BotState.WAITING_MARKET_DATA, rejection_reason)
@@ -632,10 +581,6 @@ class BotEngine:
                         self._safe_live_update(live)
                         await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
         finally:
-            try:
-                await self.auto_fix_coordinator.stop()
-            except Exception:
-                pass
             try:
                 await self.loop_manager.stop()
             except Exception:
@@ -1885,13 +1830,13 @@ class BotEngine:
         total_equity = _as_float(self.snapshot.get("total_equity"), _as_float(self.snapshot.get("equity"), 0.0))
         peak_equity = max(_as_float(getattr(self, "equity_peak", total_equity), total_equity), 1e-9)
         drawdown = max((peak_equity - total_equity) / peak_equity, 0.0)
-        drawdown_mult = max(1.0 - drawdown * 1.8, 0.40)
+        drawdown_mult = max(1.0 - drawdown * 1.2, 0.40)
 
         profile = self._current_capital_profile()
         trade_risk = anchor_risk * confidence_mult * volatility_mult * drawdown_mult
         trade_allocation = anchor_allocation * confidence_mult * volatility_mult * drawdown_mult
-        trade_risk = min(max(trade_risk, 0.001), profile.risk_per_trade_fraction, 0.10)
-        trade_allocation = min(max(trade_allocation, 0.01), profile.max_trade_balance_fraction, 1.0)
+        trade_risk = min(max(trade_risk, 0.001), min(profile.risk_per_trade_fraction, 0.10))
+        trade_allocation = min(max(trade_allocation, 0.01), min(profile.max_trade_balance_fraction, 1.0))
         self.snapshot["live_trade_risk_fraction"] = trade_risk
         self.snapshot["live_trade_max_allocation_fraction"] = trade_allocation
         return {
@@ -2385,16 +2330,8 @@ class BotEngine:
         self._sync_ui_state()
 
     async def _run_log_analysis_cycle(self) -> None:
-        """Periodically analyze logs and write errors to docs/analisis.txt."""
-        try:
-            logs = self.snapshot.get("logs", [])[-100:]
-            new_errors = self.log_analyzer.analyze_logs(logs)
-            if new_errors:
-                await self._log("WARNING", f"llm_analyzer found {len(new_errors)} new errors")
-            self.log_analyzer.cleanup_old_errors()
-            self.snapshot["llm_analysis"] = self.log_analyzer.get_summary()
-        except Exception as exc:
-            self.logger.debug(f"Log analysis cycle error: {exc}")
+        """LLM log analysis is disabled; keep method as a no-op for compatibility."""
+        return
 
     async def _process_control_requests(self) -> None:
         controls: list[str] = []
@@ -2567,7 +2504,6 @@ class BotEngine:
         )
         await self.order_manager.sync_rules()
         self.runtime_filter_config = self._get_default_filter_config()
-        self._configure_llm_runtime_mode()
         self.snapshot["autonomous_filters"] = self.runtime_filter_config.copy()
         await self._set_state(BotState.WAITING_MARKET_DATA, "runtime_symbol_switch_complete")
         await self._log("INFO", f"runtime_symbol_switched from={previous_symbol} to={normalized_symbol}")
@@ -2898,7 +2834,6 @@ class BotEngine:
                         self.snapshot.get("daily_pnl"),
                         self.snapshot.get("unrealized_pnl"),
                         self.snapshot.get("open_positions"),
-                        self.snapshot.get("llm_trade_confirmator"),
                         (self.snapshot.get("logs") or [])[-6:],
                     )
                 ).encode("utf-8", errors="ignore")
@@ -3027,9 +2962,6 @@ class BotEngine:
                     "details": dict(self.snapshot.get("exit_intelligence_details", {}) or {}),
                     "events": list(self.snapshot.get("exit_intelligence_log", []) or []),
                 },
-                llm_trade_confirmator=self.trade_confirmator.stats,
-                llm_analysis=self.log_analyzer.get_summary(),
-                auto_fix_coordinator=self.auto_fix_coordinator.get_status(),
             )
 
             # ── Campos nuevos para dashboards ──────────────────────────────────
@@ -3287,11 +3219,8 @@ class BotEngine:
         self.runtime_filter_config = dict(self.base_filter_config)
         self._filter_auto_adjustment_count = getattr(self, "_filter_auto_adjustment_count", 0) + 1
 
-        # Re-aplicar ajustes LLM si está en modo local (se habrían sobreescrito)
-        if str(getattr(self.settings, "llm_mode", "base")).lower() == "llm_local":
-            self._configure_llm_runtime_mode()
-            self.logger.info("LLM runtime filters re-applied after symbol config update")
-        self.logger.info(f"Applied filter config for {self.symbol}: {self.runtime_filter_config}")
+        if hasattr(self, "logger"):
+            self.logger.info(f"Applied filter config for {self.symbol}: {self.runtime_filter_config}")
 
     def _apply_autonomous_filters(self) -> None:
         """Apply filter adjustments from the autonomous brain."""
@@ -3383,19 +3312,8 @@ class BotEngine:
             self.logger.warning(f"Failed to apply autonomous filters: {e}")
 
     def _configure_llm_runtime_mode(self) -> None:
-        llm_mode = str(getattr(self.settings, "llm_mode", "base")).lower()
-        if llm_mode != "llm_local":
-            return
-        self.settings.low_ram_mode = True
-        self.settings.max_ram_mb = min(int(getattr(self.settings, "max_ram_mb", 500) or 500), 650)
-        self.runtime_filter_config["min_confidence"] = max(self.runtime_filter_config.get("min_confidence", 0.45), 0.62)
-        self.runtime_filter_config["adx_threshold"] = max(self.runtime_filter_config.get("adx_threshold", 12.0), 18.0)
-        self.logger.info(
-            "llm_local_runtime_profile_applied min_confidence=%.2f adx_threshold=%.1f max_ram_mb=%s",
-            self.runtime_filter_config["min_confidence"],
-            self.runtime_filter_config["adx_threshold"],
-            self.settings.max_ram_mb,
-        )
+        """Deprecated compatibility hook: LLM runtime modes are disabled."""
+        return
 
     def _get_default_filter_config(self) -> dict[str, float]:
         normalized_symbol = self.symbol.replace("/", "").upper()

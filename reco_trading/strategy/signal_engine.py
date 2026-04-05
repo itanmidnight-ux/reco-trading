@@ -99,14 +99,17 @@ class SignalEngine:
         volume_val = _safe_getitem(row, "volume", 0.0)
         vol_ma20 = _safe_getitem(row, "vol_ma20", 1.0)
         vol_ratio = volume_val / max(vol_ma20, 1e-9)
+        
         if vol_ratio > 1.20:
-            volume = "BUY"       # Volumen elevado confirma movimiento
+            volume = "BUY"       # Volumen muy elevado - fuerte confirmación
         elif vol_ratio > 1.00:
-            volume = "BUY"       # Volumen sobre media = sesgo alcista moderado
-        elif vol_ratio < 0.70:
-            volume = "NEUTRAL"   # Volumen bajo = sin confirmación (NO es señal bajista)
+            volume = "BUY"       # Volumen sobre media - confirmación moderada
+        elif vol_ratio >= 0.85:
+            volume = "NEUTRAL"   # Volumen normal-alto - ni confirmación ni rechazo
+        elif vol_ratio >= 0.60:
+            volume = "NEUTRAL"   # Volumen normal-bajo - neutral
         else:
-            volume = "NEUTRAL"
+            volume = "SELL"      # Volumen muy bajo - señal débil
 
         high_val = _safe_getitem(row, "high", 0.0)
         low_val = _safe_getitem(row, "low", 0.0)
