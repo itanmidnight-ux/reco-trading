@@ -209,6 +209,61 @@ ensure_runtime_functions_available() {
   fi
 }
 
+find_listening_pid_for_port() {
+  local port="$1"
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"${port}" -sTCP:LISTEN -t 2>/dev/null | head -n 1
+    return 0
+  fi
+
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -n tcp "${port}" 2>/dev/null | awk '{print $1}'
+    return 0
+  fi
+
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnp 2>/dev/null | awk -v p=":${port}" '$4 ~ p {print $NF}' | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | head -n 1
+    return 0
+  fi
+}
+
+release_dashboard_port_if_needed() {
+  local port="$1"
+  local pid=""
+
+  pid="$(find_listening_pid_for_port "${port}" || true)"
+  if [ -z "${pid}" ]; then
+    return 0
+  fi
+
+  echo "⚠️  Puerto ${port} en uso por PID ${pid}. Intentando liberarlo..."
+  if kill -TERM "${pid}" >/dev/null 2>&1; then
+    # Esperar cierre limpio breve
+    for _ in 1 2 3 4 5; do
+      sleep 1
+      if ! kill -0 "${pid}" >/dev/null 2>&1; then
+        echo "✓ Puerto ${port} liberado (SIGTERM)."
+        return 0
+      fi
+    done
+  fi
+
+  echo "⚠️  PID ${pid} no cerró a tiempo; forzando liberación (SIGKILL)..."
+  if kill -KILL "${pid}" >/dev/null 2>&1; then
+    sleep 1
+  fi
+
+  pid="$(find_listening_pid_for_port "${port}" || true)"
+  if [ -n "${pid}" ]; then
+    echo "Error: no se pudo liberar el puerto ${port} automáticamente."
+    return 1
+  fi
+
+  echo "✓ Puerto ${port} liberado (SIGKILL)."
+  return 0
+}
+
 sync_mode_to_env() {
   local mode_option="$1"
   local env_file=".env"
@@ -354,16 +409,8 @@ fi
 
 WEB_PORT="${WEB_DASHBOARD_PORT:-9000}"
 
-# Verificar si el puerto ya está en uso
-if command -v lsof >/dev/null 2>&1; then
-  if lsof -i ":${WEB_PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo "⚠️  Puerto ${WEB_PORT} ya está en uso. El dashboard usará el siguiente disponible."
-  fi
-elif command -v ss >/dev/null 2>&1; then
-  if ss -tlnp 2>/dev/null | grep -q ":${WEB_PORT} "; then
-    echo "⚠️  Puerto ${WEB_PORT} ya está en uso. El dashboard usará el siguiente disponible."
-  fi
-fi
+# Asegurar puerto dashboard libre para mantener URL estable
+release_dashboard_port_if_needed "${WEB_PORT}"
 
 echo ""
 echo "══════════════════════════════════════════════════"
