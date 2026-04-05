@@ -86,14 +86,20 @@ def run() -> None:
     global _bot_runtime_error
     _bot_runtime_error = None
 
+    # Registrar getter ANTES de cualquier cosa para que el dashboard pueda acceder al bot
+    set_bot_instance_getter(get_bot_instance)
+
+    # Web dashboard arranca INMEDIATAMENTE, antes de cualquier validación
+    _start_web_dashboard(logger)
+
     settings = Settings()
 
     if settings.require_api_keys and (
         not settings.binance_api_key or not settings.binance_api_secret
     ):
-        raise RuntimeError("BINANCE_API_KEY and BINANCE_API_SECRET are required")
+        logger.warning("BINANCE_API_KEY/BINANCE_API_SECRET no configuradas; el bot no operará hasta que se configuren")
     if not settings.binance_testnet and not settings.confirm_mainnet:
-        raise RuntimeError("Mainnet trading blocked: set CONFIRM_MAINNET=true to proceed")
+        logger.warning("Mainnet trading bloqueado: set CONFIRM_MAINNET=true para operar en mainnet")
 
     if hasattr(settings, "terminal_tui_enabled") and not bool(
         getattr(settings, "terminal_tui_enabled", True)
@@ -114,9 +120,6 @@ def run() -> None:
     except Exception as exc:  # noqa: BLE001
         logger.warning("StateManager failed to initialize: %s — running without it", exc)
 
-    # FIX A2 + A1: Registrar getter ANTES de cualquier thread; verificar BD con DSN correcto
-    set_bot_instance_getter(get_bot_instance)
-
     try:
         asyncio.run(_verify_database_connection(settings))
         logger.info("Database connection verified successfully")
@@ -130,9 +133,6 @@ def run() -> None:
         target=_run_bot, args=(settings, state_manager), daemon=True, name="bot-engine"
     )
     bot_thread.start()
-
-    # Web dashboard arranca DESPUÉS: getter ya registrado, bot en proceso de init
-    _start_web_dashboard(logger)
 
     try:
         _join_bot_thread_or_exit(bot_thread, logger)
