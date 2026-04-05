@@ -192,6 +192,8 @@ class BotEngine:
         self.runtime_confidence_threshold: float | None = None
         self.base_filter_config: dict[str, float] = self._get_default_filter_config()
         self.runtime_filter_config: dict[str, float] = dict(self.base_filter_config)
+        self._filter_auto_adjustment_count: int = 0
+        self._current_capital_profile_cache: CapitalProfile | None = None
         self.terminal_tui_enabled: bool = bool(getattr(self.settings, "terminal_tui_enabled", True))
         self.terminal_tui_quiet_logs: bool = bool(getattr(self.settings, "terminal_tui_quiet_logs", True))
         self.terminal_tui_refresh_per_second: int = max(int(getattr(self.settings, "terminal_tui_refresh_per_second", 4)), 1)
@@ -2649,7 +2651,9 @@ class BotEngine:
         settings = getattr(self, "settings", None)
         if not getattr(settings, "enable_capital_profiles", True):
             equity = max(equity, 1000.0)
-        return self.capital_profile_manager.select(equity)
+        profile = self.capital_profile_manager.select(equity)
+        self._current_capital_profile_cache = profile
+        return profile
 
     def _equity_reference_usdt(self) -> float:
         return _as_float(
@@ -3027,6 +3031,38 @@ class BotEngine:
                 llm_analysis=self.log_analyzer.get_summary(),
                 auto_fix_coordinator=self.auto_fix_coordinator.get_status(),
             )
+
+            # ── Campos nuevos para dashboards ──────────────────────────────────
+            # Capital profile objetivo de trades
+            _cp = getattr(self, "_current_capital_profile_cache", None)
+            if _cp is None:
+                try:
+                    _cp = self._current_capital_profile()
+                except Exception:  # noqa: BLE001
+                    _cp = None
+            if _cp is not None:
+                self.snapshot["trades_target_daily"] = getattr(_cp, "max_trades_per_day", 0)
+            else:
+                self.snapshot.setdefault("trades_target_daily", 0)
+
+            # Estado de filtros adaptativos
+            _base_conf = self.base_filter_config.get("min_confidence", 0.55)
+            _runtime_conf = self.runtime_filter_config.get("min_confidence", 0.55)
+            self.snapshot["filter_relaxation_active"] = bool(_runtime_conf < _base_conf - 0.01)
+            self.snapshot["filter_auto_adjustments"] = self._filter_auto_adjustment_count
+
+            # Auto-improver stats extendidos
+            _ai = getattr(self, "auto_improver", None)
+            if _ai is not None:
+                self.snapshot["auto_improve_consecutive_losses"] = int(
+                    getattr(_ai, "consecutive_losses", 0) or 0
+                )
+                self.snapshot["auto_improve_optimization_count"] = int(
+                    getattr(_ai, "optimization_count", 0) or 0
+                )
+                self.snapshot["auto_optimized_params"] = dict(
+                    getattr(_ai, "current_params", {}) or {}
+                )
         except Exception as exc:  # noqa: BLE001
             self.logger.exception("state_sync_error: %s", exc)
 
@@ -3223,7 +3259,34 @@ class BotEngine:
             "min_confidence": _as_float(filter_config.get("min_confidence"), 0.55),
         }
         self.base_filter_config = self._calibrate_filter_config_with_recent_market_data(self.base_filter_config)
+
+        # ── SAFETY CLAMPS: evitar filtros peligrosos en cualquier dirección ──
+        _SAFETY = {
+            "adx_threshold":              (8.0,  35.0),
+            "rsi_buy_threshold":          (40.0, 70.0),
+            "rsi_sell_threshold":         (30.0, 60.0),
+            "min_confidence":             (0.45, 0.85),
+            "volume_buy_threshold":       (0.50, 2.50),
+            "volume_sell_threshold":      (0.30, 1.50),
+            "atr_low_threshold":          (0.001, 0.010),
+            "atr_high_threshold":         (0.010, 0.060),
+            "stop_loss_atr_multiplier":   (1.0,  4.0),
+            "take_profit_atr_multiplier": (1.5,  6.0),
+        }
+        for _k, (_lo, _hi) in _SAFETY.items():
+            if _k in self.base_filter_config:
+                _orig = self.base_filter_config[_k]
+                _clamped = max(_lo, min(_hi, _orig))
+                if abs(_clamped - _orig) > 1e-9:
+                    self.logger.warning(
+                        "Filter safety clamp: %s %.4f → %.4f [%.4f, %.4f]",
+                        _k, _orig, _clamped, _lo, _hi,
+                    )
+                    self.base_filter_config[_k] = _clamped
+
         self.runtime_filter_config = dict(self.base_filter_config)
+        self._filter_auto_adjustment_count = getattr(self, "_filter_auto_adjustment_count", 0) + 1
+
         # Re-aplicar ajustes LLM si está en modo local (se habrían sobreescrito)
         if str(getattr(self.settings, "llm_mode", "base")).lower() == "llm_local":
             self._configure_llm_runtime_mode()

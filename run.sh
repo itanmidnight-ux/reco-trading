@@ -23,6 +23,8 @@ load_dotenv_file() {
   fi
 }
 
+# Definición activa de upsert_env_var (sobreescribe la del runtime_env.sh cargado arriba)
+# Usa python3 como método primario para máxima compatibilidad cross-distro
 upsert_env_var() {
   local env_file="$1"
   local key="$2"
@@ -70,6 +72,8 @@ ensure_runtime_env_lib_exists
 # shellcheck disable=SC1091
 source "${RUNTIME_ENV_LIB}"
 
+# Definición activa de upsert_env_var (sobreescribe la del runtime_env.sh cargado arriba)
+# Usa python3 como método primario para máxima compatibilidad cross-distro
 upsert_env_var() {
   local env_file="$1"
   local key="$2"
@@ -348,8 +352,26 @@ if [ "$db_available" = false ]; then
   exit 1
 fi
 
+WEB_PORT="${WEB_DASHBOARD_PORT:-9000}"
+
+# Verificar si el puerto ya está en uso
+if command -v lsof >/dev/null 2>&1; then
+  if lsof -i ":${WEB_PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
+    echo "⚠️  Puerto ${WEB_PORT} ya está en uso. El dashboard usará el siguiente disponible."
+  fi
+elif command -v ss >/dev/null 2>&1; then
+  if ss -tlnp 2>/dev/null | grep -q ":${WEB_PORT} "; then
+    echo "⚠️  Puerto ${WEB_PORT} ya está en uso. El dashboard usará el siguiente disponible."
+  fi
+fi
+
 echo ""
-echo "Iniciando Reco-Trading Bot..."
+echo "══════════════════════════════════════════════════"
+echo "  ◈  RECO TRADING BOT  —  Iniciando..."
+echo "  📊 Dashboard Web  :  http://127.0.0.1:${WEB_PORT}"
+echo "  📡 Dashboard TUI  :  Esta consola"
+echo "  ⌨️  Detener        :  Ctrl + C"
+echo "══════════════════════════════════════════════════"
 echo ""
 
-python main.py
+exec python main.py
