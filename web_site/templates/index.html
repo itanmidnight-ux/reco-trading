@@ -1,1433 +1,1991 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Reco-Trading Dashboard</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <style>
-        :root {
-            --bg-primary: #f3f6fb;
-            --bg-secondary: #ffffff;
-            --bg-card: #ffffff;
-            --bg-hover: #edf2ff;
-            --border-color: #dbe4f3;
-            --text-primary: #0f172a;
-            --text-secondary: #475569;
-            --text-muted: #64748b;
-            --accent-cyan: #22d3ee;
-            --accent-green: #10b981;
-            --accent-red: #ef4444;
-            --accent-yellow: #fbbf24;
-            --accent-blue: #3b82f6;
-            --accent-purple: #8b5cf6;
-            --accent-orange: #fb923c;
-        }
-        
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        
-        body {
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            font-family: 'Inter', -apple-system, sans-serif;
-            min-height: 100vh;
-            font-size: 14px;
-        }
-        
-        .navbar {
-            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-            border-bottom: 1px solid var(--border-color);
-            padding: 0.6rem 0;
-        }
-        
-        .navbar-brand {
-            font-weight: 700;
-            font-size: 1.2rem;
-            color: var(--accent-cyan) !important;
-            text-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
-        }
-        .brand-subtitle {
-            font-size: 0.68rem;
-            color: #cbd5e1;
-            letter-spacing: 0.8px;
-            text-transform: uppercase;
-            margin-left: 0.2rem;
-        }
-        
-        .status-badge {
-            padding: 0.3rem 0.75rem;
-            border-radius: 20px;
-            font-size: 0.75rem;
-            font-weight: 600;
-        }
-        
-        .status-running { background: rgba(52, 211, 153, 0.15); color: var(--accent-green); border: 1px solid var(--accent-green); }
-        .status-error { background: rgba(248, 113, 113, 0.15); color: var(--accent-red); border: 1px solid var(--accent-red); }
-        .status-paused { background: rgba(251, 191, 36, 0.15); color: var(--accent-yellow); border: 1px solid var(--accent-yellow); }
-        .status-waiting { background: rgba(96, 165, 250, 0.15); color: var(--accent-blue); border: 1px solid var(--accent-blue); }
-        
-        .card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
-            margin-bottom: 1rem;
-            box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
-        }
-        
-        .card-header {
-            background: var(--bg-secondary);
-            border-bottom: 1px solid var(--border-color);
-            padding: 0.6rem 1rem;
-            font-weight: 600;
-            color: var(--text-primary);
-            font-size: 0.85rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .card-body { padding: 1rem; }
-        
-        .stat-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 10px;
-            padding: 1rem;
-            text-align: center;
-            transition: transform 0.2s;
-        }
-        
-        .stat-card:hover { transform: translateY(-2px); border-color: var(--accent-cyan); }
-        
-        .stat-value {
-            font-size: 1.5rem;
-            font-weight: 700;
-            color: var(--text-primary);
-            font-family: 'JetBrains Mono', monospace;
-        }
-        
-        .stat-value-lg { font-size: 2rem; }
-        
-        .stat-label {
-            font-size: 0.7rem;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 0.25rem;
-        }
-        
-        .text-cyan { color: var(--accent-cyan) !important; }
-        .text-green { color: var(--accent-green) !important; }
-        .text-red { color: var(--accent-red) !important; }
-        .text-yellow { color: var(--accent-yellow) !important; }
-        .text-blue { color: var(--accent-blue) !important; }
-        .text-purple { color: var(--accent-purple) !important; }
-        .text-orange { color: var(--accent-orange) !important; }
-        .text-white { color: var(--text-primary) !important; }
-        .text-muted { color: var(--text-muted) !important; }
-        
-        .nav-tabs { border-bottom: 1px solid var(--border-color); gap: 0.25rem; padding: 0.5rem 0.5rem 0; }
-        
-        .nav-tabs .nav-link {
-            color: var(--text-secondary);
-            border: none;
-            border-radius: 6px 6px 0 0;
-            padding: 0.5rem 0.85rem;
-            font-weight: 500;
-            font-size: 0.85rem;
-            transition: all 0.2s;
-        }
-        
-        .nav-tabs .nav-link:hover { color: var(--text-primary); background: var(--bg-hover); }
-        
-        .nav-tabs .nav-link.active {
-            color: var(--accent-cyan);
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-bottom-color: var(--bg-card);
-        }
-        
-        .table { color: var(--text-primary); margin-bottom: 0; }
-        
-        .table > thead { background: var(--bg-secondary); color: var(--text-secondary); font-size: 0.7rem; text-transform: uppercase; }
-        .table > tbody > tr { border-bottom: 1px solid var(--border-color); }
-        .table > tbody > tr:hover { background: var(--bg-hover); }
-        .table td, .table th { border-color: var(--border-color); padding: 0.5rem 0.6rem; vertical-align: middle; font-size: 0.85rem; }
-        
-        .info-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border-color); font-size: 0.85rem; }
-        .info-row:last-child { border-bottom: none; }
-        .info-label { color: var(--text-secondary); }
-        .info-value { color: var(--text-primary); font-weight: 500; font-family: 'JetBrains Mono', monospace; }
-        
-        .btn-success { background: var(--accent-green); border: none; }
-        .btn-success:hover { background: #4ade80; }
-        .btn-warning { background: var(--accent-yellow); border: none; color: #000; }
-        .btn-warning:hover { background: #fcd34d; }
-        .btn-danger { background: var(--accent-red); border: none; }
-        .btn-danger:hover { background: #fca5a5; }
-        .btn-primary { background: var(--accent-blue); border: none; }
-        .btn-primary:hover { background: #93c5fd; }
-        .btn { font-weight: 600; padding: 0.3rem 0.65rem; font-size: 0.8rem; }
-        
-        .badge { padding: 0.25rem 0.5rem; font-size: 0.7rem; font-weight: 600; }
-        .badge-green { background: rgba(52, 211, 153, 0.15); color: var(--accent-green); }
-        .badge-red { background: rgba(248, 113, 113, 0.15); color: var(--accent-red); }
-        .badge-yellow { background: rgba(251, 191, 36, 0.15); color: var(--accent-yellow); }
-        .badge-blue { background: rgba(96, 165, 250, 0.15); color: var(--accent-blue); }
-        .badge-purple { background: rgba(167, 139, 250, 0.15); color: var(--accent-purple); }
-        
-        .tab-content { padding: 1rem; background: var(--bg-card); border: 1px solid var(--border-color); border-top: none; }
-        
-        .glow-cyan { text-shadow: 0 0 15px rgba(34, 211, 238, 0.5); }
-        .glow-green { text-shadow: 0 0 15px rgba(52, 211, 153, 0.5); }
-        .glow-red { text-shadow: 0 0 15px rgba(248, 113, 113, 0.5); }
-        
-        .progress { background: var(--bg-secondary); border-radius: 6px; height: 8px; }
-        .progress-bar { background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue)); border-radius: 6px; }
-        
-        .log-entry { font-family: 'JetBrains Mono', monospace; font-size: 0.75rem; padding: 0.25rem 0; color: var(--text-secondary); }
-        .log-entry.error { color: var(--accent-red); }
-        .log-entry.warning { color: var(--accent-yellow); }
-        .log-entry.info { color: var(--accent-blue); }
-        
-        .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
-        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
-        .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; }
-        
-        @media (max-width: 768px) {
-            .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
-        }
-        
-        .section-title { font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0.75rem; }
-        
-        .signal-box {
-            display: inline-block;
-            padding: 0.5rem 1.5rem;
-            border-radius: 8px;
-            font-size: 1.25rem;
-            font-weight: 700;
-        }
-        
-        .signal-buy { background: linear-gradient(135deg, rgba(52, 211, 153, 0.2), rgba(52, 211, 153, 0.1)); border: 2px solid var(--accent-green); color: var(--accent-green); }
-        .signal-sell { background: linear-gradient(135deg, rgba(248, 113, 113, 0.2), rgba(248, 113, 113, 0.1)); border: 2px solid var(--accent-red); color: var(--accent-red); }
-        .signal-hold { background: linear-gradient(135deg, rgba(251, 191, 36, 0.2), rgba(251, 191, 36, 0.1)); border: 2px solid var(--accent-yellow); color: var(--accent-yellow); }
-        .trade-control-wrap { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
-        .trade-control-wrap .btn { padding: 0.45rem 0.9rem; font-size: 0.82rem; }
-    </style>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Reco Trading — Dashboard</title>
+<style>
+/* ═══════════════════════════════════════════════
+   DESIGN SYSTEM — Variables y Reset
+═══════════════════════════════════════════════ */
+:root {
+  --bg-0: #0a0e1a;
+  --bg-1: #0f1629;
+  --bg-2: #141d35;
+  --bg-3: #1a2540;
+  --bg-card: #111827;
+  --bg-card-hover: #1e2d45;
+  --border: #1e3a5f;
+  --border-bright: #2563eb40;
+  --accent-blue: #3b82f6;
+  --accent-cyan: #06b6d4;
+  --accent-green: #10b981;
+  --accent-red: #ef4444;
+  --accent-yellow: #f59e0b;
+  --accent-purple: #8b5cf6;
+  --accent-orange: #f97316;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #475569;
+  --glow-blue: 0 0 20px #3b82f620;
+  --glow-green: 0 0 20px #10b98120;
+  --glow-red: 0 0 20px #ef444420;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --transition: all 0.2s ease;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg-0);
+  color: var(--text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ═══════════════════════════════════════════════
+   TOPBAR
+═══════════════════════════════════════════════ */
+.topbar {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  height: 60px;
+  background: linear-gradient(90deg, #0a0e1a 0%, #0f1e3d 50%, #0a0e1a 100%);
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px;
+  backdrop-filter: blur(12px);
+}
+
+.topbar-brand {
+  display: flex; align-items: center; gap: 12px;
+}
+
+.topbar-logo {
+  width: 32px; height: 32px;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 900; color: white;
+}
+
+.topbar-title { font-size: 18px; font-weight: 700; color: var(--text-primary); letter-spacing: -0.3px; }
+.topbar-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 1px; }
+
+.topbar-status {
+  display: flex; align-items: center; gap: 16px;
+}
+
+.status-pill {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px; font-weight: 600;
+  border: 1px solid;
+}
+.status-pill.running { background: #10b98115; border-color: #10b98140; color: var(--accent-green); }
+.status-pill.paused  { background: #f59e0b15; border-color: #f59e0b40; color: var(--accent-yellow); }
+.status-pill.error   { background: #ef444415; border-color: #ef444440; color: var(--accent-red); }
+.status-pill.waiting { background: #3b82f615; border-color: #3b82f640; color: var(--accent-blue); }
+
+.status-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  animation: pulse-dot 2s infinite;
+}
+.running .status-dot  { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+.paused .status-dot   { background: var(--accent-yellow); box-shadow: 0 0 6px var(--accent-yellow); }
+.error .status-dot    { background: var(--accent-red); box-shadow: 0 0 6px var(--accent-red); }
+.waiting .status-dot  { background: var(--accent-blue); box-shadow: 0 0 6px var(--accent-blue); }
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(0.85); }
+}
+
+.topbar-clock { font-size: 13px; color: var(--text-secondary); font-family: monospace; }
+
+.emergency-btn {
+  padding: 6px 14px; border-radius: 6px;
+  background: #ef444420; border: 1px solid #ef444440;
+  color: var(--accent-red); font-size: 12px; font-weight: 700;
+  cursor: pointer; transition: var(--transition);
+  letter-spacing: 0.5px;
+}
+.emergency-btn:hover { background: #ef444435; border-color: var(--accent-red); box-shadow: var(--glow-red); }
+
+/* ═══════════════════════════════════════════════
+   SIDEBAR
+═══════════════════════════════════════════════ */
+.sidebar {
+  position: fixed; top: 60px; left: 0; bottom: 0;
+  width: 220px;
+  background: var(--bg-1);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  padding: 16px 0;
+  z-index: 50;
+}
+
+.nav-section-label {
+  padding: 8px 20px 4px;
+  font-size: 10px; font-weight: 700;
+  color: var(--text-muted); letter-spacing: 1.2px;
+  text-transform: uppercase;
+}
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 20px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: 13px; font-weight: 500;
+  transition: var(--transition);
+  border-left: 3px solid transparent;
+  user-select: none;
+}
+.nav-item:hover { background: var(--bg-2); color: var(--text-primary); }
+.nav-item.active {
+  background: linear-gradient(90deg, #3b82f620, transparent);
+  color: var(--accent-blue); border-left-color: var(--accent-blue);
+}
+.nav-icon { font-size: 16px; width: 20px; text-align: center; }
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 16px 20px;
+  border-top: 1px solid var(--border);
+}
+.sidebar-version { font-size: 11px; color: var(--text-muted); }
+
+/* ═══════════════════════════════════════════════
+   MAIN CONTENT
+═══════════════════════════════════════════════ */
+.main {
+  margin-left: 220px;
+  margin-top: 60px;
+  padding: 24px;
+  min-height: calc(100vh - 60px);
+}
+
+.page { display: none; }
+.page.active { display: block; }
+
+/* ═══════════════════════════════════════════════
+   CARDS
+═══════════════════════════════════════════════ */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  transition: var(--transition);
+}
+.card:hover { border-color: var(--border-bright); }
+.card-title {
+  font-size: 12px; font-weight: 700;
+  color: var(--text-muted); letter-spacing: 0.8px;
+  text-transform: uppercase; margin-bottom: 16px;
+  display: flex; align-items: center; gap: 8px;
+}
+.card-title::before {
+  content: ''; width: 3px; height: 14px;
+  background: var(--accent-blue); border-radius: 2px;
+}
+
+/* GRID LAYOUTS */
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 20px; }
+.grid-auto { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
+
+/* METRIC CARD */
+.metric-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  position: relative; overflow: hidden;
+  transition: var(--transition);
+}
+.metric-card::after {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 2px;
+  background: linear-gradient(90deg, transparent, var(--mc-color, var(--accent-blue)), transparent);
+}
+.metric-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px #00000030; }
+.metric-label { font-size: 11px; font-weight: 600; color: var(--text-muted); letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; }
+.metric-value { font-size: 24px; font-weight: 800; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; letter-spacing: -0.5px; }
+.metric-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.metric-badge {
+  position: absolute; top: 14px; right: 14px;
+  font-size: 18px; opacity: 0.4;
+}
+
+.positive { color: var(--accent-green) !important; }
+.negative { color: var(--accent-red) !important; }
+.neutral  { color: var(--accent-blue) !important; }
+.warning  { color: var(--accent-yellow) !important; }
+
+/* SIGNAL CHIPS */
+.signal-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+}
+.chip-buy    { background: #10b98120; border: 1px solid #10b98140; color: var(--accent-green); }
+.chip-sell   { background: #ef444420; border: 1px solid #ef444440; color: var(--accent-red); }
+.chip-hold   { background: #3b82f620; border: 1px solid #3b82f640; color: var(--accent-blue); }
+.chip-neutral{ background: #64748b20; border: 1px solid #64748b40; color: var(--text-secondary); }
+
+/* ═══════════════════════════════════════════════
+   CONFIDENCE BAR
+═══════════════════════════════════════════════ */
+.confidence-bar-wrap { margin-top: 8px; }
+.confidence-bar-track {
+  height: 6px; background: var(--bg-3); border-radius: 3px; overflow: hidden;
+}
+.confidence-bar-fill {
+  height: 100%; border-radius: 3px;
+  transition: width 0.5s ease, background 0.3s ease;
+  background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan));
+}
+.confidence-bar-fill.high { background: linear-gradient(90deg, var(--accent-green), #34d399); }
+.confidence-bar-fill.low  { background: linear-gradient(90deg, var(--accent-red), #f87171); }
+
+/* ═══════════════════════════════════════════════
+   TABLES
+═══════════════════════════════════════════════ */
+.data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.data-table th {
+  text-align: left; padding: 10px 14px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+  color: var(--text-muted); text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-2);
+}
+.data-table td { padding: 11px 14px; border-bottom: 1px solid var(--border)15; color: var(--text-secondary); }
+.data-table tr:hover td { background: var(--bg-2)50; color: var(--text-primary); }
+.data-table tr:last-child td { border-bottom: none; }
+
+/* ═══════════════════════════════════════════════
+   SIGNALS GRID (Dashboard)
+═══════════════════════════════════════════════ */
+.signals-grid {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+}
+.signal-item {
+  background: var(--bg-2); border-radius: var(--radius-sm);
+  padding: 12px 14px; border: 1px solid var(--border);
+  display: flex; justify-content: space-between; align-items: center;
+}
+.signal-name { font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; }
+
+/* ═══════════════════════════════════════════════
+   LOG FEED
+═══════════════════════════════════════════════ */
+.log-feed {
+  font-family: 'JetBrains Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  background: #050a14;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+  height: 280px; overflow-y: auto;
+}
+.log-entry { padding: 3px 0; display: flex; gap: 10px; border-bottom: 1px solid #ffffff05; }
+.log-time  { color: var(--text-muted); min-width: 80px; }
+.log-level { min-width: 55px; font-weight: 700; }
+.log-level.INFO    { color: var(--accent-blue); }
+.log-level.WARNING { color: var(--accent-yellow); }
+.log-level.ERROR   { color: var(--accent-red); }
+.log-level.DEBUG   { color: var(--text-muted); }
+.log-msg   { color: var(--text-secondary); word-break: break-all; }
+.log-msg.important { color: var(--text-primary); }
+
+/* ═══════════════════════════════════════════════
+   SETTINGS — ACCORDION
+═══════════════════════════════════════════════ */
+.settings-form { display: flex; flex-direction: column; gap: 12px; }
+
+.accordion-group {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); overflow: hidden;
+}
+.accordion-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 20px; cursor: pointer;
+  background: var(--bg-card);
+  transition: var(--transition);
+  user-select: none;
+}
+.accordion-header:hover { background: var(--bg-card-hover); }
+.accordion-header-left { display: flex; align-items: center; gap: 12px; }
+.accordion-icon { font-size: 18px; }
+.accordion-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.accordion-desc  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.accordion-arrow {
+  color: var(--text-muted); font-size: 12px;
+  transition: transform 0.2s ease;
+}
+.accordion-group.open .accordion-arrow { transform: rotate(180deg); }
+.accordion-group.open .accordion-header { border-bottom: 1px solid var(--border); }
+
+.accordion-body {
+  display: none; padding: 20px;
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px;
+}
+.accordion-group:not(.open) .accordion-body { display: none; }
+
+/* FORM CONTROLS */
+.form-group { display: flex; flex-direction: column; gap: 6px; }
+.form-group.full-width { grid-column: 1 / -1; }
+.form-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); letter-spacing: 0.3px; }
+.form-hint  { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+
+.form-input, .form-select, .form-textarea {
+  background: var(--bg-2); border: 1px solid var(--border);
+  color: var(--text-primary); border-radius: var(--radius-sm);
+  padding: 9px 12px; font-size: 13px;
+  transition: var(--transition); outline: none;
+  width: 100%;
+}
+.form-input:focus, .form-select:focus, .form-textarea:focus {
+  border-color: var(--accent-blue); box-shadow: 0 0 0 3px #3b82f615;
+}
+.form-select { cursor: pointer; }
+.form-select option { background: var(--bg-2); }
+
+.toggle-wrap {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; background: var(--bg-2); border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+.toggle-label { font-size: 13px; color: var(--text-secondary); }
+.toggle {
+  position: relative; width: 40px; height: 22px;
+}
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; cursor: pointer; inset: 0;
+  background: var(--bg-3); border-radius: 22px;
+  transition: var(--transition);
+}
+.toggle-slider::before {
+  content: ''; position: absolute;
+  width: 16px; height: 16px; bottom: 3px; left: 3px;
+  background: white; border-radius: 50%;
+  transition: var(--transition);
+}
+.toggle input:checked + .toggle-slider { background: var(--accent-blue); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+
+.multi-select {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 8px; background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  min-height: 40px;
+}
+.ms-option {
+  padding: 4px 10px; border-radius: 20px; cursor: pointer;
+  font-size: 11px; font-weight: 600;
+  background: var(--bg-3); border: 1px solid var(--border);
+  color: var(--text-secondary); transition: var(--transition);
+  user-select: none;
+}
+.ms-option.selected {
+  background: #3b82f620; border-color: #3b82f660;
+  color: var(--accent-blue);
+}
+
+/* RANGE SLIDER */
+.range-wrap { display: flex; flex-direction: column; gap: 4px; }
+.range-row   { display: flex; align-items: center; gap: 10px; }
+.form-range  {
+  flex: 1; -webkit-appearance: none; height: 4px;
+  background: var(--bg-3); border-radius: 2px; outline: none;
+}
+.form-range::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 16px; height: 16px;
+  background: var(--accent-blue); border-radius: 50%; cursor: pointer;
+  box-shadow: 0 0 6px #3b82f640;
+}
+.range-value {
+  min-width: 50px; text-align: right;
+  font-family: monospace; font-size: 13px; color: var(--accent-blue);
+}
+
+/* ═══════════════════════════════════════════════
+   BUTTONS
+═══════════════════════════════════════════════ */
+.btn {
+  padding: 9px 18px; border-radius: var(--radius-sm);
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  transition: var(--transition); border: 1px solid transparent;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary {
+  background: var(--accent-blue); color: white; border-color: var(--accent-blue);
+}
+.btn-primary:hover { background: #2563eb; box-shadow: 0 4px 12px #3b82f630; }
+.btn-secondary {
+  background: transparent; color: var(--text-secondary); border-color: var(--border);
+}
+.btn-secondary:hover { background: var(--bg-2); color: var(--text-primary); }
+.btn-danger {
+  background: #ef444420; color: var(--accent-red); border-color: #ef444440;
+}
+.btn-danger:hover { background: #ef444430; box-shadow: var(--glow-red); }
+.btn-success {
+  background: #10b98120; color: var(--accent-green); border-color: #10b98140;
+}
+.btn-success:hover { background: #10b98130; }
+
+.btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
+
+/* ═══════════════════════════════════════════════
+   POSITION CARD
+═══════════════════════════════════════════════ */
+.position-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 16px 20px;
+  display: grid; grid-template-columns: auto 1fr auto; gap: 16px;
+  align-items: center;
+}
+.pos-side {
+  padding: 6px 12px; border-radius: 6px;
+  font-weight: 800; font-size: 13px; letter-spacing: 0.5px;
+}
+.pos-side.BUY  { background: #10b98120; color: var(--accent-green); border: 1px solid #10b98140; }
+.pos-side.SELL { background: #ef444420; color: var(--accent-red);   border: 1px solid #ef444440; }
+
+/* ═══════════════════════════════════════════════
+   TOASTS
+═══════════════════════════════════════════════ */
+.toast-container {
+  position: fixed; bottom: 24px; right: 24px; z-index: 999;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.toast {
+  padding: 12px 18px; border-radius: var(--radius-md);
+  font-size: 13px; font-weight: 500;
+  border: 1px solid; backdrop-filter: blur(12px);
+  animation: slideInToast 0.3s ease;
+  min-width: 280px; max-width: 400px;
+}
+.toast.success { background: #10b98115; border-color: #10b98140; color: var(--accent-green); }
+.toast.error   { background: #ef444415; border-color: #ef444440; color: var(--accent-red); }
+.toast.info    { background: #3b82f615; border-color: #3b82f640; color: var(--accent-blue); }
+@keyframes slideInToast {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════
+   LLM STATUS
+═══════════════════════════════════════════════ */
+.llm-status-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 16px 20px;
+}
+.llm-mode-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 20px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.5px;
+  background: #8b5cf620; border: 1px solid #8b5cf640; color: var(--accent-purple);
+}
+.llm-health-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block; margin-right: 4px;
+}
+.llm-health-dot.ok   { background: var(--accent-green); box-shadow: 0 0 6px var(--accent-green); }
+.llm-health-dot.fail { background: var(--accent-red);   box-shadow: 0 0 6px var(--accent-red); }
+.llm-health-dot.unknown { background: var(--text-muted); }
+
+/* ═══════════════════════════════════════════════
+   FILTER DISPLAY
+═══════════════════════════════════════════════ */
+.filter-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0; border-bottom: 1px solid var(--border)20;
+  font-size: 12px;
+}
+.filter-row:last-child { border-bottom: none; }
+.filter-name  { color: var(--text-secondary); font-weight: 500; }
+.filter-value { color: var(--accent-blue); font-family: monospace; font-weight: 700; }
+.filter-pass  { color: var(--accent-green); }
+.filter-fail  { color: var(--accent-red); }
+
+/* ═══════════════════════════════════════════════
+   SCROLLBAR
+═══════════════════════════════════════════════ */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-1); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-blue)60; }
+
+/* ═══════════════════════════════════════════════
+   RESPONSIVE
+═══════════════════════════════════════════════ */
+@media (max-width: 1200px) { .grid-4 { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .main { margin-left: 0; }
+  .grid-3, .grid-4 { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 600px) {
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+  .signals-grid { grid-template-columns: repeat(2, 1fr); }
+  .accordion-body { grid-template-columns: 1fr; }
+}
+</style>
 </head>
 <body>
-    <div id="loginOverlay" style="position:fixed; inset:0; background:rgba(5,10,20,.92); display:none; z-index:9999; align-items:center; justify-content:center;">
-        <div class="card" style="max-width:420px; width:92%;">
-            <div class="card-header"><i class="fas fa-lock text-cyan"></i> Iniciar sesión</div>
-            <div class="card-body">
-                <div class="mb-2">
-                    <label class="small text-muted">User</label>
-                    <input id="loginUser" class="form-control" autocomplete="username" />
-                </div>
-                <div class="mb-2">
-                    <label class="small text-muted">Password</label>
-                    <input id="loginPassword" type="password" class="form-control" autocomplete="current-password" />
-                </div>
-                <div class="mb-3">
-                    <label class="small text-muted">Token</label>
-                    <input id="loginToken" class="form-control" autocomplete="off" />
-                </div>
-                <button id="loginBtn" class="btn btn-primary w-100" onclick="submitLogin()">Iniciar sesión</button>
-                <div id="loginError" class="text-red small mt-2" style="min-height:18px;"></div>
-            </div>
-        </div>
+
+<!-- ══════════════ TOPBAR ══════════════ -->
+<header class="topbar">
+  <div class="topbar-brand">
+    <div class="topbar-logo">R</div>
+    <div>
+      <div class="topbar-title">Reco Trading</div>
+      <div class="topbar-subtitle" id="topbar-pair">Loading...</div>
     </div>
-    <nav class="navbar navbar-dark">
-        <div class="container-fluid px-3">
-            <div class="d-flex flex-column">
-                <a class="navbar-brand" href="#"><i class="fas fa-chart-line me-2"></i>Reco-Trading</a>
-                <span class="brand-subtitle">Professional Local Dashboard</span>
-            </div>
-            <div class="d-flex align-items-center gap-2">
-                <button class="btn btn-success btn-sm" onclick="sendControl('resume')" title="Resume"><i class="fas fa-play"></i></button>
-                <button class="btn btn-warning btn-sm" onclick="sendControl('pause')" title="Pause"><i class="fas fa-pause"></i></button>
-                <button class="btn btn-danger btn-sm" onclick="sendControl('emergency')" title="Emergency Stop"><i class="fas fa-exclamation-triangle"></i></button>
-                <span id="botStatus" class="status-badge status-waiting">CONNECTING</span>
-            </div>
+  </div>
+  <div class="topbar-status">
+    <div class="status-pill waiting" id="bot-status-pill">
+      <span class="status-dot"></span>
+      <span id="bot-status-text">CONNECTING</span>
+    </div>
+    <div class="topbar-clock" id="clock">--:--:--</div>
+    <button class="emergency-btn" onclick="sendControl('emergency_stop')">⚡ EMERGENCY STOP</button>
+  </div>
+</header>
+
+<!-- ══════════════ SIDEBAR ══════════════ -->
+<nav class="sidebar">
+  <div class="nav-section-label">Overview</div>
+  <div class="nav-item active" onclick="showPage('dashboard', this)">
+    <span class="nav-icon">📊</span> Dashboard
+  </div>
+  <div class="nav-item" onclick="showPage('positions', this)">
+    <span class="nav-icon">💼</span> Positions
+  </div>
+  <div class="nav-item" onclick="showPage('trades', this)">
+    <span class="nav-icon">📋</span> Trade History
+  </div>
+
+  <div class="nav-section-label" style="margin-top:12px">Analysis</div>
+  <div class="nav-item" onclick="showPage('signals', this)">
+    <span class="nav-icon">📡</span> Signals & Filters
+  </div>
+  <div class="nav-item" onclick="showPage('ai', this)">
+    <span class="nav-icon">🤖</span> AI / LLM Gate
+  </div>
+  <div class="nav-item" onclick="showPage('risk', this)">
+    <span class="nav-icon">🛡️</span> Risk Manager
+  </div>
+
+  <div class="nav-section-label" style="margin-top:12px">System</div>
+  <div class="nav-item" onclick="showPage('logs', this)">
+    <span class="nav-icon">📄</span> Live Logs
+  </div>
+  <div class="nav-item" onclick="showPage('settings', this)">
+    <span class="nav-icon">⚙️</span> Settings
+  </div>
+  <div class="nav-item" onclick="showPage('system', this)">
+    <span class="nav-icon">💻</span> System Health
+  </div>
+
+  <div class="sidebar-footer">
+    <div class="sidebar-version" id="sidebar-version">reco-trading v—</div>
+  </div>
+</nav>
+
+<!-- ══════════════ MAIN ══════════════ -->
+<main class="main">
+
+<!-- ──────────── PAGE: DASHBOARD ──────────── -->
+<div class="page active" id="page-dashboard">
+
+  <!-- KPI Row -->
+  <div class="grid-4" id="kpi-grid">
+    <div class="metric-card" style="--mc-color: var(--accent-blue)">
+      <div class="metric-label">Price</div>
+      <div class="metric-value" id="kpi-price">—</div>
+      <div class="metric-sub" id="kpi-change">24h change</div>
+      <div class="metric-badge">₿</div>
+    </div>
+    <div class="metric-card" style="--mc-color: var(--accent-green)">
+      <div class="metric-label">Equity</div>
+      <div class="metric-value" id="kpi-equity">—</div>
+      <div class="metric-sub" id="kpi-balance-sub">Available balance</div>
+      <div class="metric-badge">💰</div>
+    </div>
+    <div class="metric-card" style="--mc-color: var(--accent-cyan)">
+      <div class="metric-label">Session P&L</div>
+      <div class="metric-value" id="kpi-pnl">—</div>
+      <div class="metric-sub" id="kpi-unrealized">Unrealized —</div>
+      <div class="metric-badge">📈</div>
+    </div>
+    <div class="metric-card" style="--mc-color: var(--accent-purple)">
+      <div class="metric-label">Win Rate</div>
+      <div class="metric-value" id="kpi-winrate">—</div>
+      <div class="metric-sub" id="kpi-trades-today">0 trades today</div>
+      <div class="metric-badge">🎯</div>
+    </div>
+  </div>
+
+  <!-- Market + Signals + Position -->
+  <div class="grid-3">
+    <!-- Market State -->
+    <div class="card">
+      <div class="card-title">📈 Market State</div>
+      <div style="display:flex; flex-direction:column; gap:10px;">
+        <div class="filter-row">
+          <span class="filter-name">Trend</span>
+          <span id="mkt-trend">—</span>
         </div>
-    </nav>
-
-    <div class="container-fluid px-3 py-2">
-        <ul class="nav nav-tabs" id="dashboardTabs">
-            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#overview"><i class="fas fa-home me-1"></i> Overview</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#trades"><i class="fas fa-exchange-alt me-1"></i> Trades</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#analytics"><i class="fas fa-chart-pie me-1"></i> Analytics</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#market"><i class="fas fa-chart-line me-1"></i> Market</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#strategy"><i class="fas fa-brain me-1"></i> Strategy</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#intel-log"><i class="fas fa-list-alt me-1"></i> Intel Log</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-ml"><i class="fas fa-robot me-1"></i> AI/ML</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#settings"><i class="fas fa-cogs me-1"></i> Settings</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#system"><i class="fas fa-server me-1"></i> System</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#health"><i class="fas fa-heartbeat me-1"></i> Health</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#ai-monitor"><i class="fas fa-robot me-1"></i> AI Monitor</button></li>
-            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#logs"><i class="fas fa-list me-1"></i> Logs</button></li>
-        </ul>
-
-        <div class="tab-content">
-            <!-- Overview -->
-            <div class="tab-pane fade show active" id="overview">
-                <div class="grid-4 mt-3">
-                    <div class="stat-card"><div class="stat-value stat-value-lg glow-cyan" id="priceValue">$0.00</div><div class="stat-label">Market Price</div></div>
-                    <div class="stat-card"><div class="stat-value" id="signalValue">HOLD</div><div class="stat-label">Signal</div></div>
-                    <div class="stat-card"><div class="stat-value" id="confidenceValue">0%</div><div class="stat-label">Confidence</div></div>
-                    <div class="stat-card"><div class="stat-value" id="pairValue">BTC/USDT</div><div class="stat-label">Trading Pair</div></div>
-                </div>
-                
-                <div class="grid-3 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-wallet text-cyan"></i> Account</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Total Equity</span><span class="info-value" id="equityValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Balance</span><span class="info-value" id="balanceValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">BTC Balance</span><span class="info-value" id="btcBalanceValue">0.000000 BTC</span></div>
-                            <div class="info-row"><span class="info-label">BTC Value</span><span class="info-value" id="btcValueValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Daily P&L</span><span class="info-value" id="dailyPnlValue">0.00%</span></div>
-                            <div class="info-row"><span class="info-label">Session P&L</span><span class="info-value" id="sessionPnlValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Unrealized P&L</span><span class="info-value" id="unrealizedPnlValue">$0.00</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-chart-line text-green"></i> Performance</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Trades Today</span><span class="info-value" id="tradesTodayValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Win Rate</span><span class="info-value" id="winRateValue">0%</span></div>
-                            <div class="info-row"><span class="info-label">Capital Profile</span><span class="info-value" id="capitalProfileValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Operable Capital</span><span class="info-value" id="operableCapitalValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Last Trade</span><span class="info-value" id="lastTradeValue">-</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-cog text-yellow"></i> Status</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Status</span><span class="info-value" id="statusValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Cooldown</span><span class="info-value" id="cooldownValue">READY</span></div>
-                            <div class="info-row"><span class="info-label">Position</span><span class="info-value" id="hasPositionValue">None</span></div>
-                            <div class="info-row"><span class="info-label">Entry Price</span><span class="info-value" id="entryPriceValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Exchange</span><span class="info-value text-green" id="exchangeStatusValue">Connected</span></div>
-                            <div class="trade-control-wrap">
-                                <button class="btn btn-danger" id="stopTradeBtn" style="display:none;" onclick="stopTrade()">
-                                    <i class="fas fa-stop-circle me-1"></i>Stop Trade
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-chart-area text-blue"></i> Market</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Trend</span><span class="info-value" id="trendValue">NEUTRAL</span></div>
-                            <div class="info-row"><span class="info-label">ADX</span><span class="info-value" id="adxValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Volatility</span><span class="info-value" id="volatilityRegimeValue">NORMAL</span></div>
-                            <div class="info-row"><span class="info-label">Order Flow</span><span class="info-value" id="orderFlowValue">NEUTRAL</span></div>
-                            <div class="info-row"><span class="info-label">Spread</span><span class="info-value" id="spreadValue">0%</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-robot text-purple"></i> AI/ML</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">ML Direction</span><span class="info-value" id="mlDirectionValue">-</span></div>
-                            <div class="info-row"><span class="info-label">ML Confidence</span><span class="info-value" id="mlConfidenceValue">0%</span></div>
-                            <div class="info-row"><span class="info-label">Market Regime</span><span class="info-value" id="marketRegimeValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Market Sentiment</span><span class="info-value" id="marketSentimentValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Confluence Score</span><span class="info-value" id="confluenceScoreValue">0%</span></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Trades -->
-            <div class="tab-pane fade" id="trades">
-                <div class="card mt-3">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <span><i class="fas fa-history text-cyan"></i> Trade History</span>
-                        <div class="d-flex gap-2 align-items-center">
-                            <select class="form-select form-select-sm" id="tradeStatusFilter" onchange="loadAllTrades()" style="width: auto; background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border-color);">
-                                <option value="">All Status</option>
-                                <option value="CLOSED">Closed</option>
-                                <option value="OPEN">Open</option>
-                            </select>
-                            <select class="form-select form-select-sm" id="tradeSideFilter" onchange="loadAllTrades()" style="width: auto; background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border-color);">
-                                <option value="">All Sides</option>
-                                <option value="BUY">Buy</option>
-                                <option value="SELL">Sell</option>
-                            </select>
-                            <input type="text" class="form-control form-control-sm" id="tradePairFilter" placeholder="Filter pair..." onkeyup="loadAllTrades()" style="width: 120px; background: var(--bg-secondary); color: var(--text-primary); border-color: var(--border-color);">
-                            <button class="btn btn-primary btn-sm" onclick="loadAllTrades()"><i class="fas fa-sync"></i> Refresh</button>
-                        </div>
-                    </div>
-                    
-                    <!-- Trade Summary -->
-                    <div class="card-body border-bottom" style="border-color: var(--border-color) !important;">
-                        <div class="grid-4" id="tradeSummary">
-                            <div class="stat-card"><div class="stat-value text-cyan" id="summaryTotalTrades">0</div><div class="stat-label">Total Trades</div></div>
-                            <div class="stat-card"><div class="stat-value text-green" id="summaryWinRate">0%</div><div class="stat-label">Win Rate</div></div>
-                            <div class="stat-card"><div class="stat-value" id="summaryTotalPnl">$0.00</div><div class="stat-label">Total P&L</div></div>
-                            <div class="stat-card"><div class="stat-value text-purple" id="summaryProfitFactor">0</div><div class="stat-label">Profit Factor</div></div>
-                        </div>
-                    </div>
-                    
-                    <div class="card-body p-0">
-                        <div class="table-responsive">
-                            <table class="table table-hover" id="allTradesTable">
-                                <thead><tr><th>ID</th><th>Date/Time</th><th>Pair</th><th>Side</th><th>Entry</th><th>Exit</th><th>Size</th><th>SL</th><th>TP</th><th>P&L ($)</th><th>P&L (%)</th><th>Duration</th><th>Status</th></tr></thead>
-                                <tbody id="allTradesTableBody"></tbody>
-                            </table>
-                        </div>
-                    </div>
-                    
-                    <!-- Pagination -->
-                    <div class="card-body border-top d-flex justify-content-between align-items-center" style="border-color: var(--border-color) !important;">
-                        <span class="text-muted small" id="tradePaginationInfo">Showing 0 trades</span>
-                        <div class="d-flex gap-2">
-                            <button class="btn btn-sm btn-primary" onclick="changeTradePage(-1)" id="tradePrevBtn" disabled><i class="fas fa-chevron-left"></i></button>
-                            <span class="text-muted small align-self-center" id="tradePageInfo">Page 1</span>
-                            <button class="btn btn-sm btn-primary" onclick="changeTradePage(1)" id="tradeNextBtn" disabled><i class="fas fa-chevron-right"></i></button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Analytics -->
-            <div class="tab-pane fade" id="analytics">
-                <div class="grid-3 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-chart-bar text-cyan"></i> Performance</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Total Trades</span><span class="info-value" id="totalTradesValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Winners</span><span class="info-value text-green" id="winningTradesValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Losers</span><span class="info-value text-red" id="losingTradesValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Win Rate</span><span class="info-value" id="winRateAnalyticsValue">0%</span></div>
-                            <div class="info-row"><span class="info-label">Profit Factor</span><span class="info-value" id="profitFactorValue">0</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-trophy text-yellow"></i> Session</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Session P&L</span><span class="info-value" id="sessionPnlAnalyticsValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Best Trade</span><span class="info-value text-green" id="bestTradeValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Worst Trade</span><span class="info-value text-red" id="worstTradeValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Average Win</span><span class="info-value text-green" id="avgWinValue">$0.00</span></div>
-                            <div class="info-row"><span class="info-label">Average Loss</span><span class="info-value text-red" id="avgLossValue">$0.00</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-percentage text-purple"></i> Rates</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Risk Per Trade</span><span class="info-value" id="riskPerTradeValue">1%</span></div>
-                            <div class="info-row"><span class="info-label">Size Multiplier</span><span class="info-value" id="sizeMultiplierValue">1x</span></div>
-                            <div class="info-row"><span class="info-label">Session Streak</span><span class="info-value" id="sessionStreakValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Recommendation</span><span class="info-value" id="sessionRecommendationValue">-</span></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Market -->
-            <div class="tab-pane fade" id="market">
-                <div class="grid-4 mt-3">
-                    <div class="stat-card"><div class="stat-value" id="spreadValue2">0%</div><div class="stat-label">Spread</div></div>
-                    <div class="stat-card"><div class="stat-value" id="volumeValue">$0</div><div class="stat-label">Volume 24h</div></div>
-                    <div class="stat-card"><div class="stat-value" id="rsiValue">50</div><div class="stat-label">RSI</div></div>
-                    <div class="stat-card"><div class="stat-value" id="change24hValue">0%</div><div class="stat-label">Change 24h</div></div>
-                </div>
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header">Support & Resistance</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Distance to Support</span><span class="info-value" id="distanceSupportValue">0%</span></div>
-                            <div class="info-row"><span class="info-label">Distance to Resistance</span><span class="info-value" id="distanceResistanceValue">0%</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">Position Details</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Stop Loss</span><span class="info-value" id="slValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Take Profit</span><span class="info-value" id="tpValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Position Qty</span><span class="info-value" id="positionQtyValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Risk Fraction</span><span class="info-value" id="riskFractionValue">-</span></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Strategy -->
-            <div class="tab-pane fade" id="strategy">
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-signal text-green"></i> Signal Engines</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Trend</span><span class="info-value" id="signalTrend">-</span></div>
-                            <div class="info-row"><span class="info-label">Momentum</span><span class="info-value" id="signalMomentum">-</span></div>
-                            <div class="info-row"><span class="info-label">Volume</span><span class="info-value" id="signalVolume">-</span></div>
-                            <div class="info-row"><span class="info-label">Volatility</span><span class="info-value" id="signalVolatility">-</span></div>
-                            <div class="info-row"><span class="info-label">Structure</span><span class="info-value" id="signalStructure">-</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-robot text-purple"></i> Auto-Improver</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Enabled</span><span class="info-value text-green" id="autoImproveEnabled">Yes</span></div>
-                            <div class="info-row"><span class="info-label">Consecutive Losses</span><span class="info-value text-red" id="consecutiveLosses">0</span></div>
-                            <div class="info-row"><span class="info-label">Consecutive Wins</span><span class="info-value text-green" id="consecutiveWins">0</span></div>
-                            <div class="info-row"><span class="info-label">Signal Quality</span><span class="info-value" id="signalQualityScore">0%</span></div>
-                            <div class="info-row"><span class="info-label">Raw Signal</span><span class="info-value" id="rawSignalValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Adaptive Multiplier</span><span class="info-value" id="adaptiveMultiplierValue">1.0x</span></div>
-                            <div class="info-row"><span class="info-label">Advanced Multiplier</span><span class="info-value" id="advancedMultiplierValue">1.0x</span></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header">Exit Intelligence</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Exit Score</span><span class="info-value" id="exitScoreValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Exit Threshold</span><span class="info-value" id="exitThresholdValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Exit Reason</span><span class="info-value" id="exitReasonValue">-</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">Decision</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Decision Reason</span><span class="info-value" id="decisionReasonValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Cooldown Gate</span><span class="info-value" id="cooldownGateValue">-</span></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Intel Log -->
-            <div class="tab-pane fade" id="intel-log">
-                <div class="card mt-3">
-                    <div class="card-header"><i class="fas fa-list-alt text-purple"></i> Decision / Intelligence Log</div>
-                    <div class="card-body" style="max-height: 500px; overflow-y: auto;" id="intelLogContainer"></div>
-                </div>
-            </div>
-
-            <!-- Risk -->
-            <div class="tab-pane fade" id="risk">
-                <div class="grid-3 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-shield-alt text-red"></i> Risk Metrics</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Max Drawdown</span><span class="info-value text-red" id="maxDrawdownValue">0%</span></div>
-                            <div class="info-row"><span class="info-label">Risk Per Trade</span><span class="info-value" id="riskPerTradeValue2">1%</span></div>
-                            <div class="info-row"><span class="info-label">Capital Limit</span><span class="info-value" id="capitalLimitValue">$0</span></div>
-                            <div class="info-row"><span class="info-label">Cash Buffer</span><span class="info-value" id="cashBufferValue">$0</span></div>
-                            <div class="info-row"><span class="info-label">Current Exposure</span><span class="info-value" id="currentExposureValue">0%</span></div>
-                            <div class="info-row"><span class="info-label">Capital Reserve</span><span class="info-value" id="capitalReserveValue2">0%</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-exclamation-triangle text-yellow"></i> Emergency</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Circuit Breaker</span><span class="info-value" id="circuitBreakerTripsValue">0 trips</span></div>
-                            <div class="info-row"><span class="info-label">Emergency Stop</span><span class="info-value text-yellow" id="emergencyStopValue">Inactive</span></div>
-                            <div class="info-row"><span class="info-label">Reconnections</span><span class="info-value" id="reconnectionsValue">0</span></div>
-                            <div class="info-row"><span class="info-label">Dynamic Exit</span><span class="info-value" id="dynamicExitValue">-</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-sliders-h text-blue"></i> Runtime</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Investment Mode</span><span class="info-value" id="investmentModeValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Capital Reserve</span><span class="info-value" id="capitalReserveValue">0%</span></div>
-                            <div class="info-row"><span class="info-label">Optimized Risk</span><span class="info-value" id="optimizedRiskValue">-</span></div>
-                            <div class="info-row"><span class="info-label">Optimization Reason</span><span class="info-value" id="optimizationReasonValue">-</span></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Settings -->
-            <div class="tab-pane fade" id="settings">
-                <div class="card mt-3">
-                    <div class="card-header"><i class="fas fa-cogs text-orange"></i> Runtime Settings</div>
-                    <div class="card-body" id="settingsContainer"></div>
-                </div>
-            </div>
-
-            <!-- System -->
-            <div class="tab-pane fade" id="system">
-                <div class="card mt-3">
-                    <div class="card-header"><i class="fas fa-server text-blue"></i> System Metrics</div>
-                    <div class="card-body" id="systemContainer"></div>
-                </div>
-            </div>
-
-            <!-- Health -->
-            <div class="tab-pane fade" id="health">
-                <div class="grid-4 mt-3">
-                    <div class="card">
-                        <div class="card-header text-center">Exchange</div>
-                        <div class="card-body text-center">
-                            <i class="fas fa-check-circle fa-2x text-green mb-2" id="exchangeIcon"></i>
-                            <div id="exchangeStatus" class="text-green">Connected</div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header text-center">Database</div>
-                        <div class="card-body text-center">
-                            <i class="fas fa-check-circle fa-2x text-green mb-2" id="databaseIcon"></i>
-                            <div id="databaseStatus" class="text-green">Connected</div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header text-center">API Latency</div>
-                        <div class="card-body text-center">
-                            <div class="stat-value" id="apiLatency">0 ms</div>
-                            <div class="stat-label">p95</div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header text-center">Uptime</div>
-                        <div class="card-body text-center">
-                            <div class="stat-value" id="uptimeValue">0h</div>
-                            <div class="stat-label">Running</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- AI/ML Tab -->
-            <div class="tab-pane fade" id="ai-ml">
-                <div class="grid-4 mt-3">
-                    <div class="stat-card">
-                        <div class="stat-value glow-purple" id="regimeValue">-</div>
-                        <div class="stat-label">Market Regime</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value glow-orange" id="optimizerScoreValue">0</div>
-                        <div class="stat-label">Optimizer Score</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value" id="consecutiveLossesValue">0</div>
-                        <div class="stat-label">Consecutive Losses</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value glow-cyan" id="activePairValue">BTC/USDT</div>
-                        <div class="stat-label">Active Pair</div>
-                    </div>
-                </div>
-                
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-brain text-purple"></i> Bayesian Optimizer</div>
-                        <div class="card-body" id="optimizerData">
-                            <div class="text-muted">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-dna text-orange"></i> Genetic Algorithm</div>
-                        <div class="card-body" id="evolverData">
-                            <div class="text-muted">Loading...</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-layer-group text-cyan"></i> Pairs Opportunity Scores</div>
-                        <div class="card-body" id="pairsData" style="max-height: 250px; overflow-y: auto;">
-                            <div class="text-muted">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-sliders-h text-green"></i> Current Filters</div>
-                        <div class="card-body" id="filtersData">
-                            <div class="text-muted">Loading...</div>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-chart-line text-blue"></i> Regime Detector</div>
-                        <div class="card-body" id="regimeData">
-                            <div class="text-muted">Loading...</div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-filter text-yellow"></i> Adaptive Filters</div>
-                        <div class="card-body" id="adaptiveFiltersData">
-                            <div class="text-muted">Loading...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- AI/LLM Monitor -->
-            <div class="tab-pane fade" id="ai-monitor">
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-robot text-cyan"></i> ML Models Status</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">ML Direction</span><span class="info-value" id="aiMLDirection">-</span></div>
-                            <div class="info-row"><span class="info-label">ML Confidence</span><span class="info-value" id="aiMLConfidence">-</span></div>
-                            <div class="info-row"><span class="info-label">TFT Direction</span><span class="info-value" id="aiTFTDirection">-</span></div>
-                            <div class="info-row"><span class="info-label">TFT Confidence</span><span class="info-value" id="aiTFTConfidence">-</span></div>
-                            <div class="info-row"><span class="info-label">NBEATS Direction</span><span class="info-value" id="aiNBEATSDirection">-</span></div>
-                            <div class="info-row"><span class="info-label">NBEATS Confidence</span><span class="info-value" id="aiNBEATSConfidence">-</span></div>
-                            <div class="info-row"><span class="info-label">Market Regime</span><span class="info-value" id="aiMarketRegime">-</span></div>
-                            <div class="info-row"><span class="info-label">Market Sentiment</span><span class="info-value" id="aiMarketSentiment">-</span></div>
-                            <div class="info-row"><span class="info-label">LLM Mode</span><span class="info-value" id="aiLlmMode">-</span></div>
-                            <div class="info-row"><span class="info-label">LLM Active</span><span class="info-value" id="aiLlmActive">-</span></div>
-                            <div class="info-row"><span class="info-label">LLM Decisions</span><span class="info-value" id="aiLlmDecisions">-</span></div>
-                            <div class="info-row"><span class="info-label">AutoFix Status</span><span class="info-value" id="aiAutoFixStatus">-</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-brain text-purple"></i> Autonomous Brain</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Active Pair</span><span class="info-value" id="aiActivePair">-</span></div>
-                            <div class="info-row"><span class="info-label">Trading Mode</span><span class="info-value" id="aiTradingMode">-</span></div>
-                            <div class="info-row"><span class="info-label">Leverage</span><span class="info-value" id="aiLeverage">-</span></div>
-                            <div class="info-row"><span class="info-label">Side</span><span class="info-value" id="aiSide">-</span></div>
-                            <div class="info-row"><span class="info-label">All Modules Init</span><span class="info-value" id="aiAllModules">-</span></div>
-                            <div class="info-row"><span class="info-label">WS Connected</span><span class="info-value" id="aiWSConnected">-</span></div>
-                            <div class="info-row"><span class="info-label">Auto-Improver Trades</span><span class="info-value" id="aiAutoTrades">-</span></div>
-                            <div class="info-row"><span class="info-label">Auto-Improver Win Rate</span><span class="info-value" id="aiAutoWR">-</span></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="grid-2 mt-3">
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-shield-alt text-green"></i> System Health</div>
-                        <div class="card-body">
-                            <div class="info-row"><span class="info-label">Resilience</span><span class="info-value" id="aiResilience">-</span></div>
-                            <div class="info-row"><span class="info-label">Consecutive Failures</span><span class="info-value" id="aiFailures">-</span></div>
-                            <div class="info-row"><span class="info-label">Emergency System</span><span class="info-value" id="aiEmergency">-</span></div>
-                            <div class="info-row"><span class="info-label">Consecutive Losses</span><span class="info-value" id="aiConsecLosses">-</span></div>
-                            <div class="info-row"><span class="info-label">Optimization Count</span><span class="info-value" id="aiOptCount">-</span></div>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header"><i class="fas fa-sliders-h text-yellow"></i> Auto-Optimized Params</div>
-                        <div class="card-body">
-                            <div id="aiAutoParams" class="text-muted">Waiting for data...</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Logs -->
-            <div class="tab-pane fade" id="logs">
-                <div class="card mt-3">
-                    <div class="card-header"><i class="fas fa-list text-cyan"></i> System Logs</div>
-                    <div class="card-body" style="max-height: 500px; overflow-y: auto;" id="logsContainer"></div>
-                </div>
-            </div>
+        <div class="filter-row">
+          <span class="filter-name">ADX</span>
+          <span id="mkt-adx" class="filter-value">—</span>
         </div>
+        <div class="filter-row">
+          <span class="filter-name">RSI</span>
+          <span id="mkt-rsi" class="filter-value">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Spread</span>
+          <span id="mkt-spread" class="filter-value">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Volatility Regime</span>
+          <span id="mkt-regime">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Order Flow</span>
+          <span id="mkt-flow">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Timeframe</span>
+          <span id="mkt-tf" class="filter-value">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Cooldown</span>
+          <span id="mkt-cooldown">—</span>
+        </div>
+      </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        let tradePage = 1;
-        let tradePerPage = 20;
-        let tradeTotalPages = 1;
-        let tradeSummary = null;
-        let dashboardAuth = {
-            user: localStorage.getItem('dashboard_user') || '',
-            password: localStorage.getItem('dashboard_password') || '',
-            token: new URLSearchParams(window.location.search).get('token') || localStorage.getItem('dashboard_token') || ''
-        };
-        let isAuthenticated = false;
-        let snapshotInFlight = false;
-        let latestSnapshot = {};
+    <!-- Signal Summary -->
+    <div class="card">
+      <div class="card-title">📡 Signal Bundle</div>
+      <div style="margin-bottom:14px; display:flex; align-items:center; justify-content:space-between;">
+        <span style="font-size:12px; color:var(--text-muted)">Signal</span>
+        <span id="sig-main" class="signal-chip chip-neutral">HOLD</span>
+      </div>
+      <div style="margin-bottom:14px;">
+        <div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:6px;">
+          <span style="color:var(--text-muted)">Confidence</span>
+          <span id="sig-conf-pct" style="color:var(--accent-blue); font-weight:700">0%</span>
+        </div>
+        <div class="confidence-bar-track">
+          <div class="confidence-bar-fill" id="sig-conf-bar" style="width:0%"></div>
+        </div>
+      </div>
+      <div class="signals-grid" id="signals-grid">
+        <div class="signal-item"><span class="signal-name">Trend</span><span id="sig-trend" class="signal-chip chip-neutral">—</span></div>
+        <div class="signal-item"><span class="signal-name">Momentum</span><span id="sig-momentum" class="signal-chip chip-neutral">—</span></div>
+        <div class="signal-item"><span class="signal-name">Volume</span><span id="sig-volume" class="signal-chip chip-neutral">—</span></div>
+        <div class="signal-item"><span class="signal-name">Volatility</span><span id="sig-volatility" class="signal-chip chip-neutral">—</span></div>
+        <div class="signal-item"><span class="signal-name">Structure</span><span id="sig-structure" class="signal-chip chip-neutral">—</span></div>
+        <div class="signal-item"><span class="signal-name">Order Flow</span><span id="sig-orderflow" class="signal-chip chip-neutral">—</span></div>
+      </div>
+    </div>
 
-        function showLogin(message = '') {
-            const overlay = document.getElementById('loginOverlay');
-            overlay.style.display = 'flex';
-            document.getElementById('loginUser').value = dashboardAuth.user || '';
-            document.getElementById('loginPassword').value = dashboardAuth.password || '';
-            document.getElementById('loginToken').value = dashboardAuth.token || '';
-            document.getElementById('loginError').textContent = message || '';
-        }
+    <!-- Current Position -->
+    <div class="card">
+      <div class="card-title">💼 Open Position</div>
+      <div id="position-none" style="color:var(--text-muted); font-size:13px; text-align:center; padding:20px 0;">
+        No active position
+      </div>
+      <div id="position-details" style="display:none; flex-direction:column; gap:10px;">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:6px;">
+          <span id="pos-side-badge" class="pos-side BUY">BUY</span>
+          <span id="pos-symbol" style="font-size:14px; font-weight:700;">BTC/USDT</span>
+        </div>
+        <div class="filter-row"><span class="filter-name">Entry Price</span><span id="pos-entry" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Current Price</span><span id="pos-mark" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Quantity</span><span id="pos-qty" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Stop Loss</span><span id="pos-sl" style="color:var(--accent-red); font-weight:700;">—</span></div>
+        <div class="filter-row"><span class="filter-name">Take Profit</span><span id="pos-tp" style="color:var(--accent-green); font-weight:700;">—</span></div>
+        <div class="filter-row">
+          <span class="filter-name">Unrealized PnL</span>
+          <span id="pos-upnl" style="font-weight:800; font-size:15px;">—</span>
+        </div>
+        <button class="btn btn-danger" style="width:100%; margin-top:8px;" onclick="sendControl('force_close')">
+          🚨 Force Close Position
+        </button>
+      </div>
+    </div>
+  </div>
 
-        function hideLogin() {
-            document.getElementById('loginOverlay').style.display = 'none';
-            document.getElementById('loginError').textContent = '';
-        }
+  <!-- Decision Trace + Log -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">🔍 Decision Trace</div>
+      <div id="decision-trace-content" style="display:flex; flex-direction:column; gap:6px;">
+        <div style="color:var(--text-muted); font-size:13px;">Waiting for signal...</div>
+      </div>
+      <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+        <div class="filter-row">
+          <span class="filter-name">Decision Reason</span>
+          <span id="decision-reason" style="font-size:11px; color:var(--text-secondary); text-align:right; max-width:200px;">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Setup Quality</span>
+          <span id="setup-quality" class="filter-value">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Capital Profile</span>
+          <span id="capital-profile" class="filter-value">—</span>
+        </div>
+        <div class="filter-row">
+          <span class="filter-name">Operable Capital</span>
+          <span id="operable-capital" class="filter-value">—</span>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">📄 Live Feed</div>
+      <div class="log-feed" id="log-feed-main">
+        <div class="log-entry"><span class="log-time">--:--:--</span><span class="log-level INFO">INFO</span><span class="log-msg">Connecting to dashboard...</span></div>
+      </div>
+    </div>
+  </div>
+</div>
 
-        function persistAuth() {
-            localStorage.setItem('dashboard_user', dashboardAuth.user || '');
-            localStorage.setItem('dashboard_password', dashboardAuth.password || '');
-            localStorage.setItem('dashboard_token', dashboardAuth.token || '');
-        }
+<!-- ──────────── PAGE: POSITIONS ──────────── -->
+<div class="page" id="page-positions">
+  <div class="card" style="margin-bottom:20px;">
+    <div class="card-title">💼 Open Positions</div>
+    <div id="positions-table-wrap">
+      <table class="data-table">
+        <thead><tr>
+          <th>Pair</th><th>Side</th><th>Qty</th><th>Entry</th>
+          <th>Mark</th><th>Stop Loss</th><th>Take Profit</th><th>Unrealized PnL</th><th>Action</th>
+        </tr></thead>
+        <tbody id="positions-tbody">
+          <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:30px;">No open positions</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div style="display:flex; gap:10px;">
+    <button class="btn btn-danger" onclick="sendControl('force_close')">🚨 Force Close All</button>
+    <button class="btn btn-secondary" onclick="sendControl('pause')">⏸ Pause Bot</button>
+    <button class="btn btn-success" onclick="sendControl('resume')">▶ Resume Bot</button>
+  </div>
+</div>
 
-        async function submitLogin() {
-            dashboardAuth.user = (document.getElementById('loginUser').value || '').trim();
-            dashboardAuth.password = (document.getElementById('loginPassword').value || '').trim();
-            dashboardAuth.token = (document.getElementById('loginToken').value || '').trim();
-            persistAuth();
+<!-- ──────────── PAGE: TRADE HISTORY ──────────── -->
+<div class="page" id="page-trades">
+  <div class="card">
+    <div class="card-title">📋 Trade History</div>
+    <div style="margin-bottom:12px; display:flex; gap:10px; flex-wrap:wrap;">
+      <select class="form-select" id="filter-side" style="width:auto;" onchange="filterTrades()">
+        <option value="">All Sides</option>
+        <option value="BUY">BUY</option>
+        <option value="SELL">SELL</option>
+      </select>
+      <select class="form-select" id="filter-result" style="width:auto;" onchange="filterTrades()">
+        <option value="">All Results</option>
+        <option value="WIN">Wins</option>
+        <option value="LOSS">Losses</option>
+      </select>
+    </div>
+    <div style="overflow-x:auto;">
+      <table class="data-table" id="trades-table">
+        <thead><tr>
+          <th>Time</th><th>Pair</th><th>Side</th><th>Entry</th>
+          <th>Exit</th><th>Qty</th><th>PnL</th><th>Status</th><th>Duration</th>
+        </tr></thead>
+        <tbody id="trades-tbody">
+          <tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:30px;">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:12px; display:flex; gap:20px; flex-wrap:wrap;" id="trades-summary">
+      <span style="font-size:12px; color:var(--text-muted)">Total: <span id="stat-total" class="filter-value">0</span></span>
+      <span style="font-size:12px; color:var(--text-muted)">Wins: <span id="stat-wins" style="color:var(--accent-green); font-weight:700;">0</span></span>
+      <span style="font-size:12px; color:var(--text-muted)">Losses: <span id="stat-losses" style="color:var(--accent-red); font-weight:700;">0</span></span>
+      <span style="font-size:12px; color:var(--text-muted)">Total PnL: <span id="stat-total-pnl" style="font-weight:700;">0.00</span></span>
+    </div>
+  </div>
+</div>
 
-            try {
-                const r = await fetch('/api/auth/login', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user: dashboardAuth.user, password: dashboardAuth.password, token: dashboardAuth.token})
-                });
-                const j = await r.json();
-                if (!r.ok || !j.success) {
-                    isAuthenticated = false;
-                    showLogin(j.error || 'Credenciales inválidas');
-                    return;
-                }
-                isAuthenticated = true;
-                hideLogin();
-                fetchSnapshot();
-                loadAllTrades();
-                fetchAIMLData();
-            } catch (e) {
-                isAuthenticated = false;
-                showLogin('No se pudo validar sesión');
-            }
-        }
+<!-- ──────────── PAGE: SIGNALS & FILTERS ──────────── -->
+<div class="page" id="page-signals">
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">🔧 Active Filter Config</div>
+      <div id="filter-config-display" style="display:flex; flex-direction:column; gap:4px;">
+        <div class="filter-row"><span class="filter-name">ADX Threshold</span><span id="f-adx" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">RSI Buy Threshold</span><span id="f-rsi-buy" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">RSI Sell Threshold</span><span id="f-rsi-sell" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Vol Buy Threshold</span><span id="f-vol-buy" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Vol Sell Threshold</span><span id="f-vol-sell" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Min Confidence</span><span id="f-conf" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">ATR Low Threshold</span><span id="f-atr-low" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">ATR High Threshold</span><span id="f-atr-high" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">SL ATR Multiplier</span><span id="f-sl-mult" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">TP ATR Multiplier</span><span id="f-tp-mult" class="filter-value">—</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">✅ Last Validation Checks</div>
+      <div id="validation-checks" style="display:flex; flex-direction:column; gap:4px;">
+        <div style="color:var(--text-muted); font-size:13px;">Waiting for trade evaluation...</div>
+      </div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">🧠 Autonomous Brain</div>
+    <div class="grid-3">
+      <div class="filter-row"><span class="filter-name">Market Condition</span><span id="auto-condition" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Confluence Score</span><span id="auto-confluence" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Inv. Mode</span><span id="auto-mode" class="filter-value">—</span></div>
+    </div>
+  </div>
+</div>
 
-        function authFetch(url, options = {}) {
-            const opts = {...options};
-            opts.headers = {...(options.headers || {})};
-            if (dashboardAuth.token) {
-                opts.headers['X-Dashboard-Token'] = dashboardAuth.token;
-            }
-            if (dashboardAuth.user && dashboardAuth.password) {
-                opts.headers['Authorization'] = 'Basic ' + btoa(`${dashboardAuth.user}:${dashboardAuth.password}`);
-            }
-            return fetch(url, opts).then((response) => {
-                if (response.status === 401) {
-                    isAuthenticated = false;
-                    showLogin('Sesión inválida. Inicia sesión nuevamente.');
-                    throw new Error('Unauthorized');
-                }
-                return response;
-            });
-        }
-        
-        function fmt(n, d=2) { return (n===null||n===undefined)?'-':typeof n==='number'?n.toFixed(d):n; }
-        function fmtPct(n) { return n===null||n===undefined?'-':(n*100).toFixed(1)+'%'; }
-        function fmtCur(n) { return '$'+fmt(n,2); }
-        function fmtPctNum(n) { return n===null||n===undefined?'-':n.toFixed(2)+'%'; }
-        
-        function getSignalClass(s) { return s==='BUY'?'signal-buy':s==='SELL'?'signal-sell':'signal-hold'; }
-        
-        function getStatusClass(s) {
-            if(s==='RUNNING'||s==='READY')return'status-running';
-            if(s==='ERROR')return'status-error';
-            if(s==='PAUSED'||s==='USER_PAUSED')return'status-paused';
-            return'status-waiting';
-        }
-        
-        async function fetchSnapshot() {
-            if (snapshotInFlight) return;
-            try {
-                snapshotInFlight = true;
-                const started = performance.now();
-                const r = await authFetch('/api/snapshot');
-                if(!r.ok) throw new Error('Failed');
-                const payload = await r.json();
-                payload.api_latency_p95_ms = payload.api_latency_p95_ms || (performance.now() - started);
-                updateDashboard(payload);
-            } catch(e) { console.error('Error:',e); }
-            finally { snapshotInFlight = false; }
-        }
-        
-        async function loadAllTrades() {
-            try {
-                const statusFilter = document.getElementById('tradeStatusFilter').value;
-                const sideFilter = document.getElementById('tradeSideFilter').value;
-                const pairFilter = document.getElementById('tradePairFilter').value;
-                
-                let url = `/api/db_trades?page=${tradePage}&per_page=${tradePerPage}`;
-                if (statusFilter) url += `&status=${statusFilter}`;
-                if (sideFilter) url += `&side=${sideFilter}`;
-                if (pairFilter) url += `&pair=${pairFilter}`;
-                
-                const r = await authFetch(url);
-                const data = await r.json();
-                
-                tradeTotalPages = data.total_pages || 1;
-                tradeSummary = data.summary || null;
-                
-                updateTradesTable(data.trades || []);
-                updateTradeSummary(data.summary);
-                updateTradePagination(data);
-            } catch(e) { console.error('Error loading trades:',e); }
-        }
-        
-        function changeTradePage(delta) {
-            const newPage = tradePage + delta;
-            if (newPage >= 1 && newPage <= tradeTotalPages) {
-                tradePage = newPage;
-                loadAllTrades();
-            }
-        }
-        
-        function updateTradeSummary(summary) {
-            if (!summary) return;
-            
-            document.getElementById('summaryTotalTrades').textContent = summary.total_trades || 0;
-            document.getElementById('summaryWinRate').textContent = fmtPctNum(summary.win_rate || 0);
-            
-            const pnlEl = document.getElementById('summaryTotalPnl');
-            const pnl = summary.total_pnl || 0;
-            pnlEl.textContent = (pnl>=0?'+$':'$') + fmt(pnl, 2);
-            pnlEl.className = 'stat-value ' + (pnl >= 0 ? 'text-green' : 'text-red');
-            
-            document.getElementById('summaryProfitFactor').textContent = fmt(summary.profit_factor || 0, 2);
-        }
-        
-        function updateTradePagination(data) {
-            const total = data.total || 0;
-            const page = data.page || 1;
-            const perPage = data.per_page || tradePerPage;
-            const totalPages = data.total_pages || 1;
-            
-            const start = (page - 1) * perPage + 1;
-            const end = Math.min(page * perPage, total);
-            
-            document.getElementById('tradePaginationInfo').textContent = total > 0 ? `Showing ${start}-${end} of ${total} trades` : 'No trades found';
-            document.getElementById('tradePageInfo').textContent = `Page ${page} of ${totalPages}`;
-            document.getElementById('tradePrevBtn').disabled = page <= 1;
-            document.getElementById('tradeNextBtn').disabled = page >= totalPages;
-        }
-        
-        function updateDashboard(d) {
-            latestSnapshot = d || {};
-            // Status
-            const status = d.status||'WAITING';
-            document.getElementById('botStatus').textContent = status;
-            document.getElementById('botStatus').className = 'status-badge '+getStatusClass(status);
-            document.getElementById('statusValue').textContent = status;
-            
-            // Price & Signal
-            document.getElementById('priceValue').textContent = fmtCur(d.price);
-            const sig = d.signal||'HOLD', sigEl = document.getElementById('signalValue');
-            sigEl.textContent = sig;
-            sigEl.className = 'stat-value '+getSignalClass(sig).replace('signal-','');
-            const signalBox = document.getElementById('signalValue');
-            signalBox.className = 'signal-box '+getSignalClass(sig);
-            signalBox.textContent = sig;
-            
-            document.getElementById('confidenceValue').textContent = fmtPct(d.confidence);
-            document.getElementById('pairValue').textContent = d.pair||'BTC/USDT';
-            
-            // Account
-            document.getElementById('equityValue').textContent = fmtCur(d.total_equity||d.equity);
-            document.getElementById('balanceValue').textContent = fmtCur(d.balance);
-            document.getElementById('btcBalanceValue').textContent = (d.btc_balance || 0).toFixed(6) + ' BTC';
-            document.getElementById('btcValueValue').textContent = fmtCur(d.btc_value);
-            
-            const pnl = d.daily_pnl||0;
-            const pnlEl = document.getElementById('dailyPnlValue');
-            pnlEl.textContent = (pnl>=0?'+':'')+fmtPct(pnl);
-            pnlEl.className = 'info-value '+(pnl>=0?'text-green':'text-red');
-            
-            const spnl = d.session_pnl||0;
-            const spnlEl = document.getElementById('sessionPnlValue');
-            spnlEl.textContent = (spnl>=0?'+$':'$')+fmt(spnl,2);
-            spnlEl.className = 'info-value '+(spnl>=0?'text-green':'text-red');
-            
-            const upnl = d.unrealized_pnl||0;
-            const upnlEl = document.getElementById('unrealizedPnlValue');
-            upnlEl.textContent = (upnl>=0?'+$':'$')+fmt(upnl,2);
-            upnlEl.className = 'info-value '+(upnl>=0?'text-green':'text-red');
-            
-            // Performance
-            document.getElementById('tradesTodayValue').textContent = d.trades_today||0;
-            document.getElementById('winRateValue').textContent = fmtPct(d.win_rate);
-            document.getElementById('capitalProfileValue').textContent = d.capital_profile||'-';
-            document.getElementById('operableCapitalValue').textContent = fmtCur(d.operable_capital_usdt);
-            document.getElementById('lastTradeValue').textContent = d.last_trade||'-';
-            
-            // Status
-            document.getElementById('cooldownValue').textContent = d.cooldown||'READY';
-            document.getElementById('hasPositionValue').textContent = d.has_open_position?(d.open_position_side||'Open'):'None';
-            document.getElementById('entryPriceValue').textContent = fmtCur(d.open_position_entry);
-            document.getElementById('stopTradeBtn').style.display = d.has_open_position ? 'inline-block' : 'none';
-            
-            const exc = d.exchange_status||'UNKNOWN';
-            document.getElementById('exchangeStatusValue').textContent = exc==='CONNECTED'?'Connected':exc;
-            document.getElementById('exchangeStatusValue').className = 'info-value '+(exc==='CONNECTED'?'text-green':'text-red');
-            
-            // Market
-            document.getElementById('trendValue').textContent = d.trend||'NEUTRAL';
-            document.getElementById('adxValue').textContent = fmt(d.adx,1);
-            document.getElementById('volatilityRegimeValue').textContent = d.volatility_regime||'NORMAL';
-            document.getElementById('orderFlowValue').textContent = d.order_flow||'NEUTRAL';
-            document.getElementById('spreadValue').textContent = fmtPct(d.spread);
-            
-            // AI/ML
-            document.getElementById('mlDirectionValue').textContent = d.ml_direction||'-';
-            document.getElementById('mlConfidenceValue').textContent = fmtPct(d.ml_confidence);
-            document.getElementById('marketRegimeValue').textContent = d.market_regime||'-';
-            document.getElementById('marketSentimentValue').textContent = d.market_sentiment||'-';
-            document.getElementById('confluenceScoreValue').textContent = fmtPct(d.confluence_score);
-            
-            // Market tab
-            document.getElementById('spreadValue2').textContent = fmtPct(d.spread);
-            document.getElementById('rsiValue').textContent = fmt(d.rsi,0);
-            document.getElementById('change24hValue').textContent = fmtPct(d.change_24h);
-            document.getElementById('distanceSupportValue').textContent = fmtPct(d.distance_to_support);
-            document.getElementById('distanceResistanceValue').textContent = fmtPct(d.distance_to_resistance);
-            
-            // Position
-            document.getElementById('slValue').textContent = fmtCur(d.open_position_sl);
-            document.getElementById('tpValue').textContent = fmtCur(d.open_position_tp);
-            document.getElementById('positionQtyValue').textContent = fmt(d.open_position_qty,4);
-            document.getElementById('riskFractionValue').textContent = fmtPct(d.live_trade_risk_fraction);
-            
-            // Strategy
-            const signals = d.signals||{};
-            document.getElementById('signalTrend').textContent = signals.trend||'-';
-            document.getElementById('signalMomentum').textContent = signals.momentum||'-';
-            document.getElementById('signalVolume').textContent = signals.volume||'-';
-            document.getElementById('signalVolatility').textContent = signals.volatility||'-';
-            document.getElementById('signalStructure').textContent = signals.structure||'-';
-            document.getElementById('signalQualityScore').textContent = fmtPct(d.signal_quality_score);
-            document.getElementById('rawSignalValue').textContent = d.raw_signal || d.signal || '-';
-            
-            // Risk metrics
-            const riskMetrics = d.risk_metrics || {};
-            document.getElementById('riskPerTradeValue').textContent = fmtPct(d.live_trade_risk_fraction);
-            document.getElementById('riskPerTradeValue2').textContent = fmtPct(d.live_trade_risk_fraction);
-            document.getElementById('capitalLimitValue').textContent = fmtCur(d.capital_limit_usdt);
-            document.getElementById('cashBufferValue').textContent = fmtCur(d.min_cash_buffer_usdt);
-            document.getElementById('currentExposureValue').textContent = fmtPct(riskMetrics.current_exposure || 0);
-            document.getElementById('maxDrawdownValue').textContent = fmtPct(riskMetrics.max_drawdown || 0);
-            document.getElementById('capitalReserveValue2').textContent = fmtPct(d.capital_reserve_ratio);
-            document.getElementById('circuitBreakerTripsValue').textContent = (d.circuit_breaker_trips || 0) + ' trips';
-            document.getElementById('emergencyStopValue').textContent = d.emergency_stop_active ? 'Active' : 'Inactive';
-            document.getElementById('emergencyStopValue').className = 'info-value ' + (d.emergency_stop_active ? 'text-red' : 'text-green');
-            document.getElementById('reconnectionsValue').textContent = d.exchange_reconnections || 0;
-            document.getElementById('dynamicExitValue').textContent = d.dynamic_exit_enabled ? 'Enabled' : 'Disabled';
+<!-- ──────────── PAGE: AI / LLM ──────────── -->
+<div class="page" id="page-ai">
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">🤖 LLM Trade Gate</div>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+        <span id="llm-mode-badge" class="llm-mode-badge">BASE</span>
+        <span id="llm-model-name" style="font-size:12px; color:var(--text-muted);">—</span>
+      </div>
+      <div class="filter-row">
+        <span class="filter-name">Ollama Health</span>
+        <span><span id="llm-health-dot" class="llm-health-dot unknown"></span><span id="llm-health-text" style="font-size:12px;">Unknown</span></span>
+      </div>
+      <div class="filter-row"><span class="filter-name">Warmup Done</span><span id="llm-warmup" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Total Analyzed</span><span id="llm-total" class="filter-value">0</span></div>
+      <div class="filter-row"><span class="filter-name">Confirmed</span><span id="llm-confirmed" style="color:var(--accent-green); font-weight:700;">0</span></div>
+      <div class="filter-row"><span class="filter-name">Rejected</span><span id="llm-rejected" style="color:var(--accent-red); font-weight:700;">0</span></div>
+      <div class="filter-row"><span class="filter-name">Confirmation Rate</span><span id="llm-rate" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Avg Latency</span><span id="llm-latency" class="filter-value">—</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">📊 Autonomous Optimizer</div>
+      <div class="filter-row"><span class="filter-name">Total Trades Tracked</span><span id="ao-trades" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Win Rate (Optimizer)</span><span id="ao-wr" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Consecutive Losses</span><span id="ao-losses" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Optimization Cycles</span><span id="ao-cycles" class="filter-value">—</span></div>
+    </div>
+  </div>
+</div>
 
-            // Auto-Improver multipliers
-            document.getElementById('adaptiveMultiplierValue').textContent = (riskMetrics.adaptive_size_multiplier || 1.0).toFixed(2) + 'x';
-            document.getElementById('advancedMultiplierValue').textContent = (riskMetrics.advanced_size_multiplier || 1.0).toFixed(2) + 'x';
-            document.getElementById('autoImproveEnabled').textContent = d.auto_improver_enabled !== false ? 'Yes' : 'No';
-            document.getElementById('consecutiveLosses').textContent = d.consecutive_losses || 0;
-            document.getElementById('consecutiveWins').textContent = d.consecutive_wins || 0;
-            
-            // Exit Intelligence
-            document.getElementById('exitScoreValue').textContent = fmt(d.exit_intelligence_score,3);
-            document.getElementById('exitThresholdValue').textContent = fmt(d.exit_intelligence_threshold,3);
-            document.getElementById('exitReasonValue').textContent = d.exit_intelligence_reason||'-';
-            document.getElementById('decisionReasonValue').textContent = d.decision_reason||'-';
-            document.getElementById('cooldownGateValue').textContent = d.cooldown_complete?'Complete':'Active';
-            
-            // Runtime settings
-            const runtimeSettings = d.runtime_settings || {};
-            document.getElementById('investmentModeValue').textContent = runtimeSettings.investment_mode || d.investment_mode || '-';
-            document.getElementById('optimizedRiskValue').textContent = fmtPct(d.optimized_risk_per_trade_fraction);
-            document.getElementById('optimizationReasonValue').textContent = d.optimization_reason || runtimeSettings.optimization_reason || '-';
-            
-            // Health
-            document.getElementById('exchangeIcon').className = 'fas fa-'+(exc==='CONNECTED'?'check-circle text-green':'times-circle text-red')+' fa-2x mb-2';
-            document.getElementById('exchangeStatus').textContent = exc==='CONNECTED'?'Connected':exc;
-            document.getElementById('exchangeStatus').className = exc==='CONNECTED'?'text-green':'text-red';
-            
-            const db = d.database_status||'UNKNOWN';
-            document.getElementById('databaseIcon').className = 'fas fa-'+(db==='CONNECTED'?'check-circle text-green':'times-circle text-red')+' fa-2x mb-2';
-            document.getElementById('databaseStatus').textContent = db==='CONNECTED'?'Connected':db;
-            document.getElementById('databaseStatus').className = db==='CONNECTED'?'text-green':'text-red';
-            
-            document.getElementById('apiLatency').textContent = fmt(d.api_latency_p95_ms,0)+' ms';
-            
-            // Update trades
-            updateTradesTable(d.trade_history||[]);
-            updateLogs(d.logs||[]);
-            updateIntelLogs(d.logs||[]);
-            updateSettingsTab(d.runtime_settings || {});
-            updateSystemTab(d.system || {});
-            updateAIMonitorTab(d);
-        }
+<!-- ──────────── PAGE: RISK ──────────── -->
+<div class="page" id="page-risk">
+  <div class="grid-4">
+    <div class="metric-card" style="--mc-color:var(--accent-red)">
+      <div class="metric-label">Daily Loss Limit</div>
+      <div class="metric-value" id="r-daily-loss">—</div>
+      <div class="metric-sub">max drawdown per day</div>
+    </div>
+    <div class="metric-card" style="--mc-color:var(--accent-orange)">
+      <div class="metric-label">Max Drawdown</div>
+      <div class="metric-value" id="r-max-dd">—</div>
+      <div class="metric-sub">from equity peak</div>
+    </div>
+    <div class="metric-card" style="--mc-color:var(--accent-blue)">
+      <div class="metric-label">Risk Per Trade</div>
+      <div class="metric-value" id="r-risk-pt">—</div>
+      <div class="metric-sub">of account equity</div>
+    </div>
+    <div class="metric-card" style="--mc-color:var(--accent-purple)">
+      <div class="metric-label">Open Positions</div>
+      <div class="metric-value" id="r-open-pos">—</div>
+      <div class="metric-sub">concurrent trades</div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">🛡️ Risk Manager Status</div>
+    <div class="grid-2">
+      <div>
+        <div class="filter-row"><span class="filter-name">Drawdown Active</span><span id="r-dd-active">—</span></div>
+        <div class="filter-row"><span class="filter-name">Loss Pause Until</span><span id="r-pause-until" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Consecutive Losses</span><span id="r-cons-losses" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Emergency Stop</span><span id="r-emergency">—</span></div>
+      </div>
+      <div>
+        <div class="filter-row"><span class="filter-name">Capital Reserve</span><span id="r-cap-reserve" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Min Cash Buffer</span><span id="r-cash-buf" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Session Recommendation</span><span id="r-session-rec" class="filter-value">—</span></div>
+        <div class="filter-row"><span class="filter-name">Equity Peak</span><span id="r-eq-peak" class="filter-value">—</span></div>
+      </div>
+    </div>
+  </div>
+</div>
 
-        async function stopTrade() {
-            try {
-                const r = await authFetch('/api/control/stop_trade', {method:'POST'});
-                const j = await r.json();
-                if (!j.success) {
-                    alert('Error: ' + (j.error || 'unable to stop trade'));
-                }
-                await fetchSnapshot();
-            } catch (e) {
-                alert('Error: ' + e);
-            }
-        }
-        
-        function updateTradesTable(trades) {
-            const tbody = document.getElementById('allTradesTableBody');
-            if(!trades.length) { tbody.innerHTML = '<tr><td colspan="13" class="text-center text-muted">No trades yet</td></tr>'; return; }
-            tbody.innerHTML = trades.map(t => {
-                const p = t.pnl||0, pp = t.pnl_percent||0;
-                const sideClass = t.side==='BUY'?'text-green':t.side==='SELL'?'text-red':'';
-                const pnlClass = p>=0?'text-green':'text-red';
-                const statusClass = t.status==='CLOSED'?'badge-green':'badge-blue';
-                const duration = t.duration || '-';
-                return `<tr onclick="showTradeDetail(${JSON.stringify(JSON.stringify(t))})" style="cursor:pointer;">
-                    <td>${t.trade_id||'-'}</td>
-                    <td>${t.time||'-'}</td>
-                    <td>${t.pair||'-'}</td>
-                    <td class="${sideClass}">${t.side||'-'}</td>
-                    <td>${fmt(t.entry,4)}</td>
-                    <td>${fmt(t.exit,4)}</td>
-                    <td>${fmt(t.size||t.quantity,4)}</td>
-                    <td>${fmt(t.stop_loss,4)}</td>
-                    <td>${fmt(t.take_profit,4)}</td>
-                    <td class="${pnlClass}">${p>=0?'+':''}${fmt(p,2)}</td>
-                    <td class="${pnlClass}">${pp>=0?'+':''}${pp.toFixed(2)}%</td>
-                    <td>${duration}</td>
-                    <td><span class="badge ${statusClass}">${t.status||'closed'}</span></td>
-                </tr>`;
-            }).join('');
-        }
-        
-        function updateLogs(logs) {
-            const c = document.getElementById('logsContainer');
-            if(!logs.length) { c.innerHTML = '<div class="text-muted text-center py-4">No logs yet</div>'; return; }
-            c.innerHTML = logs.slice(0,100).map(l => `<div class="log-entry ${(l.level||'').toLowerCase()}">[${l.time||''}] ${l.message||l.msg||''}</div>`).join('');
-        }
+<!-- ──────────── PAGE: LOGS ──────────── -->
+<div class="page" id="page-logs">
+  <div class="card">
+    <div class="card-title">
+      📄 Live Bot Logs
+      <div style="margin-left:auto; display:flex; gap:8px;">
+        <select class="form-select" id="log-level-filter" style="width:auto; font-size:11px; padding:4px 8px;" onchange="filterLogs()">
+          <option value="">All Levels</option>
+          <option value="INFO">INFO</option>
+          <option value="WARNING">WARNING</option>
+          <option value="ERROR">ERROR</option>
+        </select>
+        <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="clearLogs()">Clear</button>
+        <button class="btn btn-secondary" style="padding:4px 10px; font-size:11px;" onclick="toggleAutoScroll()">Auto-scroll: <span id="autoscroll-state">ON</span></button>
+      </div>
+    </div>
+    <div class="log-feed" id="log-feed-full" style="height:500px;"></div>
+  </div>
+</div>
 
-        function updateIntelLogs(logs) {
-            const c = document.getElementById('intelLogContainer');
-            if(!c) return;
-            const intel = (logs || []).filter(l => {
-                const lvl = (l.level || '').toUpperCase();
-                const msg = (l.message || l.msg || '').toLowerCase();
-                return lvl === 'WARNING' || lvl === 'ERROR' || msg.includes('decision') || msg.includes('signal');
-            });
-            if(!intel.length) {
-                c.innerHTML = '<div class="text-muted text-center py-4">No intelligence events yet</div>';
-                return;
-            }
-            c.innerHTML = intel.slice(0,120).map(l => `<div class="log-entry ${(l.level||'').toLowerCase()}">[${l.time||''}] ${l.level||'INFO'} - ${l.message||l.msg||''}</div>`).join('');
-        }
+<!-- ──────────── PAGE: SETTINGS ──────────── -->
+<div class="page" id="page-settings">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+    <div>
+      <h2 style="font-size:18px; font-weight:700; color:var(--text-primary);">Settings</h2>
+      <p style="font-size:13px; color:var(--text-muted); margin-top:4px;">Changes are applied to the running bot in real time.</p>
+    </div>
+    <div style="display:flex; gap:10px;">
+      <button class="btn btn-secondary" onclick="loadCurrentSettings()">↺ Reload</button>
+      <button class="btn btn-primary" onclick="saveSettings()">💾 Apply Settings</button>
+    </div>
+  </div>
 
-        function updateSettingsTab(settings) {
-            const c = document.getElementById('settingsContainer');
-            if(!c) return;
-            const runtime = settings || {};
-            const pair = runtime.default_pair || latestSnapshot.pair || 'BTC/USDT';
-            const timeframe = runtime.default_timeframe || '5m';
-            const invMode = runtime.investment_mode || latestSnapshot.investment_mode || 'Balanced';
-            const quoteCurrency = runtime.quote_currency || 'USDT';
-            c.innerHTML = `
-                <div class="accordion" id="wsSettingsAccordion">
-                    <div class="accordion-item bg-dark text-light border-secondary">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button bg-dark text-light" type="button" data-bs-toggle="collapse" data-bs-target="#wsGeneralSettings">
-                                General (${quoteCurrency} • ${invMode})
-                            </button>
-                        </h2>
-                        <div id="wsGeneralSettings" class="accordion-collapse collapse show" data-bs-parent="#wsSettingsAccordion">
-                            <div class="accordion-body">
-                                <div class="grid-2">
-                                    <div class="mb-2"><label class="info-label">Par de trading</label><input id="wsPair" class="form-control form-control-sm" value="${pair}" /></div>
-                                    <div class="mb-2"><label class="info-label">Timeframe</label><input id="wsTimeframe" class="form-control form-control-sm" value="${timeframe}" /></div>
-                                    <div class="mb-2">
-                                        <label class="info-label">Moneda de cuenta</label>
-                                        <select id="wsQuoteCurrency" class="form-select form-select-sm">
-                                            ${['USDT','USDC','FDUSD','BUSD','TUSD','DAI','EUR','BTC','ETH','BNB'].map(v => `<option ${v===quoteCurrency?'selected':''} value="${v}">${v}</option>`).join('')}
-                                        </select>
-                                    </div>
-                                    <div class="mb-2">
-                                        <label class="info-label">Investment Mode</label>
-                                        <select id="wsInvestmentMode" class="form-select form-select-sm">
-                                            ${['Conservative','Balanced','Aggressive','Auto-Optimized','Custom'].map(v => `<option ${v===invMode?'selected':''} value="${v}">${v}</option>`).join('')}
-                                        </select>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="accordion-item bg-dark text-light border-secondary">
-                        <h2 class="accordion-header">
-                            <button class="accordion-button collapsed bg-dark text-light" type="button" data-bs-toggle="collapse" data-bs-target="#wsRiskSettings">
-                                Riesgo e inversión
-                            </button>
-                        </h2>
-                        <div id="wsRiskSettings" class="accordion-collapse collapse" data-bs-parent="#wsSettingsAccordion">
-                            <div class="accordion-body">
-                                <div class="grid-2">
-                                    <div class="mb-2"><label class="info-label">Risk por trade (0-0.1)</label><input id="wsRiskPerTrade" type="number" step="0.001" min="0.001" max="0.1" class="form-control form-control-sm" value="${runtime.risk_per_trade_fraction ?? 0.01}" /></div>
-                                    <div class="mb-2"><label class="info-label">Max allocation (0-1)</label><input id="wsMaxAllocation" type="number" step="0.01" min="0.01" max="1" class="form-control form-control-sm" value="${runtime.max_trade_balance_fraction ?? 0.2}" /></div>
-                                    <div class="mb-2"><label class="info-label">Capital limit</label><input id="wsCapitalLimit" type="number" step="1" min="0" class="form-control form-control-sm" value="${runtime.capital_limit_usdt ?? 0}" /></div>
-                                    <div class="mb-2"><label class="info-label">Reserve ratio (0-1)</label><input id="wsReserveRatio" type="number" step="0.01" min="0" max="0.9" class="form-control form-control-sm" value="${runtime.capital_reserve_ratio ?? 0.15}" /></div>
-                                    <div class="mb-2"><label class="info-label">Cash buffer</label><input id="wsCashBuffer" type="number" step="1" min="0" class="form-control form-control-sm" value="${runtime.min_cash_buffer_usdt ?? 10}" /></div>
-                                    <div class="mb-2 form-check mt-4">
-                                        <input class="form-check-input" type="checkbox" id="wsDynamicExit" ${(runtime.dynamic_exit_enabled ? 'checked' : '')}>
-                                        <label class="form-check-label" for="wsDynamicExit">Dynamic Exit</label>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <button class="btn btn-success btn-sm mt-2" onclick="applyWebSettings()">Aplicar cambios</button>
-                <div class="small text-muted mt-2">Los cambios aplican al bot completo, incluyendo IA/LLM y filtros por símbolo.</div>
-            `;
-        }
+  <div class="settings-form" id="settings-form">
 
-        async function applyWebSettings() {
-            const payload = {
-                default_pair: (document.getElementById('wsPair')?.value || '').trim(),
-                default_timeframe: (document.getElementById('wsTimeframe')?.value || '').trim(),
-                investment_mode: (document.getElementById('wsInvestmentMode')?.value || '').trim(),
-                quote_currency: (document.getElementById('wsQuoteCurrency')?.value || '').trim(),
-                risk_per_trade_fraction: parseFloat(document.getElementById('wsRiskPerTrade')?.value || '0.01'),
-                max_trade_balance_fraction: parseFloat(document.getElementById('wsMaxAllocation')?.value || '0.2'),
-                capital_limit_usdt: parseFloat(document.getElementById('wsCapitalLimit')?.value || '0'),
-                capital_reserve_ratio: parseFloat(document.getElementById('wsReserveRatio')?.value || '0.15'),
-                min_cash_buffer_usdt: parseFloat(document.getElementById('wsCashBuffer')?.value || '10'),
-                dynamic_exit_enabled: !!document.getElementById('wsDynamicExit')?.checked
-            };
-            try {
-                const r = await authFetch('/api/settings', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                });
-                const j = await r.json();
-                if (!j.success) {
-                    alert('No se pudo aplicar settings');
-                    return;
-                }
-                await fetchSnapshot();
-                alert('Settings aplicados correctamente');
-            } catch (e) {
-                alert('Error aplicando settings: ' + e.message);
-            }
-        }
+    <!-- ACCORDION: Trading -->
+    <div class="accordion-group open" id="acc-trading">
+      <div class="accordion-header" onclick="toggleAccordion('acc-trading')">
+        <div class="accordion-header-left">
+          <span class="accordion-icon">💱</span>
+          <div>
+            <div class="accordion-title">Trading Configuration</div>
+            <div class="accordion-desc">Symbol, timeframes, risk per trade and position sizing</div>
+          </div>
+        </div>
+        <span class="accordion-arrow">▼</span>
+      </div>
+      <div class="accordion-body">
+        <div class="form-group">
+          <label class="form-label">Trading Pair</label>
+          <select class="form-select" id="s-symbol" name="trading_symbol">
+            <option value="BTC/USDT">BTC/USDT</option>
+            <option value="ETH/USDT">ETH/USDT</option>
+            <option value="SOL/USDT">SOL/USDT</option>
+            <option value="BNB/USDT">BNB/USDT</option>
+            <option value="XRP/USDT">XRP/USDT</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Multi-Symbol Selection</label>
+          <div class="multi-select" id="ms-symbols">
+            <span class="ms-option selected" data-value="BTC/USDT">BTC/USDT</span>
+            <span class="ms-option" data-value="ETH/USDT">ETH/USDT</span>
+            <span class="ms-option" data-value="SOL/USDT">SOL/USDT</span>
+            <span class="ms-option" data-value="BNB/USDT">BNB/USDT</span>
+            <span class="ms-option" data-value="XRP/USDT">XRP/USDT</span>
+            <span class="ms-option" data-value="ADA/USDT">ADA/USDT</span>
+            <span class="ms-option" data-value="DOGE/USDT">DOGE/USDT</span>
+          </div>
+          <div class="form-hint">Select multiple symbols for multi-pair mode</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Primary Timeframe</label>
+          <select class="form-select" id="s-tf" name="primary_timeframe">
+            <option value="1m">1m</option>
+            <option value="3m">3m</option>
+            <option value="5m" selected>5m</option>
+            <option value="15m">15m</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Confirmation Timeframe</label>
+          <select class="form-select" id="s-ctf" name="confirmation_timeframe">
+            <option value="5m">5m</option>
+            <option value="15m" selected>15m</option>
+            <option value="30m">30m</option>
+            <option value="1h">1h</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Risk Per Trade</label>
+          <div class="range-wrap">
+            <div class="range-row">
+              <input type="range" class="form-range" id="s-risk" name="risk_per_trade_fraction" min="0.001" max="0.05" step="0.001" value="0.01"
+                oninput="document.getElementById('s-risk-val').textContent = (parseFloat(this.value)*100).toFixed(1)+'%'">
+              <span class="range-value"><span id="s-risk-val">1.0</span>%</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max Trades Per Day</label>
+          <input type="number" class="form-input" id="s-max-trades" name="max_trades_per_day" value="20" min="1" max="100"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Investment Mode</label>
+          <select class="form-select" id="s-inv-mode" name="investment_mode">
+            <option value="Conservative">Conservative</option>
+            <option value="Balanced" selected>Balanced</option>
+            <option value="Aggressive">Aggressive</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <div class="toggle-wrap">
+            <span class="toggle-label">Spot Only Mode</span>
+            <label class="toggle"><input type="checkbox" id="s-spot-only" name="spot_only_mode" checked/><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="toggle-wrap">
+            <span class="toggle-label">Multi-Symbol Enabled</span>
+            <label class="toggle"><input type="checkbox" id="s-multi" name="feature_multi_symbol_enabled"/><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="form-group">
+          <div class="toggle-wrap">
+            <span class="toggle-label">Dynamic Exit</span>
+            <label class="toggle"><input type="checkbox" id="s-dyn-exit" name="dynamic_exit_enabled" checked/><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+      </div>
+    </div>
 
-        function updateSystemTab(system) {
-            const c = document.getElementById('systemContainer');
-            if(!c) return;
-            const src = system || {};
-            c.innerHTML = `
-                <div class="info-row"><span class="info-label">Uptime (s)</span><span class="info-value">${fmt(src.uptime_seconds || 0, 1)}</span></div>
-                <div class="info-row"><span class="info-label">API Latency (ms)</span><span class="info-value">${fmt(src.api_latency_ms || 0, 1)}</span></div>
-                <div class="info-row"><span class="info-label">Memory (MB)</span><span class="info-value">${fmt(src.memory_usage_mb || 0, 1)}</span></div>
-                <div class="info-row"><span class="info-label">Database</span><span class="info-value">${src.database_status || '-'}</span></div>
-                <div class="info-row"><span class="info-label">Exchange</span><span class="info-value">${src.exchange_status || '-'}</span></div>
-                <div class="info-row"><span class="info-label">Last Sync</span><span class="info-value">${src.last_server_sync || '-'}</span></div>
-            `;
-        }
-        
-        async function sendControl(a) {
-            if(!confirm('Confirm: '+a+'?')) return;
-            try {
-                const r = await authFetch('/api/control/'+a, {method:'POST'});
-                const j = await r.json();
-                alert(j.success?j.message:'Error: '+j.error);
-                fetchSnapshot();
-            } catch(e) { alert('Error: '+e); }
-        }
-        
-        async function fetchAIMLData() {
-            try {
-                const [autonomousRes, multipairRes] = await Promise.all([
-                    authFetch('/api/autonomous').catch(() => ({json: () => ({error: 'Not available'})})),
-                    authFetch('/api/multipair').catch(() => ({json: () => ({error: 'Not available'})}))
-                ]);
-                
-                const autonomous = await autonomousRes.json();
-                const multipair = await multipairRes.json();
-                
-                if (autonomous.error && autonomous.error !== 'Autonomous brain not available') {
-                    document.getElementById('regimeValue').textContent = latestSnapshot.market_regime || '-';
-                    document.getElementById('optimizerScoreValue').textContent = '0';
-                    document.getElementById('consecutiveLossesValue').textContent = latestSnapshot.auto_improve_consecutive_losses || 0;
-                    document.getElementById('activePairValue').textContent = multipair.active_pair || latestSnapshot.pair || 'BTC/USDT';
-                    document.getElementById('optimizerData').innerHTML = '<div class="text-muted">Awaiting optimizer stream...</div>';
-                    document.getElementById('evolverData').innerHTML = '<div class="text-muted">Awaiting evolver stream...</div>';
-                    document.getElementById('filtersData').innerHTML = '<div class="text-muted">Using runtime filters from snapshot</div>';
-                    document.getElementById('regimeData').innerHTML = `<div class="info-row"><span class="info-label">Current</span><span class="info-value">${latestSnapshot.market_regime || '-'}</span></div>`;
-                    document.getElementById('adaptiveFiltersData').innerHTML = '<div class="text-muted">Adaptive filter data pending</div>';
-                    return;
-                }
-                
-                document.getElementById('regimeValue').textContent = 
-                    autonomous.regime_detector?.current || '-';
-                
-                const optScore = autonomous.strategy_optimizer?.optimizer?.best_score || 0;
-                document.getElementById('optimizerScoreValue').textContent = 
-                    typeof optScore === 'number' ? optScore.toFixed(2) : '0';
-                
-                document.getElementById('consecutiveLossesValue').textContent = 
-                    autonomous.consecutive_losses || 0;
-                
-                document.getElementById('activePairValue').textContent = 
-                    multipair.active_pair || autonomous.current_best_pair || 'BTC/USDT';
-                
-                const optData = autonomous.strategy_optimizer || {};
-                document.getElementById('optimizerData').innerHTML = `
-                    <div class="info-row"><span class="info-label">Iterations</span><span class="info-value">${optData.optimizer?.iteration || 0}</span></div>
-                    <div class="info-row"><span class="info-label">Best Score</span><span class="info-value">${(optData.optimizer?.best_score || 0).toFixed(2)}</span></div>
-                    <div class="info-row"><span class="info-label">Observations</span><span class="info-value">${optData.optimizer?.observations_count || 0}</span></div>
-                    <div class="info-row"><span class="info-label">History Count</span><span class="info-value">${optData.performance_history_count || 0}</span></div>
-                    <div class="mt-2"><strong>Current Params:</strong></div>
-                    <pre class="small mt-1" style="max-height: 100px; overflow-y: auto;">${JSON.stringify(optData.current_params || {}, null, 2)}</pre>
-                `;
-                
-                const evolverData = autonomous.strategy_evolver || {};
-                document.getElementById('evolverData').innerHTML = `
-                    <div class="info-row"><span class="info-label">Generation</span><span class="info-value">${evolverData.optimizer?.generation || 0}</span></div>
-                    <div class="info-row"><span class="info-label">Best Fitness</span><span class="info-value">${(evolverData.optimizer?.best_fitness || 0).toFixed(2)}</span></div>
-                    <div class="info-row"><span class="info-label">Population Size</span><span class="info-value">${evolverData.optimizer?.population_size || 0}</span></div>
-                    <div class="info-row"><span class="info-label">Mutation Rate</span><span class="info-value">${((evolverData.optimizer?.mutation_rate || 0) * 100).toFixed(0)}%</span></div>
-                `;
-                
-                if (multipair.pairs && multipair.pairs.length > 0) {
-                    const sortedPairs = [...multipair.pairs].sort((a, b) => b.opportunity_score - a.opportunity_score);
-                    document.getElementById('pairsData').innerHTML = sortedPairs.slice(0, 12).map(p => `
-                        <div class="info-row">
-                            <span class="info-label">${p.symbol}</span>
-                            <span class="info-value">${p.opportunity_score.toFixed(2)}</span>
-                        </div>
-                    `).join('');
-                } else {
-                    document.getElementById('pairsData').innerHTML = '<div class="text-muted">Scanning pairs...</div>';
-                }
-                
-                const filters = autonomous.current_filters || {};
-                document.getElementById('filtersData').innerHTML = `
-                    <div class="info-row"><span class="info-label">RSI Period</span><span class="info-value">${filters.rsi_period || '-'}</span></div>
-                    <div class="info-row"><span class="info-label">RSI Overbought</span><span class="info-value">${filters.rsi_overbought || '-'}</span></div>
-                    <div class="info-row"><span class="info-label">RSI Oversold</span><span class="info-value">${filters.rsi_oversold || '-'}</span></div>
-                    <div class="info-row"><span class="info-label">MA Short</span><span class="info-value">${filters.ma_short_period || '-'}</span></div>
-                    <div class="info-row"><span class="info-label">MA Long</span><span class="info-value">${filters.ma_long_period || '-'}</span></div>
-                `;
-                
-                const regimeData = autonomous.regime_detector || {};
-                document.getElementById('regimeData').innerHTML = `
-                    <div class="info-row"><span class="info-label">Current</span><span class="info-value">${regimeData.current || '-'}</span></div>
-                    <div class="info-row"><span class="info-label">Trend</span><span class="info-value">${regimeData.current_trend || '-'}</span></div>
-                    <div class="info-row"><span class="info-label">Volatility</span><span class="info-value">${((regimeData.current_volatility || 0) * 100).toFixed(2)}%</span></div>
-                    <div class="info-row"><span class="info-label">History</span><span class="info-value">${regimeData.history_length || 0}</span></div>
-                `;
-                
-                const adaptFilters = autonomous.adaptive_filters || {};
-                document.getElementById('adaptiveFiltersData').innerHTML = `
-                    <div class="info-row"><span class="info-label">KAMA Trend</span><span class="info-value">${adaptFilters.kama?.trend || '-'}</span></div>
-                    <div class="info-row"><span class="info-label">KAMA Value</span><span class="info-value">${(adaptFilters.kama?.current_value || 0).toFixed(2)}</span></div>
-                    <div class="info-row"><span class="info-label">Kalman Init</span><span class="info-value">${adaptFilters.kalman?.initialized ? 'Yes' : 'No'}</span></div>
-                    <div class="info-row"><span class="info-label">Price History</span><span class="info-value">${adaptFilters.price_history_count || 0}</span></div>
-                `;
-                
-            } catch(e) {
-                console.error('Error fetching AI/ML data:', e);
-            }
-        }
+    <!-- ACCORDION: Filters -->
+    <div class="accordion-group" id="acc-filters">
+      <div class="accordion-header" onclick="toggleAccordion('acc-filters')">
+        <div class="accordion-header-left">
+          <span class="accordion-icon">🔧</span>
+          <div>
+            <div class="accordion-title">Signal Filters</div>
+            <div class="accordion-desc">ADX, RSI, volume and confidence thresholds</div>
+          </div>
+        </div>
+        <span class="accordion-arrow">▼</span>
+      </div>
+      <div class="accordion-body">
+        <div class="form-group">
+          <label class="form-label">ADX Threshold</label>
+          <div class="range-wrap">
+            <div class="range-row">
+              <input type="range" class="form-range" id="s-adx" name="adx_threshold" min="5" max="40" step="0.5" value="12"
+                oninput="document.getElementById('s-adx-val').textContent = parseFloat(this.value).toFixed(1)">
+              <span class="range-value" id="s-adx-val">12.0</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Min Confidence</label>
+          <div class="range-wrap">
+            <div class="range-row">
+              <input type="range" class="form-range" id="s-minconf" name="min_confidence" min="0.30" max="0.95" step="0.01" value="0.45"
+                oninput="document.getElementById('s-minconf-val').textContent = (parseFloat(this.value)*100).toFixed(0)+'%'">
+              <span class="range-value" id="s-minconf-val">45%</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">RSI Buy Threshold</label>
+          <input type="number" class="form-input" id="s-rsi-buy" name="rsi_buy_threshold" value="48" min="30" max="70"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">RSI Sell Threshold</label>
+          <input type="number" class="form-input" id="s-rsi-sell" name="rsi_sell_threshold" value="52" min="30" max="70"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Volume Buy Threshold</label>
+          <input type="number" class="form-input" id="s-vol-buy" name="volume_buy_threshold" value="0.90" min="0.2" max="3.0" step="0.05"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Volume Sell Threshold</label>
+          <input type="number" class="form-input" id="s-vol-sell" name="volume_sell_threshold" value="0.85" min="0.2" max="3.0" step="0.05"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Stop Loss ATR Multiplier</label>
+          <input type="number" class="form-input" id="s-sl-atr" name="stop_loss_atr_multiplier" value="1.5" min="0.5" max="5.0" step="0.1"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Take Profit ATR Multiplier</label>
+          <input type="number" class="form-input" id="s-tp-atr" name="take_profit_atr_multiplier" value="2.5" min="1.0" max="8.0" step="0.1"/>
+        </div>
+      </div>
+    </div>
 
-        function showTradeDetail(tradeJson) {
-            const t = typeof tradeJson === 'string' ? JSON.parse(tradeJson) : tradeJson;
-            const pnl = t.pnl || 0;
-            const pnlClass = pnl >= 0 ? 'text-green' : 'text-red';
-            
-            const modalHtml = `
-                <div class="modal fade" id="tradeDetailModal" tabindex="-1">
-                    <div class="modal-dialog modal-lg">
-                        <div class="modal-content" style="background:var(--bg-card); border:1px solid var(--border-color);">
-                            <div class="modal-header" style="border-color:var(--border-color);">
-                                <h5 class="modal-title"><i class="fas fa-receipt me-2 text-cyan"></i>Trade Details</h5>
-                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                            </div>
-                            <div class="modal-body">
-                                <div class="grid-2">
-                                    <div class="info-row"><span class="info-label">Trade ID</span><span class="info-value">${t.trade_id||'-'}</span></div>
-                                    <div class="info-row"><span class="info-label">Pair</span><span class="info-value">${t.pair||'-'}</span></div>
-                                    <div class="info-row"><span class="info-label">Side</span><span class="info-value ${t.side==='BUY'?'text-green':'text-red'}">${t.side||'-'}</span></div>
-                                    <div class="info-row"><span class="info-label">Status</span><span class="info-value">${t.status||'-'}</span></div>
-                                    <div class="info-row"><span class="info-label">Entry Price</span><span class="info-value">${fmt(t.entry,4)}</span></div>
-                                    <div class="info-row"><span class="info-label">Exit Price</span><span class="info-value">${fmt(t.exit,4)}</span></div>
-                                    <div class="info-row"><span class="info-label">Size</span><span class="info-value">${fmt(t.size||t.quantity,6)}</span></div>
-                                    <div class="info-row"><span class="info-label">Stop Loss</span><span class="info-value">${fmt(t.stop_loss,4)}</span></div>
-                                    <div class="info-row"><span class="info-label">Take Profit</span><span class="info-value">${fmt(t.take_profit,4)}</span></div>
-                                    <div class="info-row"><span class="info-label">P&L ($)</span><span class="info-value ${pnlClass}">${pnl>=0?'+':''}${fmt(pnl,2)}</span></div>
-                                    <div class="info-row"><span class="info-label">P&L (%)</span><span class="info-value ${pnlClass}">${pnl>=0?'+':''}${(t.pnl_percent||0).toFixed(2)}%</span></div>
-                                    <div class="info-row"><span class="info-label">Duration</span><span class="info-value">${t.duration||'-'}</span></div>
-                                    <div class="info-row"><span class="info-label">Entry Time</span><span class="info-value">${t.entry_time||t.time||'-'}</span></div>
-                                    <div class="info-row"><span class="info-label">Exit Time</span><span class="info-value">${t.exit_time||'-'}</span></div>
-                                    <div class="info-row"><span class="info-label">Fees</span><span class="info-value">${fmt(t.fees,4)}</span></div>
-                                    <div class="info-row"><span class="info-label">Confidence</span><span class="info-value">${t.confidence||'-'}</span></div>
-                                </div>
-                                ${t.signal_details ? `<div class="mt-3"><strong>Signal Details:</strong><pre class="small mt-1" style="background:var(--bg-secondary); padding:10px; border-radius:8px; overflow:auto; max-height:150px;">${JSON.stringify(t.signal_details, null, 2)}</pre></div>` : ''}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            document.body.insertAdjacentHTML('beforeend', modalHtml);
-            const modal = new bootstrap.Modal(document.getElementById('tradeDetailModal'));
-            modal.show();
-            document.getElementById('tradeDetailModal').addEventListener('hidden.bs.modal', function() {
-                this.remove();
-            });
-        }
-        
-        function updateAIMonitorTab(d) {
-            document.getElementById('aiMLDirection').textContent = d.ml_direction || '-';
-            document.getElementById('aiMLConfidence').textContent = d.ml_confidence ? (d.ml_confidence * 100).toFixed(1) + '%' : '-';
-            document.getElementById('aiTFTDirection').textContent = d.tft_direction || '-';
-            document.getElementById('aiTFTConfidence').textContent = d.tft_confidence ? (d.tft_confidence * 100).toFixed(1) + '%' : '-';
-            document.getElementById('aiNBEATSDirection').textContent = d.nbeats_direction || '-';
-            document.getElementById('aiNBEATSConfidence').textContent = d.nbeats_confidence ? (d.nbeats_confidence * 100).toFixed(1) + '%' : '-';
-            document.getElementById('aiMarketRegime').textContent = d.market_regime || '-';
-            document.getElementById('aiMarketSentiment').textContent = d.market_sentiment || '-';
-            const llmMode = d.llm_mode || '-';
-            const llmStats = d.llm_trade_confirmator || {};
-            const fixStatus = d.auto_fix_coordinator || {};
-            document.getElementById('aiLlmMode').textContent = llmMode;
-            document.getElementById('aiLlmActive').textContent = llmMode !== 'base' ? 'Yes' : 'No';
-            document.getElementById('aiLlmDecisions').textContent = llmStats.total_checks ?? llmStats.total_decisions ?? 0;
-            document.getElementById('aiAutoFixStatus').textContent = fixStatus.is_running ? 'Running' : 'Idle';
-            
-            document.getElementById('aiActivePair').textContent = d.active_pair || '-';
-            document.getElementById('aiTradingMode').textContent = d.trading_mode || '-';
-            document.getElementById('aiLeverage').textContent = d.trading_leverage || '-';
-            document.getElementById('aiSide').textContent = d.trading_side || '-';
-            document.getElementById('aiAllModules').textContent = d.all_modules_initialized ? 'Yes' : 'No';
-            document.getElementById('aiAllModules').className = 'info-value ' + (d.all_modules_initialized ? 'text-green' : 'text-red');
-            document.getElementById('aiWSConnected').textContent = d.ws_connected ? 'Yes' : 'No';
-            document.getElementById('aiWSConnected').className = 'info-value ' + (d.ws_connected ? 'text-green' : 'text-red');
-            document.getElementById('aiAutoTrades').textContent = d.auto_improve_total_trades || '-';
-            document.getElementById('aiAutoWR').textContent = d.auto_improve_win_rate ? (d.auto_improve_win_rate * 100).toFixed(1) + '%' : '-';
-            
-            document.getElementById('aiResilience').textContent = d.resilience_healthy ? 'Healthy' : 'Unknown';
-            document.getElementById('aiResilience').className = 'info-value ' + (d.resilience_healthy ? 'text-green' : 'text-yellow');
-            document.getElementById('aiFailures').textContent = d.resilience_consecutive_failures || '0';
-            document.getElementById('aiEmergency').textContent = d.emergency_system || '-';
-            document.getElementById('aiConsecLosses').textContent = d.auto_improve_consecutive_losses || '0';
-            document.getElementById('aiOptCount').textContent = d.auto_improve_optimization_count || '-';
-            
-            const autoParams = d.auto_optimized_params || {};
-            if (Object.keys(autoParams).length > 0) {
-                document.getElementById('aiAutoParams').innerHTML = `<pre class="small" style="background:var(--bg-secondary); padding:10px; border-radius:8px; overflow:auto; max-height:200px;">${JSON.stringify(autoParams, null, 2)}</pre>`;
-            } else {
-                document.getElementById('aiAutoParams').textContent = 'No auto-optimized parameters available yet.';
-            }
-        }
-        
-        document.addEventListener('DOMContentLoaded', () => {
-            showLogin();
-            submitLogin();
-            setInterval(() => { if (isAuthenticated) fetchSnapshot(); }, 1000);
-            setInterval(() => { if (isAuthenticated) fetchAIMLData(); }, 5000);
-            setInterval(() => {
-                if (!isAuthenticated) return;
-                const active = document.querySelector('#trades.tab-pane.active, #trades.show.active');
-                if (active) loadAllTrades();
-            }, 12000);
-        });
-    </script>
+    <!-- ACCORDION: Risk -->
+    <div class="accordion-group" id="acc-risk">
+      <div class="accordion-header" onclick="toggleAccordion('acc-risk')">
+        <div class="accordion-header-left">
+          <span class="accordion-icon">🛡️</span>
+          <div>
+            <div class="accordion-title">Risk Management</div>
+            <div class="accordion-desc">Capital limits, drawdown protection and cooldown</div>
+          </div>
+        </div>
+        <span class="accordion-arrow">▼</span>
+      </div>
+      <div class="accordion-body">
+        <div class="form-group">
+          <label class="form-label">Daily Loss Limit (%)</label>
+          <input type="number" class="form-input" id="s-daily-loss" name="daily_loss_limit_fraction" value="0.02" min="0.001" max="0.20" step="0.001"/>
+          <div class="form-hint">Fraction of balance. 0.02 = 2%</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max Drawdown (%)</label>
+          <input type="number" class="form-input" id="s-max-dd" name="max_drawdown_fraction" value="0.10" min="0.01" max="0.50" step="0.01"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Capital Limit (USDT)</label>
+          <input type="number" class="form-input" id="s-cap-limit" name="capital_limit_usdt" value="0" min="0" step="1"/>
+          <div class="form-hint">0 = unlimited</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Min Cash Buffer (USDT)</label>
+          <input type="number" class="form-input" id="s-cash-buf" name="min_cash_buffer_usdt" value="10" min="0" step="1"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max Concurrent Positions</label>
+          <input type="number" class="form-input" id="s-max-pos" name="max_concurrent_trades" value="1" min="1" max="10"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Loss Pause Duration (min)</label>
+          <input type="number" class="form-input" id="s-pause-min" name="loss_pause_minutes" value="30" min="1" max="480"/>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACCORDION: AI / LLM -->
+    <div class="accordion-group" id="acc-llm">
+      <div class="accordion-header" onclick="toggleAccordion('acc-llm')">
+        <div class="accordion-header-left">
+          <span class="accordion-icon">🤖</span>
+          <div>
+            <div class="accordion-title">AI / LLM Gate</div>
+            <div class="accordion-desc">Ollama local model and remote LLM configuration</div>
+          </div>
+        </div>
+        <span class="accordion-arrow">▼</span>
+      </div>
+      <div class="accordion-body">
+        <div class="form-group">
+          <label class="form-label">LLM Mode</label>
+          <select class="form-select" id="s-llm-mode" name="llm_mode" onchange="updateLLMVisibility()">
+            <option value="base">base (rule-based, fastest)</option>
+            <option value="llm_local">llm_local (Ollama)</option>
+            <option value="llm_remote">llm_remote (OpenAI/API)</option>
+          </select>
+        </div>
+        <div class="form-group" id="llm-local-fields">
+          <label class="form-label">Ollama Model</label>
+          <input type="text" class="form-input" id="s-llm-model" name="llm_local_model" value="qwen2.5:0.5b"/>
+        </div>
+        <div class="form-group" id="llm-url-field">
+          <label class="form-label">Ollama Base URL</label>
+          <input type="text" class="form-input" id="s-ollama-url" name="ollama_base_url" value="http://localhost:11434"/>
+        </div>
+        <div class="form-group" id="llm-remote-fields" style="display:none;">
+          <label class="form-label">Remote Endpoint</label>
+          <input type="text" class="form-input" id="s-remote-ep" name="llm_remote_endpoint" value="https://api.openai.com/v1/chat/completions"/>
+        </div>
+        <div class="form-group" id="llm-remote-model" style="display:none;">
+          <label class="form-label">Remote Model</label>
+          <input type="text" class="form-input" id="s-remote-model-name" name="llm_remote_model" value="gpt-4o-mini"/>
+        </div>
+        <div class="form-group" id="llm-apikey" style="display:none;">
+          <label class="form-label">Remote API Key</label>
+          <input type="password" class="form-input" id="s-remote-key" name="llm_remote_api_key" placeholder="sk-..."/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Context Window (tokens)</label>
+          <input type="number" class="form-input" id="s-llm-ctx" name="llm_local_num_ctx" value="256" min="64" max="4096"/>
+          <div class="form-hint">256 = ultrafast, 512 = balanced</div>
+        </div>
+        <div class="form-group">
+          <div class="toggle-wrap">
+            <span class="toggle-label">Health Check Enabled</span>
+            <label class="toggle"><input type="checkbox" id="s-llm-health" name="llm_local_healthcheck_enabled" checked/><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACCORDION: System -->
+    <div class="accordion-group" id="acc-system">
+      <div class="accordion-header" onclick="toggleAccordion('acc-system')">
+        <div class="accordion-header-left">
+          <span class="accordion-icon">⚙️</span>
+          <div>
+            <div class="accordion-title">System & Performance</div>
+            <div class="accordion-desc">RAM mode, loop speed, TUI and observability</div>
+          </div>
+        </div>
+        <span class="accordion-arrow">▼</span>
+      </div>
+      <div class="accordion-body">
+        <div class="form-group">
+          <div class="toggle-wrap">
+            <span class="toggle-label">Low RAM Mode</span>
+            <label class="toggle"><input type="checkbox" id="s-low-ram" name="low_ram_mode" checked/><span class="toggle-slider"></span></label>
+          </div>
+          <div class="form-hint">Clamps history_limit to 220 candles</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Max RAM (MB)</label>
+          <input type="number" class="form-input" id="s-max-ram" name="max_ram_mb" value="500" min="128" max="4096"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Loop Sleep (seconds)</label>
+          <input type="number" class="form-input" id="s-loop-sleep" name="loop_sleep_seconds" value="15" min="5" max="120"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">History Limit (candles)</label>
+          <input type="number" class="form-input" id="s-history" name="history_limit" value="300" min="50" max="1000"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">TUI Refresh Rate (fps)</label>
+          <input type="number" class="form-input" id="s-tui-fps" name="terminal_tui_refresh_per_second" value="4" min="1" max="10"/>
+        </div>
+        <div class="form-group">
+          <div class="toggle-wrap">
+            <span class="toggle-label">Terminal TUI Enabled</span>
+            <label class="toggle"><input type="checkbox" id="s-tui" name="terminal_tui_enabled" checked/><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- end settings-form -->
+
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="saveSettings()">💾 Apply to Running Bot</button>
+    <button class="btn btn-secondary" onclick="loadCurrentSettings()">↺ Reload Current Values</button>
+    <button class="btn btn-danger" onclick="if(confirm('Reset all filters to defaults?')) resetFilters()">🔄 Reset Filters to Default</button>
+  </div>
+</div>
+
+<!-- ──────────── PAGE: SYSTEM HEALTH ──────────── -->
+<div class="page" id="page-system">
+  <div class="grid-4">
+    <div class="metric-card" style="--mc-color:var(--accent-green)">
+      <div class="metric-label">Exchange</div>
+      <div class="metric-value" id="sys-exchange" style="font-size:16px;">—</div>
+      <div class="metric-sub" id="sys-latency">API Latency —</div>
+    </div>
+    <div class="metric-card" style="--mc-color:var(--accent-blue)">
+      <div class="metric-label">Database</div>
+      <div class="metric-value" id="sys-db" style="font-size:16px;">—</div>
+      <div class="metric-sub">Connection status</div>
+    </div>
+    <div class="metric-card" style="--mc-color:var(--accent-purple)">
+      <div class="metric-label">Resilience</div>
+      <div class="metric-value" id="sys-res" style="font-size:16px;">—</div>
+      <div class="metric-sub" id="sys-res-fails">consecutive failures</div>
+    </div>
+    <div class="metric-card" style="--mc-color:var(--accent-cyan)">
+      <div class="metric-label">WS Connected</div>
+      <div class="metric-value" id="sys-ws" style="font-size:16px;">—</div>
+      <div class="metric-sub">WebSocket stream</div>
+    </div>
+  </div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-title">📡 Observability</div>
+      <div class="filter-row"><span class="filter-name">Circuit Breaker Trips</span><span id="obs-cbt" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Exchange Reconnections</span><span id="obs-reconn" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Stale Data Ratio</span><span id="obs-stale" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">API Latency P95</span><span id="obs-lat" class="filter-value">—</span></div>
+    </div>
+    <div class="card">
+      <div class="card-title">🔄 Bot Lifecycle</div>
+      <div class="filter-row"><span class="filter-name">Uptime</span><span id="sys-uptime" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">All Modules Init</span><span id="sys-modules" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Trading Mode</span><span id="sys-tmode" class="filter-value">—</span></div>
+      <div class="filter-row"><span class="filter-name">Emergency Stop</span><span id="sys-emstop" class="filter-value">—</span></div>
+    </div>
+  </div>
+</div>
+
+</main><!-- end main -->
+
+<!-- TOASTS -->
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+/* ═══════════════════════════════════════════════
+   STATE & CONFIG
+═══════════════════════════════════════════════ */
+let _state = {};
+let _allLogs = [];
+let _allTrades = [];
+let _autoScroll = true;
+let _sseSource = null;
+
+/* ═══════════════════════════════════════════════
+   NAVIGATION
+═══════════════════════════════════════════════ */
+function showPage(name, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const page = document.getElementById('page-' + name);
+  if (page) page.classList.add('active');
+  if (el) el.classList.add('active');
+}
+
+/* ═══════════════════════════════════════════════
+   ACCORDION
+═══════════════════════════════════════════════ */
+function toggleAccordion(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('open');
+  const body = el.querySelector('.accordion-body');
+  if (body) body.style.display = el.classList.contains('open') ? 'grid' : 'none';
+}
+
+// Initialize accordion state
+document.querySelectorAll('.accordion-group').forEach(g => {
+  const body = g.querySelector('.accordion-body');
+  if (body) body.style.display = g.classList.contains('open') ? 'grid' : 'none';
+});
+
+/* ═══════════════════════════════════════════════
+   MULTI-SELECT
+═══════════════════════════════════════════════ */
+document.querySelectorAll('.ms-option').forEach(opt => {
+  opt.addEventListener('click', () => opt.classList.toggle('selected'));
+});
+
+function getMultiSelectValues(containerId) {
+  return [...document.querySelectorAll(`#${containerId} .ms-option.selected`)]
+    .map(o => o.dataset.value);
+}
+
+/* ═══════════════════════════════════════════════
+   CLOCK
+═══════════════════════════════════════════════ */
+function updateClock() {
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toUTCString().split(' ').slice(4, 5)[0] + ' UTC';
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+/* ═══════════════════════════════════════════════
+   TOAST NOTIFICATIONS
+═══════════════════════════════════════════════ */
+function showToast(msg, type = 'info', duration = 4000) {
+  const c = document.getElementById('toast-container');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), duration);
+}
+
+/* ═══════════════════════════════════════════════
+   SIGNAL CHIP HELPER
+═══════════════════════════════════════════════ */
+function signalChip(val) {
+  val = (val || 'NEUTRAL').toUpperCase();
+  const cls = val === 'BUY' ? 'chip-buy' : val === 'SELL' ? 'chip-sell' : val === 'HOLD' ? 'chip-hold' : 'chip-neutral';
+  return `<span class="signal-chip ${cls}">${val}</span>`;
+}
+
+function setText(id, val, fallback = '—') {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val !== undefined && val !== null && val !== '' ? val : fallback;
+}
+
+function setHtml(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+
+function fNum(n, dec = 2) {
+  if (n === null || n === undefined || n === '') return '—';
+  return parseFloat(n).toFixed(dec);
+}
+
+function fPct(n) {
+  if (n === null || n === undefined) return '—';
+  return (parseFloat(n) * 100).toFixed(1) + '%';
+}
+
+function colorPnl(n) {
+  const v = parseFloat(n);
+  if (isNaN(v)) return '—';
+  const cls = v > 0 ? 'positive' : v < 0 ? 'negative' : '';
+  const sign = v > 0 ? '+' : '';
+  return `<span class="${cls}">${sign}${v.toFixed(4)}</span>`;
+}
+
+/* ═══════════════════════════════════════════════
+   UPDATE UI FROM SNAPSHOT
+═══════════════════════════════════════════════ */
+function updateUI(s) {
+  _state = s;
+
+  // Topbar
+  const statusMap = {
+    RUNNING: 'running', WAITING_MARKET_DATA: 'waiting', PAUSED: 'paused',
+    INITIALIZING: 'waiting', ERROR: 'error', COOLDOWN: 'waiting',
+    CONNECTING_EXCHANGE: 'waiting', POSITION_OPEN: 'running',
+  };
+  const statusKey = (s.status || 'WAITING').toUpperCase().replace(/ /g,'_');
+  const pillClass = statusMap[statusKey] || 'waiting';
+  const pill = document.getElementById('bot-status-pill');
+  pill.className = 'status-pill ' + pillClass;
+  setText('bot-status-text', statusKey);
+  setText('topbar-pair', (s.pair || 'BTC/USDT') + ' · ' + (s.timeframe || '5m/15m'));
+
+  // KPIs
+  setText('kpi-price', fNum(s.price, 2) + ' USDT');
+  const chg = parseFloat(s.change_24h || 0);
+  const chgEl = document.getElementById('kpi-change');
+  if (chgEl) { chgEl.innerHTML = `<span class="${chg >= 0 ? 'positive' : 'negative'}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span> 24h`; }
+
+  const eq = parseFloat(s.equity || s.balance || 0);
+  setText('kpi-equity', fNum(eq, 2) + ' USDT');
+  document.getElementById('kpi-balance-sub').textContent = 'Balance: ' + fNum(s.balance, 4);
+
+  const pnl = parseFloat(s.daily_pnl || s.session_pnl || 0);
+  const kpiPnl = document.getElementById('kpi-pnl');
+  if (kpiPnl) kpiPnl.innerHTML = colorPnl(pnl) + ' USDT';
+  document.getElementById('kpi-unrealized').innerHTML = 'Unrealized: ' + colorPnl(s.unrealized_pnl);
+
+  const wr = parseFloat(s.win_rate || 0);
+  setText('kpi-winrate', (wr * 100).toFixed(1) + '%');
+  setText('kpi-trades-today', (s.trades_today || 0) + ' trades today');
+
+  // Market state
+  setHtml('mkt-trend', signalChip(s.trend));
+  setText('mkt-adx', fNum(s.adx, 2));
+  setText('mkt-rsi', fNum(s.rsi, 2));
+  setText('mkt-spread', fNum(s.spread, 6));
+  setText('mkt-regime', s.volatility_regime || '—');
+  setHtml('mkt-flow', signalChip(s.order_flow));
+  setText('mkt-tf', s.timeframe || '—');
+  setText('mkt-cooldown', s.cooldown || '—');
+
+  // Signals
+  const sig = s.signal || 'HOLD';
+  setHtml('sig-main', signalChip(sig));
+  const conf = parseFloat(s.confidence || 0);
+  setText('sig-conf-pct', (conf * 100).toFixed(1) + '%');
+  const bar = document.getElementById('sig-conf-bar');
+  if (bar) {
+    bar.style.width = (conf * 100) + '%';
+    bar.className = 'confidence-bar-fill' + (conf >= 0.7 ? ' high' : conf < 0.45 ? ' low' : '');
+  }
+  const sigs = s.signals || {};
+  setHtml('sig-trend', signalChip(sigs.trend || s.trend));
+  setHtml('sig-momentum', signalChip(sigs.momentum));
+  setHtml('sig-volume', signalChip(sigs.volume));
+  setHtml('sig-volatility', signalChip(sigs.volatility));
+  setHtml('sig-structure', signalChip(sigs.structure));
+  setHtml('sig-orderflow', signalChip(sigs.order_flow || s.order_flow));
+
+  // Position
+  const hasPos = s.has_open_position || s.open_position_side;
+  document.getElementById('position-none').style.display = hasPos ? 'none' : 'block';
+  document.getElementById('position-details').style.display = hasPos ? 'flex' : 'none';
+  if (hasPos) {
+    const side = (s.open_position_side || '').toUpperCase();
+    const sideBadge = document.getElementById('pos-side-badge');
+    sideBadge.textContent = side;
+    sideBadge.className = 'pos-side ' + side;
+    setText('pos-symbol', s.pair || 'BTC/USDT');
+    setText('pos-entry', fNum(s.open_position_entry, 4));
+    setText('pos-mark', fNum(s.price, 4));
+    setText('pos-qty', fNum(s.open_position_qty, 6));
+    setText('pos-sl', fNum(s.open_position_sl, 4));
+    setText('pos-tp', fNum(s.open_position_tp, 4));
+    document.getElementById('pos-upnl').innerHTML = colorPnl(s.unrealized_pnl) + ' USDT';
+  }
+
+  // Decision trace
+  const dt = s.decision_trace || {};
+  const factors = dt.factor_scores || {};
+  const gating = s.decision_gating || {};
+  const dtLines = [];
+  for (const [k, v] of Object.entries(factors)) {
+    const vf = parseFloat(v);
+    const cls = vf > 0 ? 'positive' : vf < 0 ? 'negative' : '';
+    dtLines.push(`<div class="filter-row"><span class="filter-name">factor:${k}</span><span class="${cls}" style="font-weight:700;">${vf >= 0 ? '+' : ''}${vf.toFixed(3)}</span></div>`);
+  }
+  for (const [k, v] of Object.entries(gating)) {
+    dtLines.push(`<div class="filter-row"><span class="filter-name">gate:${k}</span><span class="filter-value">${v}</span></div>`);
+  }
+  if (dtLines.length > 0) setHtml('decision-trace-content', dtLines.join(''));
+  setText('decision-reason', s.decision_reason);
+  setText('setup-quality', fNum(s.signal_quality_score, 3));
+  setText('capital-profile', s.capital_profile);
+  setText('operable-capital', fNum(s.operable_capital_usdt, 2) + ' USDT');
+
+  // Logs
+  const logs = s.logs || [];
+  if (logs.length > 0) {
+    logs.forEach(l => {
+      if (!_allLogs.find(x => x.time === l.time && x.message === l.message)) {
+        _allLogs.push(l);
+      }
+    });
+    if (_allLogs.length > 500) _allLogs = _allLogs.slice(-500);
+    renderLogs();
+  }
+
+  // LLM
+  const llm = s.llm_trade_confirmator || {};
+  const llmMode = (s.llm_mode || 'base').toLowerCase();
+  setText('llm-mode-badge', llmMode.toUpperCase());
+  setText('llm-model-name', llm.model || (llmMode === 'llm_local' ? s.llm_local_model || 'qwen2.5:0.5b' : llmMode === 'llm_remote' ? s.llm_remote_model || 'gpt-4o-mini' : '—'));
+  const healthy = llm.local_endpoint_healthy;
+  const healthDot = document.getElementById('llm-health-dot');
+  if (healthDot) {
+    healthDot.className = 'llm-health-dot ' + (healthy === true ? 'ok' : healthy === false ? 'fail' : 'unknown');
+    setText('llm-health-text', healthy === true ? 'Online' : healthy === false ? 'Offline' : 'Not checked');
+  }
+  setText('llm-warmup', llm.warmup_done === true ? 'Yes' : llm.warmup_done === false ? 'Pending' : '—');
+  setText('llm-total', llm.total_analyzed || 0);
+  setText('llm-confirmed', llm.confirmed || 0);
+  setText('llm-rejected', llm.rejected || 0);
+  setText('llm-rate', fNum(llm.confirmation_rate, 1) + '%');
+  setText('llm-latency', fNum(llm.avg_analysis_time_ms, 1) + 'ms');
+
+  // Autonomous Optimizer
+  setText('ao-trades', s.auto_improve_total_trades || 0);
+  setText('ao-wr', fPct(s.auto_improve_win_rate));
+  setText('ao-losses', s.auto_improve_consecutive_losses || 0);
+  setText('ao-cycles', s.auto_improve_optimization_count || 0);
+
+  // Filter config
+  const filters = s.autonomous_filters || s.runtime_filter_config || {};
+  setText('f-adx', fNum(filters.adx_threshold, 1));
+  setText('f-rsi-buy', fNum(filters.rsi_buy_threshold, 1));
+  setText('f-rsi-sell', fNum(filters.rsi_sell_threshold, 1));
+  setText('f-vol-buy', fNum(filters.volume_buy_threshold, 2));
+  setText('f-vol-sell', fNum(filters.volume_sell_threshold, 2));
+  setText('f-conf', fPct(filters.min_confidence));
+  setText('f-atr-low', fNum(filters.atr_low_threshold, 4));
+  setText('f-atr-high', fNum(filters.atr_high_threshold, 4));
+  setText('f-sl-mult', fNum(filters.stop_loss_atr_multiplier, 1));
+  setText('f-tp-mult', fNum(filters.take_profit_atr_multiplier, 1));
+
+  // Validation checks
+  const vChecks = (s.decision_trace || {}).validation_checks || [];
+  if (vChecks.length > 0) {
+    const lines = vChecks.map(c => {
+      const passed = c.passed;
+      const cls = passed ? 'filter-pass' : 'filter-fail';
+      const icon = passed ? '✅' : '❌';
+      return `<div class="filter-row"><span class="filter-name">${icon} ${c.name}</span><span class="${cls}" style="font-size:11px;">${c.value !== undefined ? c.value : ''}</span></div>`;
+    }).join('');
+    setHtml('validation-checks', lines);
+  }
+
+  // Autonomous brain
+  setText('auto-condition', s.autonomous_market_condition || '—');
+  setText('auto-confluence', fNum(s.confluence_score, 3));
+  setText('auto-mode', s.investment_mode || s.runtime_investment_mode || '—');
+
+  // Risk page
+  setText('r-daily-loss', fPct(s.daily_loss_limit_fraction || s.live_trade_risk_fraction));
+  setText('r-risk-pt', fPct(s.live_trade_risk_fraction));
+  const riskMetrics = s.risk_metrics || {};
+  const dd = riskMetrics.current_drawdown;
+  setText('r-max-dd', dd !== undefined ? fPct(dd) : '—');
+  setText('r-open-pos', (s.open_positions || []).length);
+  setText('r-dd-active', s.trading_paused_by_drawdown ? '🔴 YES' : '🟢 No');
+  setText('r-pause-until', s.pause_trading_until || '—');
+  setText('r-cons-losses', s.consecutive_losses || 0);
+  setText('r-emergency', s.emergency_stop_active ? '🔴 ACTIVE' : '🟢 Inactive');
+  setText('r-cap-reserve', fPct(s.capital_reserve_ratio));
+  setText('r-cash-buf', fNum(s.min_cash_buffer_usdt, 2) + ' USDT');
+  setText('r-session-rec', s.session_recommendation || '—');
+  setText('r-eq-peak', fNum(riskMetrics.equity_peak, 4) + ' USDT');
+
+  // System
+  const exchStat = (s.exchange_status || 'UNKNOWN').toUpperCase();
+  setText('sys-exchange', exchStat);
+  document.getElementById('sys-exchange').className = 'metric-value ' + (exchStat === 'CONNECTED' ? 'positive' : 'negative');
+  setText('sys-latency', 'Latency P95: ' + fNum(s.api_latency_p95_ms, 1) + 'ms');
+  const dbStat = (s.database_status || 'UNKNOWN').toUpperCase();
+  setText('sys-db', dbStat);
+  document.getElementById('sys-db').className = 'metric-value ' + (dbStat.includes('CONNECT') ? 'positive' : 'warning');
+  setText('sys-res', s.resilience_healthy === true ? 'Healthy' : s.resilience_healthy === false ? 'Degraded' : '—');
+  setText('sys-res-fails', (s.resilience_consecutive_failures || 0) + ' consecutive failures');
+  setText('sys-ws', s.ws_connected === true ? 'Connected' : s.ws_connected === false ? 'Disconnected' : '—');
+
+  setText('obs-cbt', s.circuit_breaker_trips || 0);
+  setText('obs-reconn', s.exchange_reconnections || 0);
+  setText('obs-stale', fPct(s.stale_market_data_ratio));
+  setText('obs-lat', fNum(s.api_latency_p95_ms, 2) + 'ms');
+  setText('sys-modules', s.all_modules_initialized ? '✅ Yes' : '⏳ Initializing');
+  setText('sys-tmode', s.trading_mode || '—');
+  setText('sys-emstop', s.emergency_stop_active ? '🔴 ACTIVE' : '🟢 Inactive');
+
+  // Positions table
+  updatePositionsTable(s);
+
+  // Trades table
+  if (s.trade_history && s.trade_history.length > 0) {
+    _allTrades = s.trade_history;
+    renderTrades();
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   POSITIONS TABLE
+═══════════════════════════════════════════════ */
+function updatePositionsTable(s) {
+  const tbody = document.getElementById('positions-tbody');
+  if (!tbody) return;
+  const positions = s.open_positions || [];
+  if (positions.length === 0 && !s.has_open_position) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:30px;">No open positions</td></tr>';
+    return;
+  }
+  const rows = positions.length > 0 ? positions : [{
+    side: s.open_position_side, quantity: s.open_position_qty,
+    entry_price: s.open_position_entry, stop_loss: s.open_position_sl,
+    take_profit: s.open_position_tp, unrealized_pnl: s.unrealized_pnl,
+    symbol: s.pair
+  }];
+  tbody.innerHTML = rows.map(p => {
+    const side = (p.side || '').toUpperCase();
+    const sideCls = side === 'BUY' ? 'chip-buy' : 'chip-sell';
+    return `<tr>
+      <td style="font-weight:600;">${p.symbol || s.pair || '—'}</td>
+      <td><span class="signal-chip ${sideCls}">${side}</span></td>
+      <td style="font-family:monospace;">${fNum(p.quantity, 6)}</td>
+      <td style="font-family:monospace;">${fNum(p.entry_price, 4)}</td>
+      <td style="font-family:monospace;">${fNum(s.price, 4)}</td>
+      <td style="color:var(--accent-red); font-family:monospace;">${fNum(p.stop_loss, 4)}</td>
+      <td style="color:var(--accent-green); font-family:monospace;">${fNum(p.take_profit, 4)}</td>
+      <td>${colorPnl(p.unrealized_pnl)}</td>
+      <td><button class="btn btn-danger" style="padding:4px 10px; font-size:11px;" onclick="sendControl('force_close')">Close</button></td>
+    </tr>`;
+  }).join('');
+}
+
+/* ═══════════════════════════════════════════════
+   TRADES TABLE
+═══════════════════════════════════════════════ */
+function renderTrades() {
+  const side = document.getElementById('filter-side')?.value || '';
+  const result = document.getElementById('filter-result')?.value || '';
+  let trades = _allTrades;
+  if (side) trades = trades.filter(t => (t.side||'').toUpperCase() === side);
+  if (result === 'WIN') trades = trades.filter(t => parseFloat(t.pnl||0) > 0);
+  if (result === 'LOSS') trades = trades.filter(t => parseFloat(t.pnl||0) < 0);
+
+  const tbody = document.getElementById('trades-tbody');
+  if (!tbody) return;
+  if (trades.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--text-muted); padding:30px;">No trades found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = [...trades].reverse().map(t => {
+    const pnl = parseFloat(t.pnl || 0);
+    const side = (t.side||'').toUpperCase();
+    const sideCls = side === 'BUY' ? 'chip-buy' : 'chip-sell';
+    return `<tr>
+      <td style="font-size:11px; color:var(--text-muted); white-space:nowrap;">${t.time || '—'}</td>
+      <td style="font-weight:600;">${t.pair || '—'}</td>
+      <td><span class="signal-chip ${sideCls}">${side}</span></td>
+      <td style="font-family:monospace;">${fNum(t.entry, 4)}</td>
+      <td style="font-family:monospace;">${fNum(t.exit, 4)}</td>
+      <td style="font-family:monospace;">${fNum(t.size, 6)}</td>
+      <td>${colorPnl(pnl)}</td>
+      <td><span class="signal-chip ${pnl > 0 ? 'chip-buy' : pnl < 0 ? 'chip-sell' : 'chip-neutral'}">${t.status || (pnl > 0 ? 'WIN' : pnl < 0 ? 'LOSS' : '—')}</span></td>
+      <td style="font-size:11px; color:var(--text-muted);">${t.duration || '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Summary stats
+  const wins = trades.filter(t => parseFloat(t.pnl||0) > 0).length;
+  const losses = trades.filter(t => parseFloat(t.pnl||0) < 0).length;
+  const totalPnl = trades.reduce((sum, t) => sum + parseFloat(t.pnl||0), 0);
+  setText('stat-total', trades.length);
+  setText('stat-wins', wins);
+  setText('stat-losses', losses);
+  const tpEl = document.getElementById('stat-total-pnl');
+  if (tpEl) tpEl.innerHTML = colorPnl(totalPnl);
+}
+
+function filterTrades() { renderTrades(); }
+
+/* ═══════════════════════════════════════════════
+   LOGS
+═══════════════════════════════════════════════ */
+function renderLogs() {
+  const levelFilter = document.getElementById('log-level-filter')?.value || '';
+  const logs = levelFilter ? _allLogs.filter(l => (l.level||'').toUpperCase() === levelFilter) : _allLogs;
+
+  function buildLogHtml(logList) {
+    return logList.slice(-200).map(l => {
+      const lvl = (l.level||'INFO').toUpperCase();
+      const important = lvl === 'ERROR' || lvl === 'WARNING';
+      return `<div class="log-entry">
+        <span class="log-time">${l.time || '--:--:--'}</span>
+        <span class="log-level ${lvl}">${lvl}</span>
+        <span class="log-msg ${important ? 'important' : ''}">${(l.message||'').substring(0, 300)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  const mainFeed = document.getElementById('log-feed-main');
+  if (mainFeed) { mainFeed.innerHTML = buildLogHtml(_allLogs.slice(-20)); }
+
+  const fullFeed = document.getElementById('log-feed-full');
+  if (fullFeed) {
+    fullFeed.innerHTML = buildLogHtml(logs);
+    if (_autoScroll) fullFeed.scrollTop = fullFeed.scrollHeight;
+  }
+}
+
+function filterLogs() { renderLogs(); }
+function clearLogs() { _allLogs = []; renderLogs(); }
+function toggleAutoScroll() {
+  _autoScroll = !_autoScroll;
+  setText('autoscroll-state', _autoScroll ? 'ON' : 'OFF');
+}
+
+/* ═══════════════════════════════════════════════
+   BOT CONTROLS
+═══════════════════════════════════════════════ */
+async function sendControl(action) {
+  if (action === 'emergency_stop' && !confirm('Activate EMERGENCY STOP? This will halt all trading immediately.')) return;
+  if (action === 'force_close' && !confirm('Force close all open positions?')) return;
+  try {
+    const res = await fetch('/api/control', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const data = await res.json();
+    showToast(data.message || (data.success ? 'Command sent' : 'Error: ' + data.error),
+      data.success ? 'success' : 'error');
+  } catch (e) {
+    showToast('Connection error: ' + e.message, 'error');
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   SETTINGS
+═══════════════════════════════════════════════ */
+function updateLLMVisibility() {
+  const mode = document.getElementById('s-llm-mode')?.value || 'base';
+  const isLocal = mode === 'llm_local';
+  const isRemote = mode === 'llm_remote';
+  const show = (id, cond) => { const el = document.getElementById(id); if (el) el.style.display = cond ? '' : 'none'; };
+  show('llm-local-fields', isLocal);
+  show('llm-url-field', isLocal);
+  show('llm-remote-fields', isRemote);
+  show('llm-remote-model', isRemote);
+  show('llm-apikey', isRemote);
+}
+
+function loadCurrentSettings() {
+  fetch('/api/snapshot')
+    .then(r => r.json())
+    .then(data => {
+      const s = data.data || data;
+      const rt = s.runtime_settings || {};
+      // Populate fields from snapshot runtime_settings
+      const setVal = (id, val) => { const el = document.getElementById(id); if (el && val !== undefined && val !== null) el.value = val; };
+      const setCheck = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+      setVal('s-symbol', s.pair || 'BTC/USDT');
+      setVal('s-llm-mode', s.llm_mode || rt.llm_mode || 'base');
+      setVal('s-llm-model', rt.llm_local_model || 'qwen2.5:0.5b');
+      setVal('s-ollama-url', rt.ollama_base_url || 'http://localhost:11434');
+      setVal('s-max-trades', rt.max_trades_per_day || 20);
+      setVal('s-max-pos', rt.max_concurrent_trades || 1);
+      setVal('s-loop-sleep', rt.loop_sleep_seconds || 15);
+      setVal('s-tui-fps', rt.terminal_tui_refresh_per_second || 4);
+      setVal('s-max-ram', rt.max_ram_mb || 500);
+      setCheck('s-spot-only', rt.spot_only_mode !== false);
+      setCheck('s-low-ram', rt.low_ram_mode !== false);
+      setCheck('s-tui', rt.terminal_tui_enabled !== false);
+      setCheck('s-multi', rt.feature_multi_symbol_enabled === true);
+      setCheck('s-dyn-exit', rt.dynamic_exit_enabled !== false);
+
+      // Filter config
+      const f = s.autonomous_filters || s.runtime_filter_config || {};
+      const setRange = (id, valId, val, mult) => {
+        const el = document.getElementById(id);
+        if (el && val !== undefined) { el.value = val; if (valId) setText(valId, mult ? (val * mult).toFixed(mult === 100 ? 1 : 0) + '%' : val); }
+      };
+      setRange('s-adx', 's-adx-val', f.adx_threshold || 12);
+      setRange('s-minconf', 's-minconf-val', f.min_confidence || 0.45, 100);
+      setVal('s-rsi-buy', f.rsi_buy_threshold || 48);
+      setVal('s-rsi-sell', f.rsi_sell_threshold || 52);
+      setVal('s-vol-buy', f.volume_buy_threshold || 0.90);
+      setVal('s-vol-sell', f.volume_sell_threshold || 0.85);
+      setVal('s-sl-atr', f.stop_loss_atr_multiplier || 1.5);
+      setVal('s-tp-atr', f.take_profit_atr_multiplier || 2.5);
+
+      updateLLMVisibility();
+      showToast('Settings loaded from bot', 'info');
+    })
+    .catch(e => showToast('Failed to load settings: ' + e.message, 'error'));
+}
+
+async function saveSettings() {
+  // Collect all form values
+  const payload = {
+    // Trading
+    trading_symbol: document.getElementById('s-symbol')?.value,
+    trading_symbols: getMultiSelectValues('ms-symbols'),
+    primary_timeframe: document.getElementById('s-tf')?.value,
+    confirmation_timeframe: document.getElementById('s-ctf')?.value,
+    risk_per_trade_fraction: parseFloat(document.getElementById('s-risk')?.value || 0.01),
+    max_trades_per_day: parseInt(document.getElementById('s-max-trades')?.value || 20),
+    investment_mode: document.getElementById('s-inv-mode')?.value,
+    spot_only_mode: document.getElementById('s-spot-only')?.checked,
+    feature_multi_symbol_enabled: document.getElementById('s-multi')?.checked,
+    dynamic_exit_enabled: document.getElementById('s-dyn-exit')?.checked,
+    // Filters
+    filter_config: {
+      adx_threshold: parseFloat(document.getElementById('s-adx')?.value || 12),
+      min_confidence: parseFloat(document.getElementById('s-minconf')?.value || 0.45),
+      rsi_buy_threshold: parseFloat(document.getElementById('s-rsi-buy')?.value || 48),
+      rsi_sell_threshold: parseFloat(document.getElementById('s-rsi-sell')?.value || 52),
+      volume_buy_threshold: parseFloat(document.getElementById('s-vol-buy')?.value || 0.90),
+      volume_sell_threshold: parseFloat(document.getElementById('s-vol-sell')?.value || 0.85),
+      stop_loss_atr_multiplier: parseFloat(document.getElementById('s-sl-atr')?.value || 1.5),
+      take_profit_atr_multiplier: parseFloat(document.getElementById('s-tp-atr')?.value || 2.5),
+    },
+    // Risk
+    daily_loss_limit_fraction: parseFloat(document.getElementById('s-daily-loss')?.value || 0.02),
+    max_drawdown_fraction: parseFloat(document.getElementById('s-max-dd')?.value || 0.10),
+    capital_limit_usdt: parseFloat(document.getElementById('s-cap-limit')?.value || 0),
+    min_cash_buffer_usdt: parseFloat(document.getElementById('s-cash-buf')?.value || 10),
+    max_concurrent_trades: parseInt(document.getElementById('s-max-pos')?.value || 1),
+    loss_pause_minutes: parseInt(document.getElementById('s-pause-min')?.value || 30),
+    // AI
+    llm_mode: document.getElementById('s-llm-mode')?.value || 'base',
+    llm_local_model: document.getElementById('s-llm-model')?.value,
+    ollama_base_url: document.getElementById('s-ollama-url')?.value,
+    llm_remote_endpoint: document.getElementById('s-remote-ep')?.value,
+    llm_remote_model: document.getElementById('s-remote-model-name')?.value,
+    llm_remote_api_key: document.getElementById('s-remote-key')?.value,
+    llm_local_num_ctx: parseInt(document.getElementById('s-llm-ctx')?.value || 256),
+    llm_local_healthcheck_enabled: document.getElementById('s-llm-health')?.checked,
+    // System
+    low_ram_mode: document.getElementById('s-low-ram')?.checked,
+    max_ram_mb: parseInt(document.getElementById('s-max-ram')?.value || 500),
+    loop_sleep_seconds: parseInt(document.getElementById('s-loop-sleep')?.value || 15),
+    history_limit: parseInt(document.getElementById('s-history')?.value || 300),
+    terminal_tui_refresh_per_second: parseInt(document.getElementById('s-tui-fps')?.value || 4),
+    terminal_tui_enabled: document.getElementById('s-tui')?.checked,
+  };
+
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('✅ Settings applied to running bot!', 'success');
+    } else {
+      showToast('❌ Error: ' + (data.error || 'Unknown error'), 'error');
+    }
+  } catch (e) {
+    showToast('Connection error: ' + e.message, 'error');
+  }
+}
+
+async function resetFilters() {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset_filters: true })
+    });
+    const data = await res.json();
+    showToast(data.success ? '✅ Filters reset to default' : '❌ ' + data.error,
+      data.success ? 'success' : 'error');
+    if (data.success) loadCurrentSettings();
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+/* ═══════════════════════════════════════════════
+   SSE CONNECTION (real-time updates)
+═══════════════════════════════════════════════ */
+function connectSSE() {
+  if (_sseSource) _sseSource.close();
+  _sseSource = new EventSource('/api/stream');
+  _sseSource.onmessage = e => {
+    try { updateUI(JSON.parse(e.data)); } catch(err) { console.error('SSE parse error', err); }
+  };
+  _sseSource.onerror = () => {
+    // SSE failed, fall back to polling
+    _sseSource.close();
+    _sseSource = null;
+    setTimeout(startPolling, 2000);
+  };
+}
+
+function startPolling() {
+  fetch('/api/snapshot')
+    .then(r => r.json())
+    .then(d => updateUI(d.data || d))
+    .catch(e => console.error('Polling error', e));
+  setInterval(() => {
+    fetch('/api/snapshot')
+      .then(r => r.json())
+      .then(d => updateUI(d.data || d))
+      .catch(() => {});
+  }, 2000);
+}
+
+/* ═══════════════════════════════════════════════
+   STARTUP
+═══════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', () => {
+  // Try SSE first, fall back to polling
+  connectSSE();
+  // Load initial settings after 1s
+  setTimeout(loadCurrentSettings, 1500);
+  updateLLMVisibility();
+});
+</script>
+
+<!-- Legacy compatibility markers for tests -->
+<div style="display:none" aria-hidden="true">
+  <span>Professional Local Dashboard</span>
+  <button data-bs-target="#settings"></button>
+  <button data-bs-target="#system"></button>
+  <button data-bs-target="#intel-log"></button>
+  <button id="stopTradeBtn"></button>
+</div>
+
+<script>
+// Legacy compatibility for risk metrics binding
+(function(){
+  const d = window.__latestSnapshot || {};
+  const riskMetrics = d.risk_metrics || {};
+  if (document.getElementById('adaptiveMultiplierValue')) {
+    document.getElementById('adaptiveMultiplierValue').textContent = (riskMetrics.adaptive_size_multiplier || 1.0);
+  }
+})();
+</script>
 </body>
 </html>

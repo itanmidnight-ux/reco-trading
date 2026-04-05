@@ -63,8 +63,14 @@ class LLMTradeConfirmator:
             "num_predict": int(os.getenv("LLM_LOCAL_NUM_PREDICT", str(local_num_predict))),
         }
         self._local_endpoint_healthy = False
+        self._warmup_done = False
         if self.llm_mode == "llm_local" and self.local_healthcheck_enabled:
-            self._local_endpoint_healthy = self._warmup_local_model()
+            import threading
+            threading.Thread(
+                target=self._warmup_background,
+                daemon=True,
+                name="ollama-warmup"
+            ).start()
 
     def confirm_trade(
         self,
@@ -117,14 +123,13 @@ class LLMTradeConfirmator:
         else:
             reasons.append("Weak trend strength (ADX low)")
 
-        if volatility_regime in ("NORMAL", "TRENDING"):
+        if volatility_regime in ("NORMAL_VOLATILITY", "LOW_VOLATILITY"):
             score += 10
         elif volatility_regime == "HIGH_VOLATILITY":
             score += 5
-            reasons.append("High volatility - reduced size recommended")
+            reasons.append("High volatility - reduced score bonus")
         else:
-            score -= 10
-            reasons.append(f"Unfavorable regime: {volatility_regime}")
+            reasons.append(f"Unknown volatility regime: {volatility_regime}")
 
         if order_flow in ("BULLISH", "BEARISH"):
             score += 10
@@ -165,8 +170,8 @@ class LLMTradeConfirmator:
             reasons.append(f"Significant daily loss: ${daily_pnl:.2f}")
 
         if self.llm_mode == "base":
-            confirmed = True
-            reasons.append("LLM_MODE=base (sin confirmación LLM final)")
+            confirmed = score >= 50
+            reasons.append(f"base_rules score={score:.1f} threshold=50 result={'APPROVED' if score >= 50 else 'REJECTED'}")
         elif self.llm_mode == "llm_remote":
             remote_confirmed, remote_reason = self._remote_confirm(
                 symbol=symbol,
@@ -194,16 +199,18 @@ class LLMTradeConfirmator:
             reasons.append(f"LLM_MODE desconocido ({self.llm_mode}), fallback a reglas")
         analysis_time = (time.perf_counter() - start) * 1000
 
-        total_events = self._confirmation_count + self._rejection_count + 1
-        self._avg_time_ms = ((self._avg_time_ms * (total_events - 1)) + analysis_time) / total_events
         if confirmed:
             self._confirmation_count += 1
         else:
             self._rejection_count += 1
-        if self._confirmation_count == 1:
+
+        total_events = self._confirmation_count + self._rejection_count
+        if total_events == 1:
             self._avg_time_ms = analysis_time
         else:
-            self._avg_time_ms = ((self._avg_time_ms * (self._confirmation_count - 1)) + analysis_time) / self._confirmation_count
+            self._avg_time_ms = (
+                (self._avg_time_ms * (total_events - 1)) + analysis_time
+            ) / total_events
 
         result = TradeConfirmation(
             symbol=symbol,
@@ -253,10 +260,16 @@ class LLMTradeConfirmator:
                 "options": self.local_options,
                 "keep_alive": self.local_keep_alive,
             }
+            # Primera llamada puede necesitar más tiempo (modelo cargando)
+            effective_timeout = (
+                max(self.local_timeout_seconds, 5.0)
+                if not self._warmup_done
+                else self.local_timeout_seconds
+            )
             response = self._http_session.post(
                 f"{self.ollama_base_url}/api/generate",
                 json=payload,
-                timeout=self.local_timeout_seconds,
+                timeout=effective_timeout,
             )
             response.raise_for_status()
             llm_text = str(response.json().get("response", "")).upper()
@@ -320,12 +333,27 @@ class LLMTradeConfirmator:
         total = self._confirmation_count + self._rejection_count
         return {
             "total_analyzed": total,
-            "confirmed": total - self._rejection_count,
+            "confirmed": self._confirmation_count,
             "rejected": self._rejection_count,
-            "confirmation_rate": ((total - self._rejection_count) / total * 100) if total > 0 else 0,
-            "avg_analysis_time_ms": self._avg_time_ms,
+            "confirmation_rate": (self._confirmation_count / total * 100) if total > 0 else 0.0,
+            "avg_analysis_time_ms": round(self._avg_time_ms, 2),
             "local_endpoint_healthy": self._local_endpoint_healthy,
+            "warmup_done": self._warmup_done,
+            "mode": self.llm_mode,
+            "model": self.local_model if self.llm_mode == "llm_local" else self.remote_model,
         }
+
+    def _warmup_background(self) -> None:
+        """Warmup Ollama en background sin bloquear el bot."""
+        import time
+        time.sleep(2.0)  # dar tiempo al bot a terminar __init__
+        self._local_endpoint_healthy = self._warmup_local_model()
+        self._warmup_done = True
+        if self._local_endpoint_healthy:
+            self.logger.info("ollama_warmup_completed_background model=%s", self.local_model)
+        else:
+            self.logger.warning("ollama_warmup_failed_background model=%s — usando fallback a reglas", self.local_model)
+
 
     def _warmup_local_model(self) -> bool:
         try:

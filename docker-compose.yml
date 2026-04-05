@@ -18,9 +18,7 @@ services:
       - ENABLE_REINFORCEMENT_LEARNING=true
       - DRIFT_DETECTION=true
       - ONCHAIN_ANALYSIS=true
-      - LLM_MODE=llm_local
-      - LLM_LOCAL_MODEL=qwen2.5:0.5b
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - LLM_MODE=base
     ports:
       - "127.0.0.1:9000:9000"
     volumes:
@@ -29,8 +27,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ollama-init:
-        condition: service_completed_successfully
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/api/health"]
@@ -85,39 +81,14 @@ services:
     depends_on:
       - postgres
       - redis
-      - ollama
     restart: unless-stopped
     networks:
       - reco-network
 
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "127.0.0.1:11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    networks:
-      - reco-network
-
-  ollama-init:
-    image: curlimages/curl:8.7.1
-    depends_on:
-      - ollama
-    command: >
-      sh -c "
-      until curl -sf http://ollama:11434/api/tags >/dev/null; do sleep 2; done &&
-      curl -sf http://ollama:11434/api/tags | grep -q 'qwen2.5:0.5b' ||
-      curl -sf -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen2.5:0.5b\"}'
-      "
-    restart: "no"
-    networks:
-      - reco-network
 
 volumes:
   postgres_data:
   redis_data:
-  ollama_data:
 
 networks:
   reco-network:
