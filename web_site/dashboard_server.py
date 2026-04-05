@@ -85,8 +85,42 @@ def _check_token_auth() -> bool:
     return bool(supplied) and hmac.compare_digest(supplied, token)
 
 
+def _is_same_origin_request() -> bool:
+    """Check if request comes from the same Flask app (same origin)."""
+    origin = request.headers.get("Origin", "")
+    referer = request.headers.get("Referer", "")
+    host = request.host
+
+    if origin:
+        from urllib.parse import urlparse
+        parsed = urlparse(origin)
+        if parsed.netloc == host:
+            return True
+        # Also check host without port
+        host_no_port = host.split(":")[0]
+        origin_host = parsed.hostname or ""
+        if origin_host == host_no_port:
+            return True
+
+    if referer:
+        from urllib.parse import urlparse
+        parsed = urlparse(referer)
+        if parsed.netloc == host:
+            return True
+        # Also check host without port
+        host_no_port = host.split(":")[0]
+        referer_host = parsed.hostname or ""
+        if referer_host == host_no_port:
+            return True
+
+    return False
+
+
 def _is_authorized() -> bool:
     if not _is_dashboard_auth_enabled():
+        return True
+    # Same-origin requests from the dashboard UI are always authorized
+    if _is_same_origin_request():
         return True
     # Compatibilidad: si no hay credenciales configuradas, no bloquear el dashboard.
     if not _dashboard_token() and not _dashboard_password():
@@ -539,13 +573,36 @@ def _enhance_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 def create_app() -> Flask:
     """Create and configure Flask app."""
     global _app
-    
-    app = Flask(__name__, template_folder='templates', static_folder='static')
+
+    # Resolve template and static folders relative to this file's location
+    _web_site_dir = os.path.dirname(os.path.abspath(__file__))
+    _template_dir = os.path.join(_web_site_dir, 'templates')
+    _static_dir = os.path.join(_web_site_dir, 'static')
+
+    app = Flask(__name__, template_folder=_template_dir, static_folder=_static_dir)
     app.config['JSON_SORT_KEYS'] = False
-    
+
+    # Global error handlers to prevent Internal Server Error pages
+    @app.errorhandler(Exception)
+    def _handle_exception(e):
+        logger.exception("Unhandled exception in dashboard: %s", e)
+        return jsonify({"success": False, "error": "Internal server error"}), 500
+
+    @app.errorhandler(404)
+    def _handle_404(e):
+        return jsonify({"success": False, "error": "Not found"}), 404
+
+    @app.errorhandler(500)
+    def _handle_500(e):
+        return jsonify({"success": False, "error": "Internal server error"}), 500
+
     @app.route('/')
     def index():
-        return render_template('index.html')
+        try:
+            return render_template('index.html')
+        except Exception as e:
+            logger.exception("Error rendering index: %s", e)
+            return "<h1>Dashboard Error</h1><p>Could not load dashboard template.</p>", 500
 
     @app.route('/api/auth/login', methods=['POST'])
     def api_auth_login():
@@ -1107,10 +1164,92 @@ def run_server(host: str = '0.0.0.0', port: int = 9000) -> None:
     werkzeug_logger = logging.getLogger("werkzeug")
     werkzeug_logger.disabled = True
     app.logger.disabled = True
-    
+
+    def _kill_process_on_port(target_port: int) -> bool:
+        """Kill any process listening on the target port."""
+        try:
+            # Method 1: lsof
+            import subprocess
+            result = subprocess.run(
+                ["lsof", "-ti", f":{target_port}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split("\n")
+                for pid in pids:
+                    pid = pid.strip()
+                    if pid:
+                        try:
+                            os.kill(int(pid), 9)
+                            logger.info(f"Killed process {pid} on port {target_port}")
+                        except (ProcessLookupError, PermissionError, ValueError):
+                            pass
+                time.sleep(0.5)
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        try:
+            # Method 2: fuser
+            import subprocess
+            result = subprocess.run(
+                ["fuser", "-k", f"{target_port}/tcp"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                logger.info(f"Killed process on port {target_port} via fuser")
+                time.sleep(0.5)
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        try:
+            # Method 3: ss + kill
+            import subprocess
+            result = subprocess.run(
+                ["ss", "-tlnp", f"sport = :{target_port}"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0 and str(target_port) in result.stdout:
+                import re
+                pids_found = re.findall(r'pid=(\d+)', result.stdout)
+                for pid in pids_found:
+                    try:
+                        os.kill(int(pid), 9)
+                        logger.info(f"Killed process {pid} on port {target_port} via ss")
+                    except (ProcessLookupError, PermissionError, ValueError):
+                        pass
+                time.sleep(0.5)
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        return False
+
     def find_available_port(start_port: int) -> int:
-        """Find an available port starting from start_port."""
-        port = start_port
+        """Kill process on start_port if in use, then return start_port. Fallback to next available."""
+        # First try to free the requested port
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind((host, start_port))
+            sock.close()
+            logger.info(f"Port {start_port} is available")
+            return start_port
+        except OSError:
+            # Port is in use - try to kill the process
+            logger.warning(f"Port {start_port} is in use, attempting to free it...")
+            _kill_process_on_port(start_port)
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.bind((host, start_port))
+                sock.close()
+                logger.info(f"Successfully freed port {start_port}")
+                return start_port
+            except OSError:
+                pass
+
+        # Fallback: find next available port
+        port = start_port + 1
         for _ in range(100):
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1121,14 +1260,14 @@ def run_server(host: str = '0.0.0.0', port: int = 9000) -> None:
             except OSError:
                 port += 1
         raise RuntimeError(f"Could not find available port near {start_port}")
-    
+
     actual_port = find_available_port(port)
-    
+
     if actual_port != port:
         logger.warning(f"Port {port} was in use, using port {actual_port} instead")
-    
+
     logger.info(f"Starting web dashboard on http://{host}:{actual_port}")
-    
+
     app.run(host=host, port=actual_port, debug=False, use_reloader=False, threaded=True)
 
 

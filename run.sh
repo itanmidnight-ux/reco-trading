@@ -354,16 +354,36 @@ fi
 
 WEB_PORT="${WEB_DASHBOARD_PORT:-9000}"
 
-# Verificar si el puerto ya está en uso
-if command -v lsof >/dev/null 2>&1; then
-  if lsof -i ":${WEB_PORT}" -sTCP:LISTEN -t >/dev/null 2>&1; then
-    echo "⚠️  Puerto ${WEB_PORT} ya está en uso. El dashboard usará el siguiente disponible."
+# Liberar puerto si está en uso
+kill_port_if_in_use() {
+  local p="$1"
+  local killed=false
+
+  # Método 1: lsof
+  if command -v lsof >/dev/null 2>&1; then
+    local pids
+    pids=$(lsof -i ":${p}" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [ -n "${pids}" ]; then
+      echo "⚠️  Puerto ${p} en uso. Liberando..."
+      for pid in ${pids}; do
+        kill -9 "${pid}" 2>/dev/null && killed=true
+      done
+      sleep 1
+    fi
   fi
-elif command -v ss >/dev/null 2>&1; then
-  if ss -tlnp 2>/dev/null | grep -q ":${WEB_PORT} "; then
-    echo "⚠️  Puerto ${WEB_PORT} ya está en uso. El dashboard usará el siguiente disponible."
+
+  # Método 2: fuser
+  if [ "${killed}" = false ] && command -v fuser >/dev/null 2>&1; then
+    fuser -k "${p}/tcp" 2>/dev/null && killed=true
+    sleep 1
   fi
-fi
+
+  if [ "${killed}" = true ]; then
+    echo "✓ Puerto ${p} liberado correctamente."
+  fi
+}
+
+kill_port_if_in_use "${WEB_PORT}"
 
 echo ""
 echo "══════════════════════════════════════════════════"
