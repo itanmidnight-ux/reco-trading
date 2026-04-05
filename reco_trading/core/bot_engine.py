@@ -3227,10 +3227,8 @@ class BotEngine:
         # Re-aplicar ajustes LLM si está en modo local (se habrían sobreescrito)
         if str(getattr(self.settings, "llm_mode", "base")).lower() == "llm_local":
             self._configure_llm_runtime_mode()
-            if hasattr(self, "logger"):
-                self.logger.info("LLM runtime filters re-applied after symbol config update")
-        if hasattr(self, "logger"):
-            self.logger.info(f"Applied filter config for {self.symbol}: {self.runtime_filter_config}")
+            self.logger.info("LLM runtime filters re-applied after symbol config update")
+        self.logger.info(f"Applied filter config for {self.symbol}: {self.runtime_filter_config}")
 
     def _apply_autonomous_filters(self) -> None:
         """Apply filter adjustments from the autonomous brain."""
@@ -3304,42 +3302,6 @@ class BotEngine:
                 _BASE_ADX = self.base_filter_config.get("adx_threshold", 15.0)
                 effective_filters["min_confidence"] = max(_BASE_CONF - 0.03, 0.42)
                 effective_filters["adx_threshold"] = max(_BASE_ADX - 1.5, 11.0)
-
-            # Perfil de entrada más activo para cuentas micro (ej. 5 USDT),
-            # manteniendo límites para evitar degradación extrema.
-            if 0 < total_equity <= 15.0 and daily_pnl >= -5.0:
-                _BASE_CONF = self.base_filter_config.get("min_confidence", 0.50)
-                _BASE_ADX = self.base_filter_config.get("adx_threshold", 14.0)
-                effective_filters["min_confidence"] = max(min(_BASE_CONF - 0.10, 0.50), 0.42)
-                effective_filters["adx_threshold"] = max(min(_BASE_ADX - 4.0, 13.0), 9.0)
-                effective_filters["volume_buy_threshold"] = min(
-                    _as_float(effective_filters.get("volume_buy_threshold"), 1.0),
-                    0.90,
-                )
-                self.snapshot["micro_balance_mode"] = True
-            else:
-                self.snapshot["micro_balance_mode"] = False
-
-            # Control anti-señales falsas: endurecer temporalmente en contexto de baja calidad.
-            if stale_ratio > 0.12 or signal_quality < 0.42 or consecutive_losses >= 2:
-                effective_filters["min_confidence"] = min(
-                    0.82,
-                    max(
-                        _as_float(effective_filters.get("min_confidence"), 0.55),
-                        self.base_filter_config.get("min_confidence", 0.55) + 0.04,
-                    ),
-                )
-                effective_filters["adx_threshold"] = min(
-                    34.0,
-                    max(
-                        _as_float(effective_filters.get("adx_threshold"), 20.0),
-                        self.base_filter_config.get("adx_threshold", 20.0) + 2.0,
-                    ),
-                )
-                effective_filters["volume_buy_threshold"] = max(
-                    _as_float(effective_filters.get("volume_buy_threshold"), 1.0),
-                    self.base_filter_config.get("volume_buy_threshold", 1.0),
-                )
 
             # Protect quality if session quality drops.
             if daily_pnl < -30.0 or (trades_today >= 3 and win_rate < 0.34):

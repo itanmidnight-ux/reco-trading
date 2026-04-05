@@ -214,6 +214,9 @@ if (Test-Path "requirements.txt") {
 # ============================================
 
 $LLMMode = "base"
+$LLMRemoteEndpoint = "https://api.openai.com/v1/chat/completions"
+$LLMRemoteModel = "gpt-4o-mini"
+$LLMRemoteApiKey = ""
 $DashboardAuthEnabled = "true"
 $DashboardAuthMode = "token"
 $DashboardUsername = "admin"
@@ -230,8 +233,23 @@ if (-not $DashboardApiToken) {
     $DashboardApiToken = [guid]::NewGuid().ToString("N")
 }
 
-# Modo de decisión fijo: base (sin LLM externo/local)
-Write-Info "Modo de decisión fijado en base (sin LLM externo/local)."
+Write-Info "Selecciona modo de decisión LLM..."
+Write-Host "  1) base (sin LLM para decisión final)"
+Write-Host "  2) llm_remote (API externa)"
+$LLMChoice = if ($NoConfirm) { "1" } else { Read-Host "Elige opción (1/2)" }
+
+switch ($LLMChoice) {
+    "2" {
+        $LLMMode = "llm_remote"
+        $inputEndpoint = Read-Host "Endpoint API remota [$LLMRemoteEndpoint]"
+        if ($inputEndpoint) { $LLMRemoteEndpoint = $inputEndpoint }
+        $inputModel = Read-Host "Modelo remoto [$LLMRemoteModel]"
+        if ($inputModel) { $LLMRemoteModel = $inputModel }
+        $inputApiKey = Read-Host "API Key remota (opcional)"
+        if ($inputApiKey) { $LLMRemoteApiKey = $inputApiKey }
+    }
+    default { $LLMMode = "base" }
+}
 
 # ============================================
 # DETECT DATABASE
@@ -406,6 +424,9 @@ ONCHAIN_ANALYSIS=true
 
 # LLM Mode
 LLM_MODE=$LLMMode
+LLM_REMOTE_ENDPOINT=$LLMRemoteEndpoint
+LLM_REMOTE_MODEL=$LLMRemoteModel
+LLM_REMOTE_API_KEY=$LLMRemoteApiKey
 
 # Dashboard Security
 DASHBOARD_AUTH_ENABLED=$DashboardAuthEnabled
@@ -426,6 +447,9 @@ DASHBOARD_API_TOKEN=$DashboardApiToken
 
 if (Test-Path ".env") {
     Upsert-EnvKey -Path ".env" -Key "LLM_MODE" -Value $LLMMode
+    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_ENDPOINT" -Value $LLMRemoteEndpoint
+    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_MODEL" -Value $LLMRemoteModel
+    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_API_KEY" -Value $LLMRemoteApiKey
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_AUTH_ENABLED" -Value $DashboardAuthEnabled
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_AUTH_MODE" -Value $DashboardAuthMode
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_USERNAME" -Value $DashboardUsername
