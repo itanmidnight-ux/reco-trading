@@ -119,11 +119,8 @@ class MultiPairManager:
         self._min_switch_interval_seconds = 180
         
         self.max_pairs_per_scan = 8
-        self.panic_threshold = 0.25
         self._last_scan_time: datetime | None = None
         self._min_time_between_scans = 5
-        self._circuit_breaker_until: datetime | None = None
-        self._consecutive_scan_errors = 0
 
     async def start(self) -> None:
         self._is_running = True
@@ -409,7 +406,7 @@ class MultiPairManager:
             return False
         
         # 4. Check consecutive losses
-        if consecutive_losses >= 2:
+        if consecutive_losses >= 3:
             self.logger.warning(f"Consecutive losses detected: {consecutive_losses} -> SWITCH")
             return True
         

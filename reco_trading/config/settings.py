@@ -34,20 +34,21 @@ class Settings(BaseSettings):
     low_ram_mode: bool = True
     max_ram_mb: int = 500
     ui_state_emit_on_each_log: bool = False
-    llm_fix_cycle_interval_seconds: int = 3600
-    llm_cleanup_interval_seconds: int = 86400
-    llm_mode: str = "base"
-    llm_local_model: str = "qwen2.5:0.5b"
-    ollama_base_url: str = "http://localhost:11434"
-    llm_remote_endpoint: str = "https://api.openai.com/v1/chat/completions"
-    llm_remote_model: str = "gpt-4o-mini"
-    llm_remote_api_key: str = ""
-    llm_local_keep_alive: str = "20m"
-    llm_local_num_ctx: int = 256
-    llm_local_num_predict: int = 4
-    llm_local_top_p: float = 0.9
-    llm_local_temperature: float = 0.0
-    llm_local_healthcheck_enabled: bool = True
+    # LLM settings disabled - using filter-based validation only
+    # llm_fix_cycle_interval_seconds: int = 3600
+    # llm_cleanup_interval_seconds: int = 86400
+    # llm_mode: str = "base"
+    # llm_local_model: str = "qwen2.5:0.5b"
+    # ollama_base_url: str = "http://localhost:11434"
+    # llm_remote_endpoint: str = "https://api.openai.com/v1/chat/completions"
+    # llm_remote_model: str = "gpt-4o-mini"
+    # llm_remote_api_key: str = ""
+    # llm_local_keep_alive: str = "20m"
+    # llm_local_num_ctx: int = 256
+    # llm_local_num_predict: int = 4
+    # llm_local_top_p: float = 0.9
+    # llm_local_temperature: float = 0.0
+    # llm_local_healthcheck_enabled: bool = True
 
     # =========================
     # SIGNAL THRESHOLDS

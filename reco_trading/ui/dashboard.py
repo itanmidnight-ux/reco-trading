@@ -65,8 +65,6 @@ class DashboardSnapshot:
     open_position_sl: float | None = None
     open_position_tp: float | None = None
     open_positions: list[dict[str, Any]] = field(default_factory=list)
-    llm_mode: str | None = None
-    llm_trade_confirmator: dict[str, Any] = field(default_factory=dict)
     session_recommendation: str | None = None
     auto_improve_win_rate: float | None = None
     auto_improve_total_trades: int = 0
@@ -129,8 +127,6 @@ class DashboardSnapshot:
             open_position_sl=_to_float(data.get("open_position_sl")),
             open_position_tp=_to_float(data.get("open_position_tp")),
             open_positions=[dict(i) for i in (data.get("open_positions") or []) if isinstance(i, Mapping)],
-            llm_mode=_to_text(data.get("llm_mode")),
-            llm_trade_confirmator=dict(data.get("llm_trade_confirmator", {}) or {}),
             session_recommendation=_to_text(data.get("session_recommendation")),
             auto_improve_win_rate=_to_float(data.get("auto_improve_win_rate")),
             auto_improve_total_trades=int(data.get("auto_improve_total_trades", 0) or 0),
