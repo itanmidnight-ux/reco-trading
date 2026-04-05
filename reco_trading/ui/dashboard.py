@@ -71,6 +71,13 @@ class DashboardSnapshot:
     auto_improve_win_rate: float | None = None
     auto_improve_total_trades: int = 0
     investment_mode: str | None = None
+    # Nuevos campos: Trade Engine Stats
+    auto_improve_consecutive_losses: int = 0
+    auto_improve_optimization_count: int = 0
+    auto_optimized_params: dict[str, Any] = field(default_factory=dict)
+    filter_auto_adjustments: int = 0
+    trades_target_daily: int = 0
+    filter_relaxation_active: bool = False
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any]) -> "DashboardSnapshot":
@@ -128,6 +135,12 @@ class DashboardSnapshot:
             auto_improve_win_rate=_to_float(data.get("auto_improve_win_rate")),
             auto_improve_total_trades=int(data.get("auto_improve_total_trades", 0) or 0),
             investment_mode=_to_text(data.get("investment_mode")),
+            auto_improve_consecutive_losses=int(data.get("auto_improve_consecutive_losses", 0) or 0),
+            auto_improve_optimization_count=int(data.get("auto_improve_optimization_count", 0) or 0),
+            auto_optimized_params=dict(data.get("auto_optimized_params", {}) or {}),
+            filter_auto_adjustments=int(data.get("filter_auto_adjustments", 0) or 0),
+            trades_target_daily=int(data.get("trades_target_daily", 0) or 0),
+            filter_relaxation_active=bool(data.get("filter_relaxation_active", False)),
         )
 
 
@@ -253,36 +266,86 @@ class TerminalDashboard:
             else:
                 pos_table.add_row(Text("—", style="dim"), "—", "—", "—", Text("No position", style="dim"), "—", "—")
 
-            # ── LLM GATE PANEL ───────────────────────────────────────
-            llm = snap.llm_trade_confirmator or {}
-            llm_mode = (snap.llm_mode or "base").upper()
-            llm_health = llm.get("local_endpoint_healthy")
-            health_icon = "🟢" if llm_health is True else "🔴" if llm_health is False else "⚪"
-            llm_table = Table.grid(expand=True, padding=(0, 1))
-            llm_table.add_column(style="dim", min_width=16)
-            llm_table.add_column(style="bold white")
-            llm_table.add_row("Mode", Text(llm_mode, style="bold magenta"))
-            llm_table.add_row("Ollama", Text(health_icon + (" Online" if llm_health else " Offline" if llm_health is False else " —")))
-            llm_table.add_row("Analyzed", str(llm.get("total_analyzed", 0)))
-            llm_table.add_row("Confirmed", Text(str(llm.get("confirmed", 0)), style="green"))
-            llm_table.add_row("Rejected", Text(str(llm.get("rejected", 0)), style="red"))
-            rate = llm.get("confirmation_rate", 0)
-            llm_table.add_row("Rate", Text(f"{_fmt_float(rate, 1)}%", style="cyan"))
-            llm_table.add_row("Avg Latency", f"{_fmt_float(llm.get('avg_analysis_time_ms', 0), 1)} ms")
+            # ── TRADE ENGINE STATS PANEL ──────────────────────────────
+            import os as _os_env
+            _web_port = _os_env.getenv("WEB_DASHBOARD_PORT", "9000")
+            _profile_colors = {
+                "NANO": "bold red", "MICRO": "bold yellow",
+                "SMALL": "bold cyan", "MEDIUM": "bold green",
+                "LARGE": "bold bright_green", "WHALE": "bold bright_magenta",
+                "INSTITUTIONAL": "bold bright_white",
+            }
+            _profile_name = (snap.capital_profile or "—").upper()
+            _profile_style = _profile_colors.get(_profile_name, "bold white")
+            _target = snap.trades_target_daily or 0
+            _trades_pct = (snap.trades_today / _target) if _target > 0 else 0
+            _trades_style = "bold green" if _trades_pct >= 1.0 else "bold yellow" if _trades_pct >= 0.5 else "white"
 
-            # ── FILTER STATUS ─────────────────────────────────────────
+            engine_table = Table.grid(expand=True, padding=(0, 1))
+            engine_table.add_column(style="dim", min_width=18)
+            engine_table.add_column(style="bold white")
+            engine_table.add_row("Capital Profile", Text(_profile_name, style=_profile_style))
+            engine_table.add_row(
+                "Target Trades/día",
+                Text(str(_target) if _target > 0 else "—", style="cyan"),
+            )
+            engine_table.add_row(
+                "Trades Hoy",
+                Text(f"{snap.trades_today}/{_target if _target > 0 else '—'}", style=_trades_style),
+            )
+            engine_table.add_row(
+                "Win Rate AutoMejora",
+                Text(_fmt_pct(snap.auto_improve_win_rate),
+                     style="green" if (snap.auto_improve_win_rate or 0) >= 0.55 else "yellow"),
+            )
+            engine_table.add_row(
+                "Pérd. Consecutivas",
+                _losses_styled(snap.auto_improve_consecutive_losses),
+            )
+            engine_table.add_row(
+                "Optimizaciones",
+                Text(str(snap.auto_improve_optimization_count), style="cyan"),
+            )
+            _flt_status = "RELAJADO ▼" if snap.filter_relaxation_active else "NORMAL ✓"
+            _flt_style = "bold yellow" if snap.filter_relaxation_active else "bold green"
+            engine_table.add_row("Filtros Estado", Text(_flt_status, style=_flt_style))
+            engine_table.add_row(
+                "Ajustes Automáticos",
+                Text(str(snap.filter_auto_adjustments), style="dim cyan"),
+            )
+            _opt = snap.auto_optimized_params or {}
+            if _opt.get("min_confidence") is not None:
+                engine_table.add_row(
+                    "Conf. Optimizada",
+                    Text(f"{float(_opt['min_confidence'])*100:.1f}%", style="bright_cyan"),
+                )
+
+            # ── FILTER STATUS (mejorado) ──────────────────────────────
             af = snap.autonomous_filters
             filter_table = Table.grid(expand=True, padding=(0, 1))
             filter_table.add_column(style="dim", min_width=16)
             filter_table.add_column(style="bold cyan")
             if af:
-                filter_table.add_row("ADX ≥", _fmt_float(af.get("adx_threshold"), 1))
-                filter_table.add_row("RSI Buy ≥", _fmt_float(af.get("rsi_buy_threshold"), 1))
+                filter_table.add_row("ADX  ≥", _fmt_float(af.get("adx_threshold"), 1))
+                filter_table.add_row("RSI Buy  ≥", _fmt_float(af.get("rsi_buy_threshold"), 1))
                 filter_table.add_row("RSI Sell ≤", _fmt_float(af.get("rsi_sell_threshold"), 1))
-                filter_table.add_row("Min Conf", f"{_fmt_float((af.get('min_confidence') or 0) * 100, 1)}%")
-                filter_table.add_row("Vol Buy ≥", _fmt_float(af.get("volume_buy_threshold"), 2))
+                filter_table.add_row(
+                    "Confianza Min",
+                    Text(f"{_fmt_float((af.get('min_confidence') or 0) * 100, 1)}%",
+                         style="green" if (af.get("min_confidence") or 0) >= 0.60 else "yellow"),
+                )
+                filter_table.add_row("Vol Buy  ≥", _fmt_float(af.get("volume_buy_threshold"), 2))
+                filter_table.add_row("SL ATR  ×", _fmt_float(af.get("stop_loss_atr_multiplier"), 2))
+                filter_table.add_row("TP ATR  ×", _fmt_float(af.get("take_profit_atr_multiplier"), 2))
+                filter_table.add_row(
+                    "ATR Rango",
+                    Text(
+                        f"{_fmt_float(af.get('atr_low_threshold'), 4)}–{_fmt_float(af.get('atr_high_threshold'), 4)}",
+                        style="dim cyan",
+                    ),
+                )
             else:
-                filter_table.add_row("Filters", "loading...")
+                filter_table.add_row("Estado", Text("cargando...", style="dim"))
 
             # ── EVENT LOG ────────────────────────────────────────────
             log_table = Table(box=None, expand=True, padding=(0, 0), show_header=False)
@@ -320,7 +383,9 @@ class TerminalDashboard:
                 (" to stop  ", "dim"),
                 ("│  ", "dim"),
                 ("Web: ", "dim"),
-                ("http://localhost:9000", "bright_cyan"),
+                (f"http://localhost:{_web_port}", "bright_cyan"),
+                ("  │  Filtros: ", "dim"),
+                ("AUTO ⚡", "bright_yellow"),
             )
 
             # ── LAYOUT ASSEMBLY ───────────────────────────────────────
@@ -339,7 +404,7 @@ class TerminalDashboard:
                     Layout(Panel(conf_row, border_style="blue"), size=3),
                     Layout(Panel(portfolio, title="Portfolio", border_style="green"), ratio=4),
                     Layout(Panel(pos_table, title="Position", border_style="bright_cyan"), ratio=3),
-                    Layout(Panel(llm_table, title="LLM Gate", border_style="magenta"), ratio=3),
+                    Layout(Panel(engine_table, title="⚡ Trade Engine", border_style="bright_yellow"), ratio=3),
                     Layout(Panel(log_table, title="Feed", border_style="white"), ratio=4),
                 )
             else:
@@ -365,7 +430,7 @@ class TerminalDashboard:
                     Layout(Panel(log_table, title="📄 Feed", border_style="white"), ratio=4),
                 )
                 layout["body"]["right"].split_column(
-                    Layout(Panel(llm_table, title="🤖 LLM Gate", border_style="magenta"), ratio=4),
+                    Layout(Panel(engine_table, title="⚡ Trade Engine", border_style="bright_yellow"), ratio=4),
                     Layout(Panel(filter_table, title="🔧 Active Filters", border_style="yellow"), ratio=4),
                     Layout(Panel(_build_decision_panel(snap), title="🔍 Decision", border_style="yellow"), ratio=4),
                 )

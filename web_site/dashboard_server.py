@@ -161,20 +161,34 @@ def set_bot_instance_getter(getter: Callable) -> None:
     logger.info("Bot instance getter set for web dashboard")
 
 
+# Loop persistente para operaciones de BD del dashboard (evita crear/destruir loops en cada SSE tick)
+_dashboard_db_loop: asyncio.AbstractEventLoop | None = None
+_dashboard_db_loop_lock = threading.Lock()
+
+
+def _get_dashboard_db_loop() -> asyncio.AbstractEventLoop:
+    global _dashboard_db_loop
+    with _dashboard_db_loop_lock:
+        if _dashboard_db_loop is None or _dashboard_db_loop.is_closed():
+            _dashboard_db_loop = asyncio.new_event_loop()
+            _dashboard_db_loop.set_debug(False)
+        return _dashboard_db_loop
+
+
 def _run_async(coro: Any) -> Any:
     """
     Ejecuta coroutines de forma segura desde contexto Flask (síncrono).
-    NUNCA llamar con coroutines del bot que usen sus objetos internos (cliente, orders).
-    Para esas operaciones, usar el sistema de comandos asíncrono del bot.
+    Usa un loop persistente para evitar memory leaks en polling SSE.
+    NUNCA llamar con coroutines que accedan a objetos internos del bot.
     """
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-            asyncio.set_event_loop(None)
+        loop = _get_dashboard_db_loop()
+        if loop.is_running():
+            # No debería ocurrir en Flask sync, pero por seguridad:
+            import concurrent.futures
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            return future.result(timeout=10.0)
+        return loop.run_until_complete(coro)
     except Exception as e:
         logger.error("_run_async error: %s", e)
         raise
@@ -553,23 +567,33 @@ def create_app() -> Flask:
 
     @app.route('/api/stream')
     def api_stream():
-        """SSE endpoint para actualizaciones en tiempo real."""
+        """SSE endpoint para actualizaciones en tiempo real con manejo de desconexión."""
         auth_err = _require_dashboard_auth()
         if auth_err:
             return auth_err
 
         def event_generator():
             import time
+            consecutive_errors = 0
             while True:
                 try:
                     data = get_bot_snapshot()
                     yield f"data: {json.dumps(data)}\n\n"
-                    time.sleep(1.5)  # actualizar cada 1.5 segundos
+                    consecutive_errors = 0
+                    time.sleep(1.5)
                 except GeneratorExit:
+                    logger.debug("SSE client disconnected cleanly")
                     break
                 except Exception as e:
-                    logger.error("SSE error: %s", e)
-                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    consecutive_errors += 1
+                    logger.error("SSE error (#%d): %s", consecutive_errors, e)
+                    if consecutive_errors >= 5:
+                        logger.warning("SSE: demasiados errores consecutivos, cerrando stream")
+                        break
+                    try:
+                        yield f"data: {json.dumps({'error': str(e), 'retry': 3000})}\n\n"
+                    except Exception:
+                        break
                     time.sleep(3)
 
         return Response(
@@ -579,7 +603,8 @@ def create_app() -> Flask:
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",
                 "Connection": "keep-alive",
-            }
+                "Access-Control-Allow-Origin": "*",
+            },
         )
 
     @app.route('/api/status')
@@ -1051,6 +1076,26 @@ def create_app() -> Flask:
             "dynamic_exit_enabled": snapshot.get("dynamic_exit_enabled", True),
         })
     
+
+    @app.route('/api/capital_profile')
+    def api_capital_profile():
+        """Expone el perfil de capital activo y estado de filtros adaptativos."""
+        unauthorized = _require_dashboard_auth()
+        if unauthorized:
+            return unauthorized
+        snapshot = get_bot_snapshot()
+        return jsonify({
+            "capital_profile":          snapshot.get("capital_profile", "UNKNOWN"),
+            "operable_capital_usdt":    snapshot.get("operable_capital_usdt", 0.0),
+            "capital_reserve_ratio":    snapshot.get("capital_reserve_ratio", 0.0),
+            "min_cash_buffer_usdt":     snapshot.get("min_cash_buffer_usdt", 0.0),
+            "capital_limit_usdt":       snapshot.get("capital_limit_usdt", 0.0),
+            "filter_relaxation_active": snapshot.get("filter_relaxation_active", False),
+            "filter_auto_adjustments":  snapshot.get("filter_auto_adjustments", 0),
+            "trades_target_daily":      snapshot.get("trades_target_daily", 0),
+            "trades_today":             snapshot.get("trades_today", 0),
+            "autonomous_filters":       snapshot.get("autonomous_filters", {}),
+        })
 
     _app = app
     return app
