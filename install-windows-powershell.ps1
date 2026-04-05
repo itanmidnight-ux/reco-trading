@@ -39,6 +39,31 @@ function Upsert-EnvKey {
     if (-not $found) { $updated += "$Key=$Value" }
     $updated | Set-Content -Path $Path -Encoding UTF8
 }
+function Remove-EnvKey {
+    param(
+        [string]$Path,
+        [string]$Key
+    )
+    if (-not (Test-Path $Path)) { return }
+    $pattern = '^' + [regex]::Escape($Key) + '='
+    $filtered = Get-Content -Path $Path | Where-Object { $_ -notmatch $pattern }
+    $filtered | Set-Content -Path $Path -Encoding UTF8
+}
+function Cleanup-DeprecatedEnvKeys {
+    param([string]$Path)
+    $deprecated = @(
+        "OLLAMA_API_KEY",
+        "OLLAMA_MODEL",
+        "OLLAMA_HOST",
+        "OLLAMA_ENABLED",
+        "OLLAMA_TEMPERATURE",
+        "OLLAMA_MAX_TOKENS",
+        "LLM_PROVIDER"
+    )
+    foreach ($key in $deprecated) {
+        Remove-EnvKey -Path $Path -Key $key
+    }
+}
 function Test-Command {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -455,6 +480,7 @@ if (Test-Path ".env") {
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_USERNAME" -Value $DashboardUsername
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_PASSWORD" -Value $DashboardPassword
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_API_TOKEN" -Value $DashboardApiToken
+    Cleanup-DeprecatedEnvKeys -Path ".env"
     Write-Success "Variables de decisión actualizadas en .env"
 }
 

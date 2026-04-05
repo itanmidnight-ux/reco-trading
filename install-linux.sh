@@ -49,6 +49,30 @@ upsert_env_key() {
     fi
 }
 
+remove_env_key() {
+    local env_file="$1"
+    local key="$2"
+    [[ -f "$env_file" ]] || return 0
+    sed -i "/^${key}=/d" "$env_file"
+}
+
+cleanup_deprecated_env_keys() {
+    local env_file="$1"
+    [[ -f "$env_file" ]] || return 0
+    local deprecated_keys=(
+        "OLLAMA_API_KEY"
+        "OLLAMA_MODEL"
+        "OLLAMA_HOST"
+        "OLLAMA_ENABLED"
+        "OLLAMA_TEMPERATURE"
+        "OLLAMA_MAX_TOKENS"
+        "LLM_PROVIDER"
+    )
+    for key in "${deprecated_keys[@]}"; do
+        remove_env_key "$env_file" "$key"
+    done
+}
+
 echo -e "${CYAN}========================================${NC}"
 echo -e "${CYAN}  Reco-Trading Linux Installer v4.0${NC}"
 echo -e "${CYAN}========================================${NC}"
@@ -663,6 +687,7 @@ upsert_env_key ".env" "DASHBOARD_AUTH_MODE" "${DASHBOARD_AUTH_MODE}"
 upsert_env_key ".env" "DASHBOARD_USERNAME" "${DASHBOARD_USERNAME}"
 upsert_env_key ".env" "DASHBOARD_PASSWORD" "${DASHBOARD_PASSWORD}"
 upsert_env_key ".env" "DASHBOARD_API_TOKEN" "${DASHBOARD_API_TOKEN}"
+cleanup_deprecated_env_keys ".env"
 log_success "Variables de decisión actualizadas en .env"
 
 # ============================================

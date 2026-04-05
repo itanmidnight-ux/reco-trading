@@ -31,6 +31,23 @@ handle_warning() {
     log_warn "$msg"
 }
 
+cleanup_deprecated_env_keys() {
+    local env_file="$1"
+    [[ -f "${env_file}" ]] || return 0
+    local deprecated_keys=(
+        "OLLAMA_API_KEY"
+        "OLLAMA_MODEL"
+        "OLLAMA_HOST"
+        "OLLAMA_ENABLED"
+        "OLLAMA_TEMPERATURE"
+        "OLLAMA_MAX_TOKENS"
+        "LLM_PROVIDER"
+    )
+    for key in "${deprecated_keys[@]}"; do
+        sed -i "/^${key}=/d" "${env_file}"
+    done
+}
+
 # ============================================
 # TRAP FOR CLEANUP
 # ============================================
@@ -172,14 +189,31 @@ fi
 log_info "Verificando configuración..."
 
 if [[ ! -f ".env" ]]; then
-    log_error ".env no encontrado"
-    echo ""
-    echo "Crea un archivo .env con tus credenciales:"
-    echo "  BINANCE_API_KEY=tu_api_key"
-    echo "  BINANCE_API_SECRET=tu_api_secret"
-    echo "  BINANCE_TESTNET=true"
+    log_warn ".env no encontrado, generando plantilla base compatible con Docker..."
+    cat > .env <<'EOF'
+BINANCE_API_KEY=CAMBIAR_POR_TU_API_KEY
+BINANCE_API_SECRET=CAMBIAR_POR_TU_API_SECRET
+BINANCE_TESTNET=true
+CONFIRM_MAINNET=false
+ENVIRONMENT=testnet
+RUNTIME_PROFILE=paper
+POSTGRES_DSN=postgresql+asyncpg://trading:trading123@postgres:5432/reco_trading_prod
+REDIS_URL=redis://redis:6379/0
+LLM_MODE=base
+LLM_REMOTE_ENDPOINT=
+LLM_REMOTE_MODEL=
+LLM_REMOTE_API_KEY=
+DASHBOARD_AUTH_ENABLED=true
+DASHBOARD_AUTH_MODE=token
+DASHBOARD_USERNAME=admin
+DASHBOARD_PASSWORD=admin
+DASHBOARD_API_TOKEN=CAMBIA_ESTE_TOKEN
+EOF
+    log_warn "Actualiza BINANCE_API_KEY y BINANCE_API_SECRET antes de continuar."
     exit 1
 fi
+
+cleanup_deprecated_env_keys ".env"
 
 # Load .env
 set -a

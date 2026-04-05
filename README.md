@@ -75,6 +75,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 ```
 
 > Los instaladores generan/actualizan `.env` y dejan el proyecto listo para ejecutar.
+> También limpian variables obsoletas de integraciones antiguas (por ejemplo claves heredadas de Ollama).
 
 ---
 
