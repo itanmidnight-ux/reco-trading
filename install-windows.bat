@@ -78,15 +78,22 @@ if not exist data mkdir data
 if not exist logs mkdir logs
 if not exist .env (
     (
+      echo BINANCE_API_KEY=CAMBIAR_POR_TU_API_KEY
+      echo BINANCE_API_SECRET=CAMBIAR_POR_TU_API_SECRET
       echo BINANCE_TESTNET=true
       echo CONFIRM_MAINNET=false
       echo ENVIRONMENT=testnet
       echo RUNTIME_PROFILE=paper
       echo DATABASE_URL=sqlite+aiosqlite:///./data/reco_trading.db
+      echo LLM_MODE=base
+      echo LLM_REMOTE_ENDPOINT=
+      echo LLM_REMOTE_MODEL=
+      echo LLM_REMOTE_API_KEY=
       echo DASHBOARD_AUTH_ENABLED=true
       echo DASHBOARD_AUTH_MODE=token
       echo DASHBOARD_USERNAME=admin
       echo DASHBOARD_PASSWORD=admin
+      echo DASHBOARD_API_TOKEN=CAMBIA_ESTE_TOKEN
     ) > .env
 )
 exit /b 0
