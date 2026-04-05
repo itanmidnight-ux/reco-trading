@@ -93,6 +93,11 @@ def run() -> None:
         )
         raise SystemExit(1) from None
 
+    # El dashboard web siempre debe correr junto con el dashboard terminal.
+    if hasattr(settings, "terminal_tui_enabled") and not bool(getattr(settings, "terminal_tui_enabled", True)):
+        logger.warning("terminal_tui_enabled=false detectado; forzando True para iniciar web+terminal dashboard juntos")
+        setattr(settings, "terminal_tui_enabled", True)
+
     _start_web_dashboard(logger)
 
     # Desktop dashboard removed from startup flow: terminal TUI + web dashboard are now the primary UX.

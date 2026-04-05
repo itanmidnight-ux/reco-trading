@@ -39,39 +39,6 @@ function Upsert-EnvKey {
     if (-not $found) { $updated += "$Key=$Value" }
     $updated | Set-Content -Path $Path -Encoding UTF8
 }
-
-function Test-OllamaModel {
-    param([string]$Model)
-    & ollama show $Model *> $null
-    return ($LASTEXITCODE -eq 0)
-}
-
-function Ensure-OllamaService {
-    param([string]$BaseUrl)
-
-    try {
-        Invoke-RestMethod -Uri "$BaseUrl/api/tags" -Method Get -TimeoutSec 3 | Out-Null
-        return $true
-    } catch { }
-
-    Write-Info "Iniciando servicio de Ollama..."
-    try {
-        Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden | Out-Null
-    } catch {
-        return $false
-    }
-
-    for ($i = 0; $i -lt 10; $i++) {
-        Start-Sleep -Seconds 1
-        try {
-            Invoke-RestMethod -Uri "$BaseUrl/api/tags" -Method Get -TimeoutSec 3 | Out-Null
-            return $true
-        } catch { }
-    }
-
-    return $false
-}
-
 function Test-Command {
     param([string]$Name)
     return [bool](Get-Command $Name -ErrorAction SilentlyContinue)
@@ -246,12 +213,6 @@ if (Test-Path "requirements.txt") {
 # LLM MODE SELECTION
 # ============================================
 
-$LLMMode = "base"
-$LLMLocalModel = "qwen2.5:0.5b"
-$OllamaBaseUrl = "http://localhost:11434"
-$LLMRemoteEndpoint = "https://api.openai.com/v1/chat/completions"
-$LLMRemoteModel = "gpt-4o-mini"
-$LLMRemoteApiKey = ""
 $DashboardAuthEnabled = "true"
 $DashboardAuthMode = "token"
 $DashboardUsername = "admin"
@@ -266,68 +227,6 @@ if (Test-Path ".env") {
 }
 if (-not $DashboardApiToken) {
     $DashboardApiToken = [guid]::NewGuid().ToString("N")
-}
-
-Write-Info "Selecciona modo de decisión LLM..."
-Write-Host "  1) base (sin LLM para decisión final)"
-Write-Host "  2) llm_local (Ollama + $LLMLocalModel)"
-Write-Host "  3) llm_remote (API externa)"
-$LLMChoice = if ($NoConfirm) { "1" } else { Read-Host "Elige opción (1/2/3)" }
-
-switch ($LLMChoice) {
-    "2" {
-        $LLMMode = "llm_local"
-        $ollama = Get-Command ollama -ErrorAction SilentlyContinue
-        if (-not $ollama) {
-            Write-Info "Ollama no detectado. Intentando instalar con winget..."
-            $winget = Get-Command winget -ErrorAction SilentlyContinue
-            if ($winget) {
-                winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements | Out-Null
-            } else {
-                Write-Info "winget no disponible, intentando instalar Ollama con instalador oficial..."
-                try {
-                    $tmpMsi = Join-Path $env:TEMP "ollama-installer.msi"
-                    Invoke-WebRequest -Uri "https://ollama.com/download/OllamaSetup.exe" -OutFile $tmpMsi -UseBasicParsing
-                    Start-Process -FilePath $tmpMsi -ArgumentList "/quiet" -Wait
-                } catch {
-                    Write-Warn "No se pudo ejecutar instalador alternativo de Ollama"
-                }
-            }
-        }
-
-        $ollama = Get-Command ollama -ErrorAction SilentlyContinue
-        if (-not $ollama) {
-            Write-Warn "No se pudo instalar/detectar Ollama. Se cambiará a modo base."
-            $LLMMode = "base"
-        } elseif (-not (Ensure-OllamaService -BaseUrl $OllamaBaseUrl)) {
-            Write-Warn "Ollama está instalado pero su servicio no respondió en $OllamaBaseUrl. Se cambiará a modo base."
-            $LLMMode = "base"
-        } else {
-            $hasModel = Test-OllamaModel -Model $LLMLocalModel
-            if (-not $hasModel) {
-                Write-Info "Descargando modelo $LLMLocalModel..."
-                & ollama pull $LLMLocalModel
-                if ($LASTEXITCODE -eq 0 -or (Test-OllamaModel -Model $LLMLocalModel)) {
-                    Write-Success "Modelo $LLMLocalModel disponible"
-                } else {
-                    Write-Warn "No se pudo descargar $LLMLocalModel. Se cambiará a modo base."
-                    $LLMMode = "base"
-                }
-            } else {
-                Write-Success "Modelo $LLMLocalModel ya descargado"
-            }
-        }
-    }
-    "3" {
-        $LLMMode = "llm_remote"
-        $inputEndpoint = Read-Host "Endpoint API remota [$LLMRemoteEndpoint]"
-        if ($inputEndpoint) { $LLMRemoteEndpoint = $inputEndpoint }
-        $inputModel = Read-Host "Modelo remoto [$LLMRemoteModel]"
-        if ($inputModel) { $LLMRemoteModel = $inputModel }
-        $inputApiKey = Read-Host "API Key remota (opcional)"
-        if ($inputApiKey) { $LLMRemoteApiKey = $inputApiKey }
-    }
-    default { $LLMMode = "base" }
 }
 
 # ============================================
@@ -502,12 +401,8 @@ DRIFT_DETECTION=true
 ONCHAIN_ANALYSIS=true
 
 # LLM Mode
-LLM_MODE=$LLMMode
-LLM_LOCAL_MODEL=$LLMLocalModel
-OLLAMA_BASE_URL=$OllamaBaseUrl
-LLM_REMOTE_ENDPOINT=$LLMRemoteEndpoint
-LLM_REMOTE_MODEL=$LLMRemoteModel
-LLM_REMOTE_API_KEY=$LLMRemoteApiKey
+# LLM Mode
+# Usar valor por defecto interno (base)
 
 # Dashboard Security
 DASHBOARD_AUTH_ENABLED=$DashboardAuthEnabled
@@ -527,18 +422,12 @@ DASHBOARD_API_TOKEN=$DashboardApiToken
 }
 
 if (Test-Path ".env") {
-    Upsert-EnvKey -Path ".env" -Key "LLM_MODE" -Value $LLMMode
-    Upsert-EnvKey -Path ".env" -Key "LLM_LOCAL_MODEL" -Value $LLMLocalModel
-    Upsert-EnvKey -Path ".env" -Key "OLLAMA_BASE_URL" -Value $OllamaBaseUrl
-    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_ENDPOINT" -Value $LLMRemoteEndpoint
-    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_MODEL" -Value $LLMRemoteModel
-    Upsert-EnvKey -Path ".env" -Key "LLM_REMOTE_API_KEY" -Value $LLMRemoteApiKey
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_AUTH_ENABLED" -Value $DashboardAuthEnabled
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_AUTH_MODE" -Value $DashboardAuthMode
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_USERNAME" -Value $DashboardUsername
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_PASSWORD" -Value $DashboardPassword
     Upsert-EnvKey -Path ".env" -Key "DASHBOARD_API_TOKEN" -Value $DashboardApiToken
-    Write-Success "Variables LLM actualizadas en .env"
+    Write-Success "Variables de decisión actualizadas en .env"
 }
 
 # ============================================

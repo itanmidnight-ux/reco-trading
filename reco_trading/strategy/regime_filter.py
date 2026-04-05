@@ -29,10 +29,20 @@ class RegimeFilter:
 
     def evaluate(self, frame: pd.DataFrame) -> RegimeDecision:
         row = frame.iloc[-1]
-        atr_ratio = float(row["atr"] / row["close"])
+        try:
+            atr_val = float(row["atr"])
+            close_val = float(row["close"])
+            if close_val <= 0:
+                return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, 0.0, True, 1.0)
+            atr_ratio = atr_val / close_val
+        except (KeyError, TypeError, ZeroDivisionError):
+            return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, 0.0, True, 1.0)
 
         if atr_ratio < self.low_threshold:
-            return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, atr_ratio, True, 0.50)
+            # Mercado dormido: bajo ATR = sin momentum = no operar
+            return RegimeDecision(VolatilityRegime.LOW_VOLATILITY, atr_ratio, allow_trade=False, size_multiplier=0.0)
         if atr_ratio > self.high_threshold:
-            return RegimeDecision(VolatilityRegime.HIGH_VOLATILITY, atr_ratio, True, 0.65)
-        return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, atr_ratio, True, 1.0)
+            # Alta volatilidad: operar con tamaño reducido como protección
+            return RegimeDecision(VolatilityRegime.HIGH_VOLATILITY, atr_ratio, allow_trade=True, size_multiplier=0.60)
+        # Régimen normal: operación completa
+        return RegimeDecision(VolatilityRegime.NORMAL_VOLATILITY, atr_ratio, allow_trade=True, size_multiplier=1.0)

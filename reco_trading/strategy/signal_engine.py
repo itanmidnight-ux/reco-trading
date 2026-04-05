@@ -51,6 +51,23 @@ class SignalEngine:
                 atr_ratio=0.0,
             )
 
+        # Verificar que las columnas necesarias existen
+        required_cols = {"ema20", "ema50", "rsi", "atr", "close", "high", "low", "volume", "vol_ma20"}
+        missing_5m = required_cols - set(df5m.columns)
+        missing_15m = required_cols - set(df15m.columns)
+        if missing_5m or missing_15m:
+            import logging
+            logging.getLogger(__name__).warning(
+                "signal_engine: missing columns 5m=%s 15m=%s — returning NEUTRAL bundle",
+                missing_5m, missing_15m
+            )
+            return SignalBundle(
+                trend="NEUTRAL", momentum="NEUTRAL", volume="NEUTRAL",
+                volatility="NEUTRAL", structure="NEUTRAL", order_flow="NEUTRAL",
+                regime="INSUFFICIENT_DATA", regime_trade_allowed=False,
+                size_multiplier=0.0, atr_ratio=0.0,
+            )
+
         row = df5m.iloc[-1]
         prev = df5m.iloc[-2]
         confirm = df15m.iloc[-1]
@@ -82,10 +99,12 @@ class SignalEngine:
         volume_val = _safe_getitem(row, "volume", 0.0)
         vol_ma20 = _safe_getitem(row, "vol_ma20", 1.0)
         vol_ratio = volume_val / max(vol_ma20, 1e-9)
-        if vol_ratio > 1.00:
-            volume = "BUY"
-        elif vol_ratio < 0.85:
-            volume = "SELL"
+        if vol_ratio > 1.20:
+            volume = "BUY"       # Volumen elevado confirma movimiento
+        elif vol_ratio > 1.00:
+            volume = "BUY"       # Volumen sobre media = sesgo alcista moderado
+        elif vol_ratio < 0.70:
+            volume = "NEUTRAL"   # Volumen bajo = sin confirmación (NO es señal bajista)
         else:
             volume = "NEUTRAL"
 

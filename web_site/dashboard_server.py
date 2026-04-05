@@ -30,7 +30,8 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def _is_dashboard_auth_enabled() -> bool:
-    return _env_bool("DASHBOARD_AUTH_ENABLED", False)
+    # Auth habilitada por defecto para seguridad. Deshabilitar explícitamente con DASHBOARD_AUTH_ENABLED=false
+    return _env_bool("DASHBOARD_AUTH_ENABLED", True)
 
 
 def _dashboard_token() -> str:
@@ -86,6 +87,9 @@ def _check_token_auth() -> bool:
 
 def _is_authorized() -> bool:
     if not _is_dashboard_auth_enabled():
+        return True
+    # Compatibilidad: si no hay credenciales configuradas, no bloquear el dashboard.
+    if not _dashboard_token() and not _dashboard_password():
         return True
     mode = str(os.getenv("DASHBOARD_AUTH_MODE", "hybrid")).strip().lower()
     if mode == "token":
@@ -158,15 +162,22 @@ def set_bot_instance_getter(getter: Callable) -> None:
 
 
 def _run_async(coro: Any) -> Any:
-    """Run coroutine from sync Flask context safely."""
+    """
+    Ejecuta coroutines de forma segura desde contexto Flask (síncrono).
+    NUNCA llamar con coroutines del bot que usen sus objetos internos (cliente, orders).
+    Para esas operaciones, usar el sistema de comandos asíncrono del bot.
+    """
     try:
-        return asyncio.run(coro)
-    except RuntimeError:
         loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
             return loop.run_until_complete(coro)
         finally:
             loop.close()
+            asyncio.set_event_loop(None)
+    except Exception as e:
+        logger.error("_run_async error: %s", e)
+        raise
 
 
 def _resolve_dashboard_dsn() -> str:
@@ -256,11 +267,12 @@ def get_bot_snapshot() -> dict[str, Any]:
         return snapshot
     
     try:
-        snapshot = getattr(_global_bot_instance, 'snapshot', {})
-        if callable(snapshot):
-            snapshot = snapshot()
-        if snapshot is None:
-            snapshot = {}
+        # Thread-safe snapshot copy
+        raw_snapshot = getattr(_global_bot_instance, 'snapshot', {})
+        if callable(raw_snapshot):
+            raw_snapshot = raw_snapshot()
+        # Hacer copia shallow para evitar race conditions con el loop asyncio del bot
+        snapshot = dict(raw_snapshot) if isinstance(raw_snapshot, dict) else {}
         
         # Add default values for missing fields
         snapshot = _enhance_snapshot(snapshot)
@@ -536,9 +548,40 @@ def create_app() -> Flask:
         unauthorized = _require_dashboard_auth()
         if unauthorized:
             return unauthorized
-        snapshot = get_bot_snapshot()
-        return jsonify(snapshot)
+        return jsonify({"success": True, "data": get_bot_snapshot()})
     
+
+    @app.route('/api/stream')
+    def api_stream():
+        """SSE endpoint para actualizaciones en tiempo real."""
+        auth_err = _require_dashboard_auth()
+        if auth_err:
+            return auth_err
+
+        def event_generator():
+            import time
+            while True:
+                try:
+                    data = get_bot_snapshot()
+                    yield f"data: {json.dumps(data)}\n\n"
+                    time.sleep(1.5)  # actualizar cada 1.5 segundos
+                except GeneratorExit:
+                    break
+                except Exception as e:
+                    logger.error("SSE error: %s", e)
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    time.sleep(3)
+
+        return Response(
+            event_generator(),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            }
+        )
+
     @app.route('/api/status')
     def api_status():
         unauthorized = _require_dashboard_auth()
@@ -605,11 +648,16 @@ def create_app() -> Flask:
                     state_manager.request_force_close()
                     logger.warning("Manual stop trade requested via web dashboard")
                     return jsonify({"success": True, "message": "Stop Trade request sent"})
-                if hasattr(_global_bot_instance, "force_close_position"):
-                    _run_async(_global_bot_instance.force_close_position())
-                    logger.warning("Manual stop trade executed via web dashboard")
-                    return jsonify({"success": True, "message": "Stop Trade executed"})
-                return jsonify({"success": False, "error": "Stop Trade not available"})
+                # Usar cola de comandos thread-safe en lugar de llamada directa al event loop del bot
+                if hasattr(_global_bot_instance, "state_manager") and hasattr(_global_bot_instance.state_manager, "request_force_close"):
+                    _global_bot_instance.state_manager.request_force_close()
+                    logger.warning("force_close command queued via web dashboard")
+                    return jsonify({"success": True, "message": "Force close command queued"})
+                elif hasattr(_global_bot_instance, "request_force_close"):
+                    _global_bot_instance.request_force_close()
+                    return jsonify({"success": True, "message": "Force close requested"})
+                else:
+                    return jsonify({"success": False, "error": "Force close not available in this bot version"})
             else:
                 return jsonify({"success": False, "error": "Unknown action"})
         except Exception as e:
@@ -840,6 +888,14 @@ def create_app() -> Flask:
 
         if request.method == 'POST':
             payload = request.get_json(silent=True) or {}
+            if hasattr(_global_bot_instance, "state_manager") and hasattr(_global_bot_instance.state_manager, "push_runtime_settings"):
+                _global_bot_instance.state_manager.push_runtime_settings(payload)
+                return jsonify({"success": True, "message": "Settings queued", "data": payload})
+            if hasattr(_global_bot_instance, "_apply_runtime_settings"):
+                # Fallback cuando no hay state manager: dejar solicitud para que el loop del bot la procese
+                _global_bot_instance.snapshot["runtime_settings_request"] = payload
+                return jsonify({"success": True, "message": "Settings enqueued via snapshot", "data": payload})
+
             runtime_payload = {
                 "default_pair": payload.get("default_pair") or payload.get("trading_symbol") or "",
                 "default_timeframe": payload.get("default_timeframe") or payload.get("timeframe") or "",
