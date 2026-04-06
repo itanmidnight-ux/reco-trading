@@ -501,11 +501,11 @@ class AutonomousTradingBrain:
                 new_confidence = max(new_confidence, 0.75)
                 self.logger.info(f"High volatility market - Setting confidence to {new_confidence:.0%}")
             elif market_metrics == "LOW_VOLATILITY":
-                new_confidence = min(new_confidence, 0.65)
+                new_confidence = min(new_confidence, 0.40)
                 self.logger.info(f"Low volatility market - Setting confidence to {new_confidence:.0%}")
             
             if opportunity_score > 0.7:
-                new_confidence = max(0.65, new_confidence - 0.05)
+                new_confidence = max(0.45, new_confidence - 0.05)
                 self.logger.info(f"High opportunity score ({opportunity_score:.2f}) - Reducing confidence to {new_confidence:.0%}")
             elif opportunity_score < 0.4:
                 new_confidence = min(0.80, new_confidence + 0.05)
@@ -515,7 +515,7 @@ class AutonomousTradingBrain:
                 new_confidence = min(0.85, new_confidence + 0.05)
                 self.logger.info(f"High volatility ({volatility:.2%}) - Increasing confidence to {new_confidence:.0%}")
             elif volatility < 0.02:
-                new_confidence = max(0.60, new_confidence - 0.05)
+                new_confidence = max(0.35, new_confidence - 0.05)
                 self.logger.info(f"Low volatility ({volatility:.2%}) - Reducing confidence to {new_confidence:.0%}")
             
             if new_confidence != current_confidence:

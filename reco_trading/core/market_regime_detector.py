@@ -372,22 +372,23 @@ class MarketRegimeDetector:
         }
         
         if regime.regime == "HIGH_VOLATILITY":
-            filters["min_signal_confidence"] = 0.80
+            filters["min_signal_confidence"] = 0.50
             filters["stop_loss"] = 3.0
             filters["take_profit"] = 6.0
             filters["position_size"] = 3.0
         elif regime.regime == "LOW_VOLATILITY":
-            filters["min_signal_confidence"] = 0.60
+            filters["min_signal_confidence"] = 0.30
             filters["stop_loss"] = 1.5
             filters["take_profit"] = 3.0
             filters["position_size"] = 7.0
         elif regime.regime == "BULL":
-            filters["min_signal_confidence"] = 0.65
+            filters["min_signal_confidence"] = 0.35
             filters["position_size"] = 6.0
         elif regime.regime == "BEAR":
-            filters["min_signal_confidence"] = 0.75
+            filters["min_signal_confidence"] = 0.45
             filters["position_size"] = 3.0
         elif regime.regime == "SIDEWAYS":
+            filters["min_signal_confidence"] = 0.25
             filters["take_profit"] = 3.0
             filters["stop_loss"] = 1.5
         

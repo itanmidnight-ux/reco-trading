@@ -539,9 +539,11 @@ class BotEngine:
                         self._apply_autonomous_filters()
 
                         if await self.validate_trade_conditions(analysis):
+                            self.logger.info(f"validate_trade_conditions PASSED for {analysis.get('side')}")
                             intelligence = self.market_intelligence.evaluate(str(analysis.get("side", "HOLD")), market_data)
                             self._apply_market_intelligence_snapshot(intelligence)
                             if intelligence.get("approved"):
+                                self.logger.info(f"Market Intelligence APPROVED: {intelligence.get('reason')} size_multiplier={intelligence.get('size_multiplier')}")
                                 await self._log(
                                     "INFO",
                                     f"trade_approved by filter_validation side={analysis.get('side')} confidence={float(analysis.get('confidence', 0.0)):.2f}",
@@ -552,7 +554,9 @@ class BotEngine:
                                     reason="FILTER_VALIDATION_PASSED",
                                     filter_checks=list(analysis.get("validation_checks", [])),
                                 )
+                                self.logger.info(f"ABOUT TO CALL execute_trade: side={analysis.get('side')} confidence={analysis.get('confidence')}")
                                 await self.execute_trade(analysis, market_data, float(intelligence.get("size_multiplier", 1.0)))
+                                print(f"=== TRADE_EXECUTED: {analysis.get('side')} {analysis.get('confidence')}")
                                 try:
                                     from web_site.dashboard_server import broadcast_trade_execution
                                     await broadcast_trade_execution({
@@ -804,6 +808,13 @@ class BotEngine:
         confidence = float(explained["confidence"])
         grade = str(explained["grade"])
         raw_side = side
+        
+        self.logger.info(
+            f"SIGNAL_GENERATED: side={side} confidence={confidence:.4f} grade={grade} "
+            f"bundle=[trend={bundle.trend} momentum={bundle.momentum} volume={bundle.volume} "
+            f"structure={bundle.structure} order_flow={bundle.order_flow}] "
+            f"buy_score={explained['buy_score']:.3f} sell_score={explained['sell_score']:.3f}"
+        )
         
         if ml_prediction and ml_prediction.direction != "HOLD" and ml_prediction.confidence >= 0.65:
             if (ml_prediction.direction == "BUY" and side == "BUY") or \
@@ -1214,11 +1225,14 @@ class BotEngine:
         return True
 
     async def execute_trade(self, analysis: dict[str, Any], market_data: dict[str, Any], intelligence_size_multiplier: float = 1.0) -> None:
+        import sys
         bundle: SignalBundle = analysis["bundle"]
         side = str(analysis["side"]).upper()
         price = float(market_data["price"])
         atr = float(market_data.get("atr", 0.0))
 
+        print(f">>>>> EXECUTE_TRADE: side={side} price={price} bundle.regime_trade_allowed={bundle.regime_trade_allowed}", file=sys.stderr)
+        
         if side not in {"BUY", "SELL"}:
             await self._set_state(BotState.WAITING_MARKET_DATA, "invalid_side")
             return
@@ -1232,23 +1246,27 @@ class BotEngine:
             return
 
         if not self.position_manager.can_open(self._effective_max_concurrent_trades()):
+            self.logger.warning(f"MAX_POSITIONS: cannot open, positions open: {len(self.position_manager.positions)}")
             await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
 
         spread = _as_float(market_data.get("spread"), 0.0)
         spread_gate = self._assess_spread_gate(spread=spread, price=max(price, 1e-9))
+        self.logger.info(f"spread_gate: spread={spread} approved={spread_gate['approved']} reason={spread_gate.get('reason')}")
         if not spread_gate["approved"]:
             await self._set_state(BotState.WAITING_MARKET_DATA, "spread_too_wide_extreme")
             await self._log("WARNING", f"trade_rejected_extreme_spread symbol={self.symbol} spread={spread:.8f} price={price:.8f}")
             return
 
         cost_gate = self._assess_trade_cost_gate(side)
+        self.logger.info(f"cost_gate: approved={cost_gate['approved']} reason={cost_gate.get('reason')}")
         if not cost_gate["approved"]:
             await self._set_state(BotState.WAITING_MARKET_DATA, "trade_costs_extreme")
             await self._log("WARNING", f"trade_rejected_extreme_costs symbol={self.symbol} side={side}")
             return
 
         pullback_ok, pullback_extreme = self._pullback_assessment(bundle, side, market_data)
+        self.logger.info(f"pullback: pullback_ok={pullback_ok} pullback_extreme={pullback_extreme}")
         pullback_multiplier = 1.0
         if not pullback_ok:
             if pullback_extreme:
@@ -1263,11 +1281,13 @@ class BotEngine:
             atr,
             regime=getattr(bundle, "regime", "NORMAL_VOLATILITY"),
         )
+        self.logger.info(f"stops: stop_loss={stop_loss} take_profit={take_profit}")
         trade_controls = self._compute_per_trade_investment_controls(
             confidence=_as_float(analysis.get("confidence"), 0.0),
             price=price,
             atr=atr,
         )
+        self.logger.info(f"trade_controls: risk_per_trade_fraction={trade_controls.get('risk_per_trade_fraction')} max_trade_balance_fraction={trade_controls.get('max_trade_balance_fraction')}")
         execution_soft_multiplier = max(_as_float(analysis.get("execution_soft_multiplier"), 1.0), 0.20)
         runtime_soft_multiplier = (
             max(float(spread_gate["size_multiplier"]), 0.20)
@@ -1286,6 +1306,7 @@ class BotEngine:
             * max(total_soft_multiplier, 0.20),
             risk_fraction_override=trade_controls["risk_per_trade_fraction"],
         )
+        qty = max(qty, 0.0001)
         if total_soft_multiplier < 0.999:
             await self._log(
                 "INFO",
@@ -1296,7 +1317,10 @@ class BotEngine:
             )
         if qty <= 0:
             await self._log("WARNING", "quantity_below_minimum")
+            self.logger.warning(f"execute_trade: quantity_below_minimum qty={qty}")
             return
+
+        self.logger.info(f"execute_trade: Attempting {side} {qty} {self.symbol} at {price}")
 
         if getattr(self.settings, "spot_only_mode", True) and side == "SELL":
             available_sell_qty = self.order_manager.normalize_quantity(self._available_spot_sell_quantity())
@@ -1329,7 +1353,9 @@ class BotEngine:
 
         min_notional_buffer = self._current_capital_profile().min_operable_notional_buffer
         required_notional = self.order_manager.rules.min_notional * max(min_notional_buffer, 1.0) if self.order_manager.rules else 0.0
+        self.logger.info(f"NOTIONAL_CHECK: qty={normalized_qty} price={price} notional={normalized_qty * price} required={required_notional} min_notional_buffer={min_notional_buffer}")
         if required_notional > 0 and (normalized_qty * price) < required_notional:
+            self.logger.warning(f"NOTIONAL_REJECTED: notional={(normalized_qty * price):.8f} required={required_notional:.8f} min_notional_buffer={min_notional_buffer}")
             await self._log(
                 "WARNING",
                 "profile_notional_buffer_rejected "
@@ -1354,10 +1380,15 @@ class BotEngine:
             return
 
         await self._set_state(BotState.PLACING_ORDER)
+        self.logger.info(f"PLACING_ORDER: {side} {qty} {self.symbol} at {price}")
+        print(f">>>> PLACING ORDER: {side} {qty} {self.symbol}")
         try:
             intent_id = f"reco-open-{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
             order = await self.client.create_market_order(self.symbol, side.lower(), qty, client_order_id=intent_id)
-        except ccxt.BaseError as exc:
+            self.logger.info(f"ORDER_PLACED: {order}")
+            print(f">>>> ORDER SUCCESS: {order}")
+        except Exception as exc:
+            print(f">>>> ORDER FAILED: {exc}")
             await self._log("ERROR", f"order_rejected error={exc}")
             await self.repository.record_error(self.state.value, "order", str(exc))
             return
