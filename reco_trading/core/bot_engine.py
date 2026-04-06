@@ -30,6 +30,8 @@ from reco_trading.risk.capital_profile import CapitalProfile, CapitalProfileMana
 from reco_trading.risk.investment_optimizer import InvestmentOptimizer
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.risk.portfolio_risk import PortfolioRiskController
+from reco_trading.risk.smart_stop_engine import SmartStopEngine, SmartStopConfig, StopType
+from reco_trading.risk.intelligent_capital_manager import IntelligentCapitalManager, CapitalMode
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
 from reco_trading.strategy.confluence import TimeframeConfluence
@@ -147,6 +149,20 @@ class BotEngine:
             min_multiplier=0.15,
             max_multiplier=1.50,
             confidence_boost_above=0.80,
+        )
+        
+        self.smart_stop_engine = SmartStopEngine(SmartStopConfig(
+            enabled=True,
+            initial_stop_atr_multiplier=float(getattr(settings, "stop_loss_pct", 2.0) / 100 * 20),
+            trailing_activation_profit_r=0.30,
+            break_even_trigger_profit_r=0.20,
+            profit_lock_trigger_r=0.50,
+        ))
+        
+        self.intelligent_capital_manager = IntelligentCapitalManager(
+            initial_capital=float(getattr(settings, "initial_capital", 100.0)),
+            aggressive_mode=False,
+            preserve_capital=True,
         )
         self.market_intelligence = MarketIntelligence(settings)
         self.exit_intelligence = ExitIntelligence()
@@ -360,6 +376,32 @@ class BotEngine:
             "market_analysis_request": None,
             "market_analysis_market_count": 50,
             "runtime_settings_request": None,
+            "capital_manager": {
+                "capital_mode": "MEDIUM",
+                "current_capital": 0.0,
+                "initial_capital": 0.0,
+                "peak_capital": 0.0,
+                "current_drawdown_pct": 0.0,
+                "win_streak": 0,
+                "loss_streak": 0,
+                "daily_trades": 0,
+                "market_condition": "NORMAL",
+                "effective_params": {},
+            },
+            "smart_stop_status": "Ready",
+            "smart_stop_stats": {
+                "active_stops": 0,
+                "trails_activated": 0,
+                "break_evens_hit": 0,
+                "profit_locks": 0,
+            },
+            "ml_status": "Active",
+            "ml_direction": None,
+            "ml_confidence": 0.0,
+            "ml_predicted_move": 0.0,
+            "confluence_score": 0.0,
+            "confluence_aligned": None,
+            "volatility_state": "NORMAL",
         }
 
     async def run(self) -> None:
@@ -1940,22 +1982,100 @@ class BotEngine:
 
     def _update_snapshot(self, market_data: dict[str, Any], analysis: dict[str, Any]) -> None:
         bundle: SignalBundle = analysis["bundle"]
+        frame5 = market_data.get("frame5")
+        candles_5m = market_data.get("candles_5m", [])
+        
+        candle_list = []
+        if candles_5m and isinstance(candles_5m, list):
+            candle_list = list(candles_5m[-200:])
+        elif frame5 is not None and hasattr(frame5, 'to_dict'):
+            try:
+                records = frame5.to_dict('records')[-200:]
+                for r in records:
+                    ts = r.get("timestamp")
+                    if ts:
+                        if isinstance(ts, datetime):
+                            ts_int = int(ts.timestamp())
+                        else:
+                            ts_int = int(ts)
+                    else:
+                        ts_int = 0
+                    candle_list.append({
+                        "time": ts_int,
+                        "open": float(r.get("open", 0)),
+                        "high": float(r.get("high", 0)),
+                        "low": float(r.get("low", 0)),
+                        "close": float(r.get("close", 0)),
+                    })
+            except Exception:
+                pass
+        
+        rsi_val = 50.0
+        macd_val = 0.0
+        ema_cross_val = "NEUTRAL"
+        vol_ratio = 1.0
+        if frame5 is not None and hasattr(frame5, 'iloc') and len(frame5) > 0:
+            row = frame5.iloc[-1]
+            rsi_val = float(row.get("rsi", 50.0))
+            macd_val = float(row.get("macd_diff", 0.0))
+            vol_ratio = float(row.get("vol_ratio", 1.0))
+            if len(frame5) >= 2:
+                ema9_now = float(row.get("ema9", 0))
+                ema20_now = float(row.get("ema20", 0))
+                prev = frame5.iloc[-2]
+                ema9_prev = float(prev.get("ema9", 0))
+                ema20_prev = float(prev.get("ema20", 0))
+                if ema9_now > ema20_now and ema9_prev <= ema20_prev:
+                    ema_cross_val = "BULLISH"
+                elif ema9_now < ema20_now and ema9_prev >= ema20_prev:
+                    ema_cross_val = "BEARISH"
+                elif ema9_now > ema20_now:
+                    ema_cross_val = "ABOVE"
+                else:
+                    ema_cross_val = "BELOW"
+        
+        tf_analysis = {}
+        try:
+            tf_5m = bundle.trend
+            tf_15m = "NEUTRAL"
+            tf_1h = "NEUTRAL"
+            frame15 = market_data.get("frame15")
+            if frame15 is not None and hasattr(frame15, 'iloc') and len(frame15) > 0:
+                r15 = frame15.iloc[-1]
+                ema20_15 = float(r15.get("ema20", 0))
+                ema50_15 = float(r15.get("ema50", 0))
+                if ema20_15 > ema50_15:
+                    tf_15m = "BUY"
+                elif ema20_15 < ema50_15:
+                    tf_15m = "SELL"
+            tf_analysis = {"5m": tf_5m, "15m": tf_15m, "1h": tf_1h}
+        except Exception:
+            tf_analysis = {"5m": "NEUTRAL", "15m": "NEUTRAL", "1h": "NEUTRAL"}
+        
         self.snapshot.update(
             {
                 "pair": self.symbol,
                 "timeframe": f"{self.settings.primary_timeframe} / {self.settings.confirmation_timeframe}",
                 "price": market_data.get("price"),
+                "current_price": market_data.get("price"),
                 "spread": market_data.get("spread"),
                 "bid": market_data.get("bid"),
                 "ask": market_data.get("ask"),
                 "trend": bundle.trend,
+                "momentum": bundle.momentum,
                 "adx": market_data.get("adx"),
+                "atr": market_data.get("atr"),
+                "rsi": rsi_val,
+                "macd_diff": macd_val,
+                "ema_cross": ema_cross_val,
+                "volume_ratio": vol_ratio,
                 "volatility_regime": bundle.regime,
+                "volatility_state": bundle.regime,
                 "order_flow": bundle.order_flow,
                 "volume": market_data.get("volume"),
-                "atr": market_data.get("atr"),
                 "change_24h": market_data.get("change_24h"),
-                "candles_5m": list(market_data.get("candles_5m") or [])[-120:],
+                "volume_24h": market_data.get("volume_24h", 0),
+                "candles_5m": candle_list,
                 "signal": analysis.get("side"),
                 "raw_signal": analysis.get("raw_side"),
                 "confidence": analysis.get("confidence"),
@@ -1969,6 +2089,7 @@ class BotEngine:
                     "structure": bundle.structure,
                     "order_flow": bundle.order_flow,
                 },
+                "timeframe_analysis": tf_analysis,
                 "decision_trace": analysis.get("decision_trace", self.snapshot.get("decision_trace", {})),
                 "decision_gating": self.snapshot.get("decision_gating", {}),
                 "decision_reason": self.snapshot.get("decision_reason", "ANALYSIS"),
@@ -3153,26 +3274,34 @@ class BotEngine:
     def _frame_to_candles(self, frame: Any) -> list[dict[str, float]]:
         candles: list[dict[str, float]] = []
         try:
-            frame_slice = frame.tail(120)
+            frame_slice = frame.tail(200)
         except Exception:  # noqa: BLE001
             return candles
 
         for _, row in frame_slice.iterrows():
             try:
-                candles.append(
-                    {
-                        "open": _as_float(row.get("open"), 0.0),
-                        "high": _as_float(row.get("high"), 0.0),
-                        "low": _as_float(row.get("low"), 0.0),
-                        "close": _as_float(row.get("close"), 0.0),
-                        "volume": _as_float(row.get("volume"), 0.0),
-                        "rsi": _as_float(row.get("rsi"), 50.0),
-                        "macd_diff": _as_float(row.get("macd_diff"), 0.0),
-                        "macd": _as_float(row.get("macd"), 0.0),
-                        "macd_signal": _as_float(row.get("macd_signal"), 0.0),
-                        "ema9": _as_float(row.get("ema9"), 0.0),
-                    }
-                )
+                ts = row.get("timestamp")
+                ts_int = 0
+                if ts is not None:
+                    if isinstance(ts, datetime):
+                        ts_int = int(ts.timestamp())
+                    else:
+                        ts_int = int(float(ts))
+                
+                candle = {
+                    "open": _as_float(row.get("open"), 0.0),
+                    "high": _as_float(row.get("high"), 0.0),
+                    "low": _as_float(row.get("low"), 0.0),
+                    "close": _as_float(row.get("close"), 0.0),
+                    "volume": _as_float(row.get("volume"), 0.0),
+                    "rsi": _as_float(row.get("rsi"), 50.0),
+                    "macd_diff": _as_float(row.get("macd_diff"), 0.0),
+                    "macd": _as_float(row.get("macd"), 0.0),
+                    "macd_signal": _as_float(row.get("macd_signal"), 0.0),
+                    "ema9": _as_float(row.get("ema9"), 0.0),
+                    "timestamp": ts_int,
+                }
+                candles.append(candle)
             except Exception:  # noqa: BLE001
                 continue
         return candles
