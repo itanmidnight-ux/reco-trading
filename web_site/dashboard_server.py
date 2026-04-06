@@ -870,7 +870,7 @@ def create_app() -> Flask:
                     data = get_bot_snapshot()
                     yield f"data: {json.dumps(data)}\n\n"
                     consecutive_errors = 0
-                    time.sleep(1.5)
+                    time.sleep(0.3)
                 except GeneratorExit:
                     logger.debug("SSE client disconnected cleanly")
                     break
@@ -881,10 +881,10 @@ def create_app() -> Flask:
                         logger.warning("SSE: demasiados errores consecutivos, cerrando stream")
                         break
                     try:
-                        yield f"data: {json.dumps({'error': str(e), 'retry': 3000})}\n\n"
+                        yield f"data: {json.dumps({'error': str(e), 'retry': 1000})}\n\n"
                     except Exception:
                         break
-                    time.sleep(3)
+                    time.sleep(1)
 
         return Response(
             event_generator(),
@@ -929,50 +929,83 @@ def create_app() -> Flask:
         unauthorized = _require_dashboard_auth()
         if unauthorized:
             return unauthorized
-        """Send control command to bot."""
+        """Send control command to bot with instant reaction."""
         if _global_bot_instance is None:
             return jsonify({"success": False, "error": "Bot not connected"})
         
         try:
+            bot = _global_bot_instance
+            
             if action == 'pause':
-                if hasattr(_global_bot_instance, 'snapshot'):
-                    _global_bot_instance.snapshot["cooldown"] = "USER_PAUSED"
-                    _global_bot_instance.snapshot["user_paused"] = True
+                if hasattr(bot, 'snapshot'):
+                    bot.snapshot["cooldown"] = "USER_PAUSED"
+                    bot.snapshot["user_paused"] = True
+                if hasattr(bot, 'manual_pause'):
+                    bot.manual_pause = True
                 logger.info("Bot paused via web dashboard")
-                return jsonify({"success": True, "message": "Bot paused"})
+                return jsonify({"success": True, "message": "Bot paused", "instant": True})
+            
             elif action == 'resume':
-                if hasattr(_global_bot_instance, 'snapshot'):
-                    _global_bot_instance.snapshot["cooldown"] = None
-                    _global_bot_instance.snapshot["user_paused"] = False
-                    _global_bot_instance.snapshot["emergency_stop_active"] = False
-                if hasattr(_global_bot_instance, 'emergency_stop_active'):
-                    _global_bot_instance.emergency_stop_active = False
-                logger.info("Bot resumed via web dashboard")
-                return jsonify({"success": True, "message": "Bot resumed"})
+                if hasattr(bot, 'snapshot'):
+                    bot.snapshot["cooldown"] = None
+                    bot.snapshot["user_paused"] = False
+                    bot.snapshot["emergency_stop_active"] = False
+                if hasattr(bot, 'manual_pause'):
+                    bot.manual_pause = False
+                if hasattr(bot, 'emergency_stop_active'):
+                    bot.emergency_stop_active = False
+                if hasattr(bot, 'trading_paused_by_drawdown'):
+                    bot.trading_paused_by_drawdown = False
+                if hasattr(bot, 'pause_trading_until'):
+                    bot.pause_trading_until = None
+                if hasattr(bot, 'exchange_failure_paused_until'):
+                    bot.exchange_failure_paused_until = None
+                logger.info("Bot resumed via web dashboard - all pause states cleared")
+                return jsonify({"success": True, "message": "Bot resumed", "instant": True, "cleared_states": ["manual_pause", "emergency_stop", "drawdown_pause", "loss_pause", "exchange_pause"]})
+            
             elif action == 'emergency':
-                if hasattr(_global_bot_instance, 'snapshot'):
-                    _global_bot_instance.snapshot["cooldown"] = "EMERGENCY_STOP"
-                    _global_bot_instance.snapshot["emergency_stop_active"] = True
-                if hasattr(_global_bot_instance, 'emergency_stop_active'):
-                    _global_bot_instance.emergency_stop_active = True
+                if hasattr(bot, 'snapshot'):
+                    bot.snapshot["cooldown"] = "EMERGENCY_STOP"
+                    bot.snapshot["emergency_stop_active"] = True
+                if hasattr(bot, 'emergency_stop_active'):
+                    bot.emergency_stop_active = True
+                if hasattr(bot, 'manual_pause'):
+                    bot.manual_pause = True
                 logger.warning("Emergency stop activated via web dashboard")
-                return jsonify({"success": True, "message": "Emergency stop activated"})
+                return jsonify({"success": True, "message": "Emergency stop activated", "instant": True})
+            
             elif action in {'force_close', 'stop_trade'}:
-                state_manager = getattr(_global_bot_instance, "state_manager", None)
+                state_manager = getattr(bot, "state_manager", None)
                 if state_manager and hasattr(state_manager, "request_force_close"):
                     state_manager.request_force_close()
                     logger.warning("Manual stop trade requested via web dashboard")
-                    return jsonify({"success": True, "message": "Stop Trade request sent"})
-                # Usar cola de comandos thread-safe en lugar de llamada directa al event loop del bot
-                if hasattr(_global_bot_instance, "state_manager") and hasattr(_global_bot_instance.state_manager, "request_force_close"):
-                    _global_bot_instance.state_manager.request_force_close()
-                    logger.warning("force_close command queued via web dashboard")
-                    return jsonify({"success": True, "message": "Force close command queued"})
-                elif hasattr(_global_bot_instance, "request_force_close"):
-                    _global_bot_instance.request_force_close()
-                    return jsonify({"success": True, "message": "Force close requested"})
+                    return jsonify({"success": True, "message": "Stop Trade request sent", "instant": True})
+                elif hasattr(bot, "request_force_close"):
+                    bot.request_force_close()
+                    return jsonify({"success": True, "message": "Force close requested", "instant": True})
                 else:
                     return jsonify({"success": False, "error": "Force close not available in this bot version"})
+            
+            elif action == 'clear_all_blocks':
+                if hasattr(bot, 'snapshot'):
+                    bot.snapshot["cooldown"] = None
+                    bot.snapshot["user_paused"] = False
+                    bot.snapshot["emergency_stop_active"] = False
+                if hasattr(bot, 'manual_pause'):
+                    bot.manual_pause = False
+                if hasattr(bot, 'emergency_stop_active'):
+                    bot.emergency_stop_active = False
+                if hasattr(bot, 'trading_paused_by_drawdown'):
+                    bot.trading_paused_by_drawdown = False
+                if hasattr(bot, 'pause_trading_until'):
+                    bot.pause_trading_until = None
+                if hasattr(bot, 'exchange_failure_paused_until'):
+                    bot.exchange_failure_paused_until = None
+                if hasattr(bot, 'consecutive_losses'):
+                    bot.consecutive_losses = 0
+                logger.info("All blocks and pauses cleared via web dashboard")
+                return jsonify({"success": True, "message": "All blocks cleared", "instant": True})
+            
             else:
                 return jsonify({"success": False, "error": "Unknown action"})
         except Exception as e:
@@ -1822,6 +1855,97 @@ def create_app() -> Flask:
             logger.warning("Bot emergency stop via web dashboard")
             return jsonify({"success": True, "message": "Emergency stop activated"})
         except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/support/diagnostics", methods=["GET"])
+    @_require_auth
+    def api_support_diagnostics():
+        """Run comprehensive diagnostics and return results."""
+        try:
+            from reco_trading.support.support_manager import SupportManager
+            bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
+            support = SupportManager(bot)
+            
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    diagnostics = list(support._diagnostics_cache.values())
+                    if not diagnostics:
+                        diagnostics = [{"name": "pending", "status": "ok", "message": "Run diagnostics from background"}]
+                else:
+                    diagnostics = loop.run_until_complete(support.run_diagnostics(force=True))
+            except Exception:
+                diagnostics = list(support._diagnostics_cache.values())
+            
+            return jsonify({
+                "success": True,
+                "diagnostics": [
+                    {"name": d.name, "status": d.status, "message": d.message, "details": d.details}
+                    for d in diagnostics
+                ],
+                "system_info": {
+                    "os": support.get_system_info().os_name,
+                    "python": support.get_system_info().python_version,
+                    "cpu_count": support.get_system_info().cpu_count,
+                    "memory_gb": support.get_system_info().memory_total_gb,
+                },
+            })
+        except Exception as e:
+            logger.error(f"Error running diagnostics: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/support/help/<issue>", methods=["GET"])
+    def api_support_help(issue: str):
+        """Get help documentation for a specific issue."""
+        try:
+            from reco_trading.support.support_manager import SupportManager
+            support = SupportManager()
+            help_doc = support.get_help_for_issue(issue)
+            return jsonify({
+                "success": True,
+                "issue": issue,
+                "help": help_doc,
+            })
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/support/ticket", methods=["POST"])
+    @_require_auth
+    def api_support_create_ticket():
+        """Create a support ticket with system info and diagnostics."""
+        try:
+            from reco_trading.support.support_manager import SupportManager
+            bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
+            support = SupportManager(bot)
+            
+            data = request.get_json(silent=True) or {}
+            title = str(data.get("title", "Support Request"))
+            description = str(data.get("description", ""))
+            priority = str(data.get("priority", "medium"))
+            category = str(data.get("category", "bug"))
+            include_logs = bool(data.get("include_logs", True))
+            include_diagnostics = bool(data.get("include_diagnostics", True))
+            
+            ticket = support.create_support_ticket(
+                title=title,
+                description=description,
+                priority=priority,
+                category=category,
+                include_logs=include_logs,
+                include_diagnostics=include_diagnostics,
+            )
+            
+            exported = support.export_ticket(ticket)
+            
+            return jsonify({
+                "success": True,
+                "ticket_id": ticket.ticket_id,
+                "status": ticket.status,
+                "export": exported,
+            })
+        except Exception as e:
+            logger.error(f"Error creating support ticket: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
     def _get_active_blocks(snapshot: dict) -> list:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -32,18 +33,21 @@ class PositionManager:
 
     def __init__(self) -> None:
         self.positions: list[Position] = []
+        self._lock = asyncio.Lock()
 
-    def can_open(self, max_concurrent_trades: int) -> bool:
-        return len(self.positions) < max(int(max_concurrent_trades), 1)
+    async def can_open(self, max_concurrent_trades: int) -> bool:
+        async with self._lock:
+            return len(self.positions) < max(int(max_concurrent_trades), 1)
 
-    def open(self, position: Position) -> None:
-        if position.initial_risk_distance <= 0:
-            position.initial_risk_distance = abs(position.entry_price - position.stop_loss)
-        position.peak_price = position.entry_price
-        position.partial_tp_triggered = []
-        position.safety_orders_triggered = 0
-        position.entry_timestamp_ms = position.last_candle_ts_ms or int(time.time() * 1000)
-        self.positions.append(position)
+    async def open(self, position: Position) -> None:
+        async with self._lock:
+            if position.initial_risk_distance <= 0:
+                position.initial_risk_distance = abs(position.entry_price - position.stop_loss)
+            position.peak_price = position.entry_price
+            position.partial_tp_triggered = []
+            position.safety_orders_triggered = 0
+            position.entry_timestamp_ms = position.last_candle_ts_ms or int(time.time() * 1000)
+            self.positions.append(position)
 
     def check_exit(self, position: Position, current_price: float, *, equity: float = 0.0) -> str | None:
         atr = max(position.atr, position.entry_price * 0.002)

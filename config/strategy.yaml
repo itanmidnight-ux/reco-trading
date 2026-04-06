@@ -1,4 +1,18 @@
-min_signal_confidence: 0.40
-hold_threshold: 0.45
+# Strategy Configuration - Optimized for profit maximization with capital protection
+# Minimum confidence to execute trades (0.55 = 55% weighted factors must agree)
+min_signal_confidence: 0.55
+
+# Confidence below this results in HOLD (prevents weak signal trades)
+hold_threshold: 0.50
+
+# Enable liquidity filter to avoid trading in low-liquidity conditions
 use_liquidity_filter: true
+
+# Enable reversal confirmation for safer entries
 use_reversal_confirmation: true
+
+# Minimum number of agreeing factors required for trade (1-6)
+min_factors_agreement: 2
+
+# Conflict penalty multiplier (higher = more penalty for conflicting signals)
+conflict_penalty: 0.5

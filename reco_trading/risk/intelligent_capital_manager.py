@@ -302,30 +302,46 @@ class IntelligentCapitalManager:
             params["risk_per_trade"] *= preservation_factor
             params["max_trades_per_day"] = max(int(params["max_trades_per_day"] * preservation_factor), 10)
 
+        # Loss streak protection - increase confidence requirement and reduce risk
         if self._loss_streak >= 3:
-            streak_penalty = min(self._loss_streak * 0.03, 0.15)
+            streak_penalty = min(self._loss_streak * 0.03, 0.12)  # Cap at 12% penalty
             params["min_confidence"] = min(params["min_confidence"] + streak_penalty, 0.95)
-            params["risk_per_trade"] *= max(1 - streak_penalty, 0.5)
-        elif self._win_streak >= 5:
-            streak_bonus = min(self._win_streak * 0.01, 0.05)
-            params["min_confidence"] = max(params["min_confidence"] - streak_bonus, 0.50)
-            params["risk_per_trade"] *= min(1 + streak_bonus, 1.3)
-
+            params["risk_per_trade"] *= max(1 - streak_penalty, 0.50)  # Floor at 50%
+        elif self._loss_streak >= 2:
+            streak_penalty = 0.05
+            params["min_confidence"] = min(params["min_confidence"] + streak_penalty, 0.90)
+            params["risk_per_trade"] *= 0.85
+        
+        # Win streak - REDUCE risk (regression to mean protection)
+        # Don't increase risk on winning streaks - that's dangerous
+        if self._win_streak >= 5:
+            # On winning streaks, be MORE conservative
+            params["risk_per_trade"] *= 0.90  # Reduce risk
+            params["min_confidence"] = max(params["min_confidence"], 0.60)  # Keep minimum confidence
+        
         if self._current_drawdown > profile.max_drawdown_pct * 0.5:
             dd_factor = self._current_drawdown / profile.max_drawdown_pct
             params["min_confidence"] = min(params["min_confidence"] + dd_factor * 0.05, 0.95)
             params["risk_per_trade"] *= max(1 - dd_factor * 0.3, 0.3)
 
+        # Aggressive mode - still cap the risk
         if self.aggressive_mode:
-            params["min_confidence"] = max(params["min_confidence"] - 0.05, 0.50)
-            params["risk_per_trade"] *= 1.2
-            params["max_trades_per_day"] = int(params["max_trades_per_day"] * 1.5)
+            params["min_confidence"] = max(params["min_confidence"] - 0.03, 0.55)  # Lower min slightly but with floor
+            params["risk_per_trade"] *= 1.1  # Only +10% instead of +20%
+            params["risk_per_trade"] = min(params["risk_per_trade"], 0.02)  # Cap at 2% max
 
+        # Capital mode caps - preserve capital for small accounts
         if self.capital_mode == CapitalMode.MICRO:
-            params["min_confidence"] = max(params["min_confidence"], 0.65)
-            params["risk_per_trade"] = min(params["risk_per_trade"], 0.015)
+            params["min_confidence"] = max(params["min_confidence"], 0.68)  # Higher minimum
+            params["risk_per_trade"] = min(params["risk_per_trade"], 0.012)  # Max 1.2% risk
             if self._loss_streak >= 2:
-                params["min_confidence"] = min(params["min_confidence"] + 0.10, 0.95)
+                params["min_confidence"] = min(params["min_confidence"] + 0.08, 0.92)  # Increase confidence requirement
+
+        # FINAL SAFETY CAPS - Never exceed these limits
+        params["min_confidence"] = max(params["min_confidence"], 0.50)  # Never below 50%
+        params["min_confidence"] = min(params["min_confidence"], 0.92)  # Never above 92%
+        params["risk_per_trade"] = max(params["risk_per_trade"], 0.005)  # Minimum 0.5% to allow trading
+        params["risk_per_trade"] = min(params["risk_per_trade"], 0.025)  # Maximum 2.5% risk per trade
 
         params["min_confidence"] = round(params["min_confidence"], 4)
         params["risk_per_trade"] = round(params["risk_per_trade"], 4)
@@ -369,33 +385,45 @@ class IntelligentCapitalManager:
         atr: float,
         confidence: float,
     ) -> float:
-        """Calcula tamaño de posición inteligente."""
+        """Calcula tamaño de posición inteligente con límites de seguridad."""
         params = self.get_effective_parameters()
         
         base_risk = params["risk_per_trade"]
         risk_per_trade = base_risk
         
+        # Confidence-based sizing - more conservative
         if confidence >= 0.85:
-            risk_per_trade *= 1.2
+            risk_per_trade *= 1.1  # Only +10% for very high confidence
         elif confidence >= 0.80:
-            risk_per_trade *= 1.1
-        elif confidence < 0.70:
-            risk_per_trade *= 0.8
-        elif confidence < 0.65:
-            risk_per_trade *= 0.6
+            risk_per_trade *= 1.05  # +5% for high confidence
+        elif confidence >= 0.70:
+            risk_per_trade *= 1.0  # No adjustment for good confidence
+        elif confidence >= 0.60:
+            risk_per_trade *= 0.8  # -20% for moderate confidence
+        else:
+            risk_per_trade *= 0.6  # -40% for low confidence
         
+        # Capital mode caps - enforce maximum risk based on account size
         if self.capital_mode == CapitalMode.MICRO:
-            risk_per_trade = min(risk_per_trade, 0.012)
+            risk_per_trade = min(risk_per_trade, 0.012)  # Max 1.2% for micro
         elif self.capital_mode == CapitalMode.SMALL:
-            risk_per_trade = min(risk_per_trade, 0.015)
+            risk_per_trade = min(risk_per_trade, 0.015)  # Max 1.5% for small
+        elif self.capital_mode == CapitalMode.MEDIUM:
+            risk_per_trade = min(risk_per_trade, 0.018)  # Max 1.8% for medium
         
+        # HARD CAP: Never risk more than 2.5% per trade
+        risk_per_trade = min(risk_per_trade, 0.025)
+        
+        # Calculate position size
         risk_amount = equity * risk_per_trade
         stop_distance = atr * params["stop_atr_multiplier"]
-        stop_distance = max(stop_distance, price * 0.003)
+        stop_distance = max(stop_distance, price * 0.003)  # Minimum 0.3% stop distance
         
+        # Position size calculation
         position_size = risk_amount / stop_distance
         position_size = position_size / price
         
+        # Minimum trade size enforcement
         min_trade = params.get("min_trade_size_usdt", 5.0) / price
         max_trade_usdt = equity * params["max_drawdown_pct"] / 100
         max_trade = max_trade_usdt / price

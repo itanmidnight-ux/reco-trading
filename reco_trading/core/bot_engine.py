@@ -32,6 +32,7 @@ from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.risk.portfolio_risk import PortfolioRiskController
 from reco_trading.risk.smart_stop_engine import SmartStopEngine, SmartStopConfig, StopType
 from reco_trading.risk.intelligent_capital_manager import IntelligentCapitalManager, CapitalMode
+from reco_trading.risk.auto_balance_manager import AutoBalanceManager
 from reco_trading.strategy.confidence_model import ConfidenceModel
 from reco_trading.strategy.indicators import apply_indicators
 from reco_trading.strategy.confluence import TimeframeConfluence
@@ -164,6 +165,14 @@ class BotEngine:
             aggressive_mode=False,
             preserve_capital=True,
         )
+        
+        # Auto balance manager for intelligent position sizing
+        self.auto_balance_manager = AutoBalanceManager(
+            initial_capital=float(getattr(settings, "initial_capital", 100.0)),
+            reserve_ratio=0.15,
+            max_daily_risk=0.03,
+        )
+        
         self.market_intelligence = MarketIntelligence(settings)
         self.exit_intelligence = ExitIntelligence()
         self.confluence = TimeframeConfluence()
@@ -496,9 +505,12 @@ class BotEngine:
                             await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
                             continue
 
-                        if self.manual_pause:
+                        user_paused = self.snapshot.get("user_paused", False)
+                        if self.manual_pause or user_paused:
                             await self._set_state(BotState.PAUSED, "manual_pause")
-                            self.snapshot["cooldown"] = "MANUAL_PAUSE"
+                            if user_paused and not self.manual_pause:
+                                self.manual_pause = True
+                            self.snapshot["cooldown"] = "USER_PAUSE"
                             self._sync_ui_state()
                             self._safe_live_update(live)
                             await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
@@ -974,14 +986,11 @@ class BotEngine:
         if not confidence_pass:
             return await _reject("confidence_below_threshold", cooldown="CONFIDENCE_BELOW_THRESHOLD")
 
+        # ADX filter - ALWAYS required, never bypassed
+        # High confidence should not allow trades in non-trending markets
         adx_value = _as_float(self.snapshot.get("adx"), 0.0)
         adx_threshold = self._effective_adx_threshold()
-        
-        high_confidence_trade = confidence >= 0.75
-        if high_confidence_trade:
-            adx_pass = True
-        else:
-            adx_pass = adx_value >= adx_threshold
+        adx_pass = adx_value >= adx_threshold
         
         validation_checks.append({
             "name": "adx_threshold",
@@ -989,29 +998,27 @@ class BotEngine:
             "threshold": f">= {adx_threshold}",
             "passed": adx_pass,
         })
-        if not adx_pass and not high_confidence_trade:
+        if not adx_pass:
             await self._log("INFO", f"adx_filter_rejected adx={adx_value:.2f} threshold={adx_threshold}")
+            # ADX filter is NOT bypassed - require trending market
 
+        # RSI filter - ALWAYS required, never bypassed
+        # High confidence should not allow trades at extreme RSI levels
         rsi_value = _as_float(self.snapshot.get("rsi"), 50.0)
         if side == "BUY":
             rsi_threshold = self._effective_rsi_buy_threshold()
-            if high_confidence_trade:
-                rsi_pass = True
-            else:
-                rsi_pass = rsi_value >= rsi_threshold
+            rsi_pass = rsi_value >= rsi_threshold and rsi_value < 75  # Don't buy at overbought
         else:
             rsi_threshold = self._effective_rsi_sell_threshold()
-            if high_confidence_trade:
-                rsi_pass = True
-            else:
-                rsi_pass = rsi_value <= rsi_threshold
+            rsi_pass = rsi_value <= rsi_threshold and rsi_value > 25  # Don't sell at oversold
+        
         validation_checks.append({
             "name": "rsi_filter",
             "value": rsi_value,
             "threshold": f"{rsi_threshold} ({side})",
             "passed": rsi_pass,
         })
-        if not rsi_pass and not high_confidence_trade:
+        if not rsi_pass:
             await self._log("INFO", f"rsi_filter_rejected rsi={rsi_value:.2f} threshold={rsi_threshold} side={side}")
 
         volume_ratio = _as_float(self.snapshot.get("volume_ratio"), 1.0)
@@ -1245,7 +1252,7 @@ class BotEngine:
             await self._set_state(BotState.WAITING_MARKET_DATA, "regime_filter")
             return
 
-        if not self.position_manager.can_open(self._effective_max_concurrent_trades()):
+        if not await self.position_manager.can_open(self._effective_max_concurrent_trades()):
             self.logger.warning(f"MAX_POSITIONS: cannot open, positions open: {len(self.position_manager.positions)}")
             await self._set_state(BotState.POSITION_OPEN, "max_positions")
             return
@@ -1387,6 +1394,18 @@ class BotEngine:
             order = await self.client.create_market_order(self.symbol, side.lower(), qty, client_order_id=intent_id)
             self.logger.info(f"ORDER_PLACED: {order}")
             print(f">>>> ORDER SUCCESS: {order}")
+            
+            order_id = order.get("id")
+            order_status = order.get("status", "")
+            filled_qty = _as_float(order.get("filled"), 0.0)
+            
+            if not order_id:
+                await self._log("ERROR", "order_verification_failed no_order_id")
+                return
+            if order_status not in ("closed", "filled", "canceled"):
+                await self._log("WARNING", f"order_status_unusual status={order_status}")
+            if filled_qty > 0 and abs(filled_qty - qty) / max(qty,1e-9) > 0.01:
+                await self._log("WARNING", f"order_partial_fill requested={qty} filled={filled_qty}")
         except Exception as exc:
             print(f">>>> ORDER FAILED: {exc}")
             await self._log("ERROR", f"order_rejected error={exc}")
@@ -1423,7 +1442,7 @@ class BotEngine:
             entry_slippage_ratio=slippage_ratio,
         )
 
-        self.position_manager.open(
+        await self.position_manager.open(
             Position(
                 trade_id=trade.id,
                 side=side,
@@ -2358,7 +2377,7 @@ class BotEngine:
         if base_balance <= 0:
             await self._log("WARNING", "open_trade_found_without_base_balance")
             return
-        self.position_manager.open(
+        await self.position_manager.open(
             Position(
                 trade_id=latest.id,
                 side=latest.side,
@@ -2552,16 +2571,30 @@ class BotEngine:
                 await self.force_close_position()
             elif control == "pause":
                 self.manual_pause = True
+                self.snapshot["user_paused"] = True
                 await self._log("WARNING", "manual_pause_requested")
             elif control in {"start", "resume"}:
                 self.manual_pause = False
                 self.emergency_stop_active = False
+                self.snapshot["user_paused"] = False
+                self.snapshot["emergency_stop_active"] = False
                 await self._log("INFO", f"manual_control_{control}")
             elif control == "emergency_stop":
                 self.emergency_stop_active = True
                 self.manual_pause = True
                 await self._log("ERROR", "emergency_stop_requested")
                 await self.force_close_position()
+            elif control == "clear_all_blocks":
+                self.manual_pause = False
+                self.emergency_stop_active = False
+                self.trading_paused_by_drawdown = False
+                self.pause_trading_until = None
+                self.exchange_failure_paused_until = None
+                self.consecutive_losses = 0
+                self.snapshot["user_paused"] = False
+                self.snapshot["emergency_stop_active"] = False
+                self.snapshot["cooldown"] = None
+                await self._log("INFO", "all_blocks_cleared")
 
         runtime_updates: list[dict[str, Any]] = []
         if self.state_manager and hasattr(self.state_manager, "pop_runtime_settings"):
