@@ -1948,6 +1948,39 @@ def create_app() -> Flask:
             logger.error(f"Error creating support ticket: {e}")
             return jsonify({"success": False, "error": str(e)}), 500
 
+    @app.route("/api/pause_status", methods=["GET"])
+    @_require_auth
+    def api_pause_status():
+        """Get detailed pause status - NEVER pauses, only returns current state."""
+        try:
+            snapshot = get_bot_snapshot()
+            pause_states = snapshot.get("pause_states", {})
+            auto_pause_disabled = snapshot.get("auto_pause_disabled", True)
+            
+            any_paused = any([
+                pause_states.get("manual_pause", False),
+                pause_states.get("emergency_stop", False),
+                pause_states.get("user_paused", False),
+                pause_states.get("drawdown_pause", False),
+                pause_states.get("loss_pause", False),
+                pause_states.get("exchange_pause", False),
+            ])
+            
+            cooldown = snapshot.get("cooldown")
+            
+            return jsonify({
+                "success": True,
+                "is_paused": any_paused or bool(cooldown),
+                "auto_pause_disabled": auto_pause_disabled,
+                "pause_states": pause_states,
+                "cooldown": cooldown,
+                "can_trade": not any_paused and not cooldown,
+                "message": "Bot is running" if not any_paused and not cooldown else f"Bot paused: {cooldown or 'unknown'}",
+            })
+        except Exception as e:
+            logger.error(f"Error getting pause status: {e}")
+            return jsonify({"success": False, "error": str(e)}), 500
+
     def _get_active_blocks(snapshot: dict) -> list:
         blocks = []
         if snapshot.get("emergency_stop_active"):

@@ -29,15 +29,23 @@ class Position:
 
 
 class PositionManager:
-    """Tracks active position and exit conditions with partial take profit and safety orders."""
+    """Tracks active position and exit conditions with partial take profit and safety orders.
+
+    Thread-safe implementation using asyncio.Lock for all position operations.
+    """
 
     def __init__(self) -> None:
-        self.positions: list[Position] = []
+        self._positions: list[Position] = []
         self._lock = asyncio.Lock()
+
+    @property
+    def positions(self) -> list[Position]:
+        """Return a copy of positions list for safe iteration."""
+        return list(self._positions)
 
     async def can_open(self, max_concurrent_trades: int) -> bool:
         async with self._lock:
-            return len(self.positions) < max(int(max_concurrent_trades), 1)
+            return len(self._positions) < max(int(max_concurrent_trades), 1)
 
     async def open(self, position: Position) -> None:
         async with self._lock:
@@ -47,23 +55,33 @@ class PositionManager:
             position.partial_tp_triggered = []
             position.safety_orders_triggered = 0
             position.entry_timestamp_ms = position.last_candle_ts_ms or int(time.time() * 1000)
-            self.positions.append(position)
+            self._positions.append(position)
 
-    def check_exit(self, position: Position, current_price: float, *, equity: float = 0.0) -> str | None:
-        atr = max(position.atr, position.entry_price * 0.002)
-        risk_distance = max(position.initial_risk_distance, 1e-9)
-        
-        position.bars_held += 1
+    async def check_exit(self, position: Position, current_price: float, *, equity: float = 0.0) -> str | None:
+        async with self._lock:
+            atr = max(position.atr, position.entry_price * 0.002)
+            risk_distance = max(position.initial_risk_distance, 1e-9)
+            
+            # Find the position in our list and update it
+            pos_ref = None
+            for p in self._positions:
+                if p.trade_id == position.trade_id:
+                    pos_ref = p
+                    break
+            
+            if pos_ref:
+                pos_ref.bars_held += 1
+                position.bars_held = pos_ref.bars_held
+            
+            if not position.dynamic_exit_enabled:
+                partial_tp_exit = self._check_partial_take_profit(position, current_price, atr)
+                if partial_tp_exit:
+                    return partial_tp_exit
 
-        if not position.dynamic_exit_enabled:
-            partial_tp_exit = self._check_partial_take_profit(position, current_price, atr)
-            if partial_tp_exit:
-                return partial_tp_exit
-
-        if position.side == "BUY":
-            return self._check_exit_buy(position, current_price, atr, risk_distance)
-        else:
-            return self._check_exit_sell(position, current_price, atr, risk_distance)
+            if position.side == "BUY":
+                return self._check_exit_buy(position, current_price, atr, risk_distance)
+            else:
+                return self._check_exit_sell(position, current_price, atr, risk_distance)
 
     def _check_partial_take_profit(self, position: Position, current_price: float, atr: float) -> str | None:
         if position.side == "BUY":
@@ -154,24 +172,51 @@ class PositionManager:
             return "TRAILING_STOP_HIT"
         return None
 
-    def should_trigger_safety_order(self, position: Position, current_price: float) -> bool:
-        if position.side == "BUY":
-            drawdown = (position.entry_price - current_price) / position.entry_price
-        else:
-            drawdown = (current_price - position.entry_price) / position.entry_price
+    async def should_trigger_safety_order(self, position: Position, current_price: float) -> bool:
+        async with self._lock:
+            if position.side == "BUY":
+                drawdown = (position.entry_price - current_price) / position.entry_price
+            else:
+                drawdown = (current_price - position.entry_price) / position.entry_price
 
-        if position.safety_orders_triggered >= 2:
+            if position.safety_orders_triggered >= 2:
+                return False
+
+            if drawdown >= 0.015 and position.safety_orders_triggered == 0:
+                return True
+            if drawdown >= 0.030 and position.safety_orders_triggered == 1:
+                return True
+                
             return False
 
-        if drawdown >= 0.015 and position.safety_orders_triggered == 0:
-            return True
-        if drawdown >= 0.030 and position.safety_orders_triggered == 1:
-            return True
-            
-        return False
+    async def close(self, trade_id: int) -> Position | None:
+        async with self._lock:
+            for idx, position in enumerate(self._positions):
+                if position.trade_id == trade_id:
+                    return self._positions.pop(idx)
+            return None
 
-    def close(self, trade_id: int) -> Position | None:
-        for idx, position in enumerate(self.positions):
-            if position.trade_id == trade_id:
-                return self.positions.pop(idx)
-        return None
+    async def get_position(self, trade_id: int) -> Position | None:
+        async with self._lock:
+            for position in self._positions:
+                if position.trade_id == trade_id:
+                    return position
+            return None
+
+    async def get_all_positions(self) -> list[Position]:
+        async with self._lock:
+            return list(self._positions)
+
+    async def update_position(self, trade_id: int, **kwargs: Any) -> bool:
+        async with self._lock:
+            for position in self._positions:
+                if position.trade_id == trade_id:
+                    for key, value in kwargs.items():
+                        if hasattr(position, key):
+                            setattr(position, key, value)
+                    return True
+            return False
+
+    def count(self) -> int:
+        """Return count without lock for fast access (read-only)."""
+        return len(self._positions)

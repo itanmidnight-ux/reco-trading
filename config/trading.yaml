@@ -1,21 +1,31 @@
-# Trading Configuration - Optimized for profit maximization with capital protection
+# Trading Configuration - Optimized for multi-pair profit maximization
 symbol: BTCUSDT
 timeframe: 5m
 confirmation_timeframe: 15m
 
 # Loop timing - faster for more opportunities
-loop_sleep_seconds: 8
+loop_sleep_seconds: 6
 
-# Position management
+# Position management - Allow multiple concurrent trades
 max_concurrent_trades: 2
+max_trades_per_day: 15
 
-# Risk management
-risk_per_trade_fraction: 0.012  # 1.2% risk per trade (conservative for capital protection)
-max_trade_balance_fraction: 0.15  # Max 15% of balance per trade
+# Risk management - Balanced for profit with protection
+risk_per_trade_fraction: 0.015  # 1.5% risk per trade
+max_trade_balance_fraction: 0.20  # Max 20% of balance per trade
 
-# Cooldown settings
-cooldown_minutes: 3  # Shorter cooldown for more trades
+# Cooldown settings - Shorter for more trades
+cooldown_minutes: 2
 
-# Loss protection
-loss_pause_minutes: 90  # Pause 1.5 hours after consecutive losses
-loss_pause_after_consecutive: 2  # After 2 consecutive losses
+# Loss protection - Reasonable pause after losses
+loss_pause_minutes: 60  # Pause 1 hour after consecutive losses
+loss_pause_after_consecutive: 3  # After 3 consecutive losses
+
+# Multi-symbol support
+feature_multi_symbol_enabled: true
+
+# Daily loss limit
+daily_loss_limit_fraction: 0.05  # 5% max daily loss
+
+# Maximum drawdown before pause
+max_drawdown_fraction: 0.15  # 15% max drawdown

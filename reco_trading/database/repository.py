@@ -11,7 +11,7 @@ from sqlalchemy import func, inspect, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from reco_trading.database.models import Base, BotLog, CustomData, ErrorLog, MarketData, Order, PairLock, RuntimeSetting, Signal, StateChange, Trade
+from reco_trading.database.models import Base, BotLog, CustomData, DailyStats, BotState, ErrorLog, MarketData, Order, PairLock, RuntimeSetting, Signal, StateChange, Trade
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
 
@@ -540,3 +540,170 @@ class Repository:
                 query = query.where(CustomData.cd_key == key)
             await session.execute(query)
             await session.commit()
+
+    # ========================
+    # Daily Stats Methods
+    # ========================
+
+    from reco_trading.database.models import DailyStats, BotState
+
+    @safe_db_call()
+    async def save_daily_stats(
+        self,
+        symbol: str,
+        daily_pnl: float,
+        session_pnl: float,
+        trades_count: int,
+        wins: int,
+        losses: int,
+        starting_balance: float | None = None,
+        ending_balance: float | None = None,
+        peak_balance: float | None = None,
+        max_drawdown: float = 0.0,
+    ) -> None:
+        """Save daily trading statistics."""
+        from reco_trading.database.models import DailyStats
+        
+        # Convert timezone-aware to naive for database compatibility
+        today_aware = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        today_naive = today_aware.replace(tzinfo=None)
+        
+        async with self.session_factory() as session:
+            result = await session.execute(
+                select(DailyStats).where(DailyStats.date == today_naive, DailyStats.symbol == symbol)
+            )
+            stats = result.scalar_one_or_none()
+            
+            win_rate = (wins / trades_count * 100) if trades_count > 0 else 0.0
+            
+            if stats:
+                stats.daily_pnl = daily_pnl
+                stats.session_pnl = session_pnl
+                stats.trades_count = trades_count
+                stats.wins = wins
+                stats.losses = losses
+                stats.win_rate = win_rate
+                if starting_balance is not None:
+                    stats.starting_balance = starting_balance
+                if ending_balance is not None:
+                    stats.ending_balance = ending_balance
+                if peak_balance is not None:
+                    stats.peak_balance = peak_balance
+                stats.max_drawdown = max_drawdown
+                stats.updated_at = datetime.utcnow()
+            else:
+                stats = DailyStats(
+                    date=today_naive,
+                    symbol=symbol,
+                    daily_pnl=daily_pnl,
+                    session_pnl=session_pnl,
+                    trades_count=trades_count,
+                    wins=wins,
+                    losses=losses,
+                    win_rate=win_rate,
+                    starting_balance=starting_balance,
+                    ending_balance=ending_balance,
+                    peak_balance=peak_balance,
+                    max_drawdown=max_drawdown,
+                )
+                session.add(stats)
+            await session.commit()
+
+    @safe_db_call(default=None)
+    async def get_daily_stats(self, symbol: str | None = None, days: int = 30) -> list[dict]:
+        """Get daily stats for the last N days."""
+        from reco_trading.database.models import DailyStats
+        
+        # Use naive datetime for database query
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        async with self.session_factory() as session:
+            query = select(DailyStats).where(DailyStats.date >= cutoff)
+            if symbol:
+                query = query.where(DailyStats.symbol == symbol)
+            query = query.order_by(DailyStats.date.desc())
+            result = await session.execute(query)
+            return [
+                {
+                    "date": stat.date.isoformat() if stat.date else None,
+                    "symbol": stat.symbol,
+                    "daily_pnl": float(stat.daily_pnl or 0),
+                    "session_pnl": float(stat.session_pnl or 0),
+                    "trades_count": stat.trades_count or 0,
+                    "wins": stat.wins or 0,
+                    "losses": stat.losses or 0,
+                    "win_rate": float(stat.win_rate or 0),
+                    "starting_balance": float(stat.starting_balance or 0),
+                    "ending_balance": float(stat.ending_balance or 0),
+                    "peak_balance": float(stat.peak_balance or 0),
+                    "max_drawdown": float(stat.max_drawdown or 0),
+                }
+                for stat in result.scalars().all()
+            ]
+
+    @safe_db_call(default=None)
+    async def get_latest_daily_stats(self, symbol: str) -> dict | None:
+        """Get the most recent daily stats for a symbol."""
+        stats = await self.get_daily_stats(symbol=symbol, days=1)
+        return stats[0] if stats else None
+
+    # ========================
+    # Bot State Methods
+    # ========================
+
+    @safe_db_call()
+    async def save_bot_state(self, key: str, value: dict | str | float | int | bool) -> None:
+        """Save bot state for recovery."""
+        from reco_trading.database.models import BotState
+        
+        encoded = json.dumps(value) if not isinstance(value, str) else value
+        async with self.session_factory() as session:
+            result = await session.execute(select(BotState).where(BotState.key == key))
+            state = result.scalar_one_or_none()
+            if state:
+                state.value = encoded
+                state.updated_at = datetime.utcnow()
+            else:
+                state = BotState(key=key, value=encoded, updated_at=datetime.utcnow())
+                session.add(state)
+            await session.commit()
+
+    @safe_db_call(default=None)
+    async def get_bot_state(self, key: str) -> dict | str | None:
+        """Get bot state by key."""
+        from reco_trading.database.models import BotState
+        
+        async with self.session_factory() as session:
+            result = await session.execute(select(BotState).where(BotState.key == key))
+            state = result.scalar_one_or_none()
+            if state:
+                try:
+                    return json.loads(state.value)
+                except (TypeError, ValueError):
+                    return state.value
+        return None
+
+    @safe_db_call(default={})
+    async def get_all_bot_state(self) -> dict[str, Any]:
+        """Get all bot state."""
+        from reco_trading.database.models import BotState
+        
+        async with self.session_factory() as session:
+            result = await session.execute(select(BotState))
+            payload: dict[str, Any] = {}
+            for row in result.scalars().all():
+                try:
+                    payload[row.key] = json.loads(row.value)
+                except (TypeError, ValueError):
+                    payload[row.key] = row.value
+            return payload
+
+    @safe_db_call()
+    async def save_config(self, config: dict[str, Any]) -> None:
+        """Save complete bot configuration."""
+        await self.save_bot_state("bot_config", config)
+
+    @safe_db_call(default={})
+    async def load_config(self) -> dict[str, Any]:
+        """Load complete bot configuration."""
+        config = await self.get_bot_state("bot_config")
+        return config if isinstance(config, dict) else {}

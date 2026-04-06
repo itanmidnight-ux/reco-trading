@@ -27,6 +27,8 @@ class PairMetrics:
     adx: float = 0.0
     volume_ratio: float = 1.0
     spread: float = 0.0
+    volatility_percentile: float = 50.0
+    signal_potential: float = 0.0
     last_updated: datetime = field(default_factory=datetime.now)
 
 
@@ -40,6 +42,7 @@ class TradingPair:
     step_size: float = 0.0
     tick_size: float = 0.0
     is_tradeable: bool = True
+    tier: int = 1
 
 
 class MultiPairManager:
@@ -52,52 +55,71 @@ class MultiPairManager:
         self.logger = logging.getLogger(__name__)
         self.exchange = exchange_client
         
-        # Only 2 top pairs for faster scanning (BTC and ETH)
+        # Expanded list of trading pairs organized by tier
+        # Tier 1: Major pairs - reliable, lower volatility
+        # Tier 2: High volatility altcoins - more trading opportunities
+        # Tier 3: Meme coins - extreme volatility (use with caution)
+        self.pair_tiers = {
+            1: [
+                "BTC/USDT", "ETH/USDT", "SOL/USDT"
+            ],
+            2: [
+                "DOGE/USDT", "XRP/USDT", "AVAX/USDT", 
+                "LINK/USDT", "UNI/USDT", "AAVE/USDT"
+            ],
+            3: [
+                "PEPE/USDT", "WIF/USDT", "BONK/USDT"
+            ],
+        }
+        
+        # Active pairs for scanning (all tiers by default)
         self.default_pairs = base_pairs or [
-            "BTC/USDT", "ETH/USDT"
+            "BTC/USDT", "ETH/USDT", "SOL/USDT",
+            "DOGE/USDT", "XRP/USDT", "AVAX/USDT",
         ]
         
-        # Single tier for 2 pairs
-        self.tier_pairs = {
-            1: self.default_pairs,
-        }
+        # Currently active pair
+        self.active_pair: str = base_pairs[0] if base_pairs else "BTC/USDT"
         
         self.pairs_metrics: dict[str, PairMetrics] = {}
-        self.active_pair: str = "BTC/USDT"
         self.pair_history: dict[str, list[dict]] = {}
         
-        # Scan every 15 seconds for 2 pairs
+        # Tier 1 (majors): scan every 8 seconds
+        # Tier 2 (altcoins): scan every 12 seconds  
+        # Tier 3 (meme): scan every 20 seconds
         self.tier_scan_intervals = {
-            1: 10,   # Scan every 10 seconds
+            1: 8,
+            2: 12,
+            3: 20,
         }
         
-        # Dynamic scan interval based on bot state
-        self.scan_interval_seconds = 15
-        self.min_volume_24h = 2_000_000
-        self.max_volatility = 0.12
-        self.min_liquidity_score = 0.3
+        # Scan all pairs together for efficiency
+        self.scan_interval_seconds = 10
+        
+        # Minimum requirements (relaxed for more opportunities)
+        self.min_volume_24h = 500_000  # Reduced from 2M
+        self.max_volatility = 0.20  # Increased from 0.12
+        self.min_liquidity_score = 0.2  # Reduced from 0.3
         
         # Pair switching configuration
-        self._switch_cooldown_seconds = 180  # 3 minutes
-        self._min_hold_time_seconds = 300   # 5 minutes minimum hold
-        self._max_switches_per_hour = 3
+        self._switch_cooldown_seconds = 120  # 2 minutes (reduced from 3)
+        self._min_hold_time_seconds = 180   # 3 minutes minimum
+        self._max_switches_per_hour = 6     # Increased from 3
         self._consecutive_switch_count = 0
         self._last_switch_time: datetime | None = None
         self._switch_history: list[datetime] = []
         
-        # Advanced scoring weights
-        self._weight_opportunity = 0.25
-        self._weight_momentum = 0.20
+        # Scoring weights for pair selection
+        self._weight_opportunity = 0.30
+        self._weight_momentum = 0.25
+        self._weight_volume = 0.20
         self._weight_trend = 0.15
-        self._weight_volume = 0.15
         self._weight_liquidity = 0.10
-        self._weight_regime_match = 0.10
-        self._weight_volatility_adjusted = 0.05
         
-        # Circuit breaker and panic
+        # Circuit breaker
         self.panic_threshold = 0.20
         self._circuit_breaker_until: datetime | None = None
-        self._circuit_breaker_duration = 300  # 5 minutes
+        self._circuit_breaker_duration = 180  # 3 minutes
         self._consecutive_scan_errors = 0
         self._max_consecutive_errors = 5
         

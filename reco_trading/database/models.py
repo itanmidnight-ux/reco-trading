@@ -34,6 +34,36 @@ class Trade(Base):
     custom_data: Mapped[list["CustomData"]] = relationship("CustomData", back_populates="trade", lazy="immediate")
 
 
+class DailyStats(Base):
+    """Daily trading statistics for persistence across restarts."""
+    __tablename__ = "daily_stats"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    date: Mapped[datetime] = mapped_column(DateTime, index=True, unique=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    daily_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    session_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    trades_count: Mapped[int] = mapped_column(Integer, default=0)
+    wins: Mapped[int] = mapped_column(Integer, default=0)
+    losses: Mapped[int] = mapped_column(Integer, default=0)
+    win_rate: Mapped[float] = mapped_column(Float, default=0.0)
+    starting_balance: Mapped[float] = mapped_column(Float, nullable=True)
+    ending_balance: Mapped[float] = mapped_column(Float, nullable=True)
+    peak_balance: Mapped[float] = mapped_column(Float, nullable=True)
+    max_drawdown: Mapped[float] = mapped_column(Float, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BotState(Base):
+    """Bot state persistence for recovery after restart."""
+    __tablename__ = "bot_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class RuntimeSetting(Base):
     __tablename__ = "runtime_settings"
 

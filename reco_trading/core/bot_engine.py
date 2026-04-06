@@ -28,6 +28,7 @@ from reco_trading.risk.advanced_risk_manager import AdvancedRiskManager
 from reco_trading.risk.adaptive_sizer import AdaptiveSizer
 from reco_trading.risk.capital_profile import CapitalProfile, CapitalProfileManager
 from reco_trading.risk.investment_optimizer import InvestmentOptimizer
+from reco_trading.strategy.market_adaptation import MarketAdaptation
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.risk.portfolio_risk import PortfolioRiskController
 from reco_trading.risk.smart_stop_engine import SmartStopEngine, SmartStopConfig, StopType
@@ -175,6 +176,7 @@ class BotEngine:
         
         self.market_intelligence = MarketIntelligence(settings)
         self.exit_intelligence = ExitIntelligence()
+        self.market_adaptation = MarketAdaptation()
         self.confluence = TimeframeConfluence()
 
         self.state_manager = state_manager
@@ -324,6 +326,15 @@ class BotEngine:
             "last_trade": None,
             "cooldown": None,
             "status": BotState.INITIALIZING.value,
+            "auto_pause_disabled": bool(getattr(self.settings, "disable_auto_pause", True)),
+            "pause_states": {
+                "manual_pause": False,
+                "emergency_stop": False,
+                "drawdown_pause": False,
+                "loss_pause": False,
+                "exchange_pause": False,
+                "cooldown_active": False,
+            },
             "signals": {},
             "logs": [],
             "volume": None,
@@ -435,6 +446,7 @@ class BotEngine:
             if self.settings.observability_enabled and not self._metrics_server_started:
                 start_metrics_server(self.observability, self.settings.observability_bind_host, self.settings.observability_port)
                 self._metrics_server_started = True
+            await self._restore_bot_config()
             runtime_bundle = await self.repository.get_runtime_settings()
             runtime_settings = runtime_bundle.get("ui_runtime_settings", {}) if isinstance(runtime_bundle, dict) else {}
             if isinstance(runtime_settings, dict) and runtime_settings:
@@ -517,12 +529,18 @@ class BotEngine:
                             continue
 
                         if self.exchange_failure_paused_until and datetime.now(timezone.utc) < self.exchange_failure_paused_until:
-                            await self._set_state(BotState.PAUSED, "exchange_circuit_breaker")
-                            self.snapshot["cooldown"] = f"EXCHANGE_PAUSED until {self.exchange_failure_paused_until.isoformat(timespec='seconds')}"
-                            self._sync_ui_state()
-                            self._safe_live_update(live)
-                            await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
-                            continue
+                            disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+                            if disable_auto_pause:
+                                self.exchange_failure_paused_until = None
+                                self.snapshot["cooldown"] = None
+                                await self._log("WARNING", "exchange_failure_pause_bypassed auto_pause_disabled=True continuing_operation")
+                            else:
+                                await self._set_state(BotState.PAUSED, "exchange_circuit_breaker")
+                                self.snapshot["cooldown"] = f"EXCHANGE_PAUSED until {self.exchange_failure_paused_until.isoformat(timespec='seconds')}"
+                                self._sync_ui_state()
+                                self._safe_live_update(live)
+                                await self._sleep_with_responsiveness(self.settings.loop_sleep_seconds)
+                                continue
 
                         self._roll_day()
                         await self._set_state(BotState.WAITING_MARKET_DATA, "fetch_market_data")
@@ -650,8 +668,15 @@ class BotEngine:
             await self.auto_improver.stop()
             await self.autonomous_brain.stop()
             await self.resilience.stop()
+            await self._save_bot_config()
+            await self._save_daily_stats()
             await self.client.close()
             await self.repository.close()
+            try:
+                from web_site.dashboard_server import set_bot_instance
+                set_bot_instance(None)
+            except Exception:
+                pass
 
     async def fetch_market_data(self) -> dict[str, Any]:
         raw_frame5, raw_frame15 = await asyncio.gather(
@@ -723,10 +748,15 @@ class BotEngine:
             price_swing = abs(float(recent_closes.iloc[-1]) - float(recent_closes.iloc[0]))
             swing_pct = price_swing / max(float(recent_closes.iloc[0]), 1e-9)
             if swing_pct > 0.035:
-                pause_until = datetime.now(timezone.utc) + timedelta(minutes=10)
-                if self.pause_trading_until is None or pause_until > self.pause_trading_until:
-                    self.pause_trading_until = pause_until
-                    await self._log("WARNING", f"market_circuit_breaker swing={swing_pct:.2%} pausing_10min")
+                auto_pause_on_high_swing = bool(getattr(self.settings, "auto_pause_on_high_swing", False))
+                disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+                if auto_pause_on_high_swing and not disable_auto_pause:
+                    pause_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+                    if self.pause_trading_until is None or pause_until > self.pause_trading_until:
+                        self.pause_trading_until = pause_until
+                        await self._log("WARNING", f"market_circuit_breaker swing={swing_pct:.2%} pausing_10min")
+                else:
+                    await self._log("WARNING", f"high_market_swing detected swing={swing_pct:.2%} continuing_without_pause auto_pause_disabled=True")
 
         primary_age_seconds = (datetime.now(timezone.utc) - latest_primary_ts).total_seconds() if latest_primary_ts else -1.0
         if bool(getattr(self.settings, "verbose_trade_decision_logs", False)):
@@ -921,6 +951,37 @@ class BotEngine:
         }
 
     async def validate_trade_conditions(self, analysis: dict[str, Any]) -> bool:
+        # Update market adaptation based on current conditions
+        atr = float(self.snapshot.get("atr", 0) or 0)
+        adx = float(self.snapshot.get("adx", 0) or 0)
+        rsi = float(self.snapshot.get("rsi", 50) or 50)
+        volume_ratio = float(self.snapshot.get("volume_ratio", 1) or 1)
+        price = float(self.snapshot.get("price", 0) or 0)
+        confidence = float(analysis.get("confidence", 0) or 0)
+        
+        market_state = self.market_adaptation.update(
+            price=price, atr=atr, adx=adx, rsi=rsi,
+            volume_ratio=volume_ratio, signal_confidence=confidence
+        )
+        
+        # Add adaptation info to snapshot
+        adapted_params = self.market_adaptation.get_adjusted_params()
+        self.snapshot["market_adaptation"] = {
+            "regime": market_state.regime,
+            "optimal_strategy": market_state.optimal_strategy,
+            "scalping_mode": adapted_params.get("scalping_mode", False),
+            "adx_threshold": adapted_params.get("adx_threshold"),
+            "confidence_min": adapted_params.get("confidence_min"),
+            "rsi_buy_threshold": adapted_params.get("rsi_buy_threshold"),
+            "rsi_sell_threshold": adapted_params.get("rsi_sell_threshold"),
+            "pair_switch_recommended": adapted_params.get("pair_switch_recommended", False),
+        }
+        
+        # Log regime changes
+        if market_state.regime in ("STABLE", "RANGING"):
+            if market_state.signal_count_1h < 3:
+                self.logger.info(f"market_adaptation regime={market_state.regime} signals_1h={market_state.signal_count_1h} filters_relaxed")
+        
         consecutive_losses = self.auto_improver._performance.consecutive_losses if self.auto_improver.enabled else 0
         has_open_position = len(self.position_manager.positions) > 0
         
@@ -1059,7 +1120,14 @@ class BotEngine:
         if self.equity_peak > 0:
             drawdown = max((self.equity_peak - total_equity) / self.equity_peak, 0.0)
             if drawdown >= max_drawdown_fraction:
-                self.trading_paused_by_drawdown = True
+                auto_pause_on_drawdown = bool(getattr(self.settings, "auto_pause_on_drawdown", False))
+                disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+                if auto_pause_on_drawdown and not disable_auto_pause:
+                    self.trading_paused_by_drawdown = True
+                else:
+                    await self._log("WARNING", f"max_drawdown_exceeded drawdown={drawdown:.2%} threshold={max_drawdown_fraction:.2%} continuing_without_pause auto_pause_disabled=True")
+                    self.snapshot["drawdown_warning"] = drawdown
+                    self.snapshot["drawdown_threshold"] = max_drawdown_fraction
 
         validation_checks.append({
             "name": "max_drawdown",
@@ -1068,7 +1136,12 @@ class BotEngine:
             "passed": not self.trading_paused_by_drawdown,
         })
         if self.trading_paused_by_drawdown:
-            return await _reject("max_drawdown", state=BotState.PAUSED, cooldown="MAX_DRAWDOWN")
+            if bool(getattr(self.settings, "disable_auto_pause", True)):
+                self.trading_paused_by_drawdown = False
+                self.snapshot["cooldown"] = None
+                await self._log("INFO", "auto_pause_bypassed_max_drawdown manually_resume_from_dashboard_to_pause")
+            else:
+                return await _reject("max_drawdown", state=BotState.PAUSED, cooldown="MAX_DRAWDOWN")
 
         pause_active = bool(self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until)
         validation_checks.append({
@@ -1078,11 +1151,18 @@ class BotEngine:
             "passed": not pause_active,
         })
         if pause_active:
-            return await _reject(
-                "loss_protection_pause",
-                state=BotState.PAUSED,
-                cooldown=f"PAUSED until {self.pause_trading_until.isoformat(timespec='seconds')}",
-            )
+            auto_pause_on_losses = bool(getattr(self.settings, "auto_pause_on_consecutive_losses", False))
+            disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+            if auto_pause_on_losses and not disable_auto_pause:
+                return await _reject(
+                    "loss_protection_pause",
+                    state=BotState.PAUSED,
+                    cooldown=f"PAUSED until {self.pause_trading_until.isoformat(timespec='seconds')}",
+                )
+            else:
+                self.pause_trading_until = None
+                await self._log("WARNING", f"loss_protection_pause_ignored auto_pause_disabled=True continuing_trading")
+                self.snapshot["loss_pause_ignored"] = True
 
         cooldown_complete = self._is_cooldown_complete()
         validation_checks.append({
@@ -1127,9 +1207,14 @@ class BotEngine:
             "passed": bool(advanced.approved),
         })
         if not advanced.approved:
-            if advanced.pause_trading:
+            auto_pause_enabled = bool(getattr(self.settings, "auto_pause_on_consecutive_losses", False))
+            disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+            if advanced.pause_trading and auto_pause_enabled and not disable_auto_pause:
                 self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self._effective_loss_pause_minutes())
-            return await _reject(advanced.reason, state=BotState.PAUSED, cooldown=advanced.reason)
+                return await _reject(advanced.reason, state=BotState.PAUSED, cooldown=advanced.reason)
+            else:
+                await self._log("WARNING", f"advanced_risk_reject reason={advanced.reason} auto_pause_disabled=True continuing_trading")
+                self.snapshot["advanced_risk_warning"] = advanced.reason
 
         self.snapshot["advanced_risk_reason"] = advanced.reason
         self.snapshot["advanced_size_multiplier"] = advanced.size_multiplier
@@ -1143,7 +1228,12 @@ class BotEngine:
             "passed": session_ok,
         })
         if not session_ok:
-            return await _reject("session_tracker_pause", state=BotState.PAUSED, cooldown="SESSION_TRACKER_PAUSE")
+            disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+            if disable_auto_pause:
+                await self._log("WARNING", f"session_tracker_pause_ignored recommendation={session_stats.recommendation} auto_pause_disabled=True continuing_trading")
+                self.snapshot["session_pause_ignored"] = True
+            else:
+                return await _reject("session_tracker_pause", state=BotState.PAUSED, cooldown="SESSION_TRACKER_PAUSE")
         self.snapshot["session_streak"] = session_stats.current_streak
         self.snapshot["session_recommendation"] = session_stats.recommendation
 
@@ -1295,13 +1385,17 @@ class BotEngine:
             atr=atr,
         )
         self.logger.info(f"trade_controls: risk_per_trade_fraction={trade_controls.get('risk_per_trade_fraction')} max_trade_balance_fraction={trade_controls.get('max_trade_balance_fraction')}")
+        
+        # Get position size multiplier from market adaptation
+        market_size_mult = self.market_adaptation.get_position_size_multiplier()
+        
         execution_soft_multiplier = max(_as_float(analysis.get("execution_soft_multiplier"), 1.0), 0.20)
         runtime_soft_multiplier = (
             max(float(spread_gate["size_multiplier"]), 0.20)
             * max(float(cost_gate["size_multiplier"]), 0.20)
             * pullback_multiplier
         )
-        total_soft_multiplier = execution_soft_multiplier * runtime_soft_multiplier
+        total_soft_multiplier = execution_soft_multiplier * runtime_soft_multiplier * market_size_mult
         qty = self.calculate_position_size(
             price,
             stop_loss,
@@ -1406,6 +1500,11 @@ class BotEngine:
                 await self._log("WARNING", f"order_status_unusual status={order_status}")
             if filled_qty > 0 and abs(filled_qty - qty) / max(qty,1e-9) > 0.01:
                 await self._log("WARNING", f"order_partial_fill requested={qty} filled={filled_qty}")
+                # Use actual filled quantity for position tracking
+                qty = filled_qty
+                self.snapshot["partial_fill"] = True
+                self.snapshot["filled_qty"] = filled_qty
+                self.snapshot["requested_qty"] = qty
         except Exception as exc:
             print(f">>>> ORDER FAILED: {exc}")
             await self._log("ERROR", f"order_rejected error={exc}")
@@ -1415,6 +1514,8 @@ class BotEngine:
         entry = _as_float(order.get("average"), _as_float(order.get("price"), price))
         slippage_ratio = abs(entry - price) / max(price, 1e-9)
         if slippage_ratio > _as_float(self.settings.max_slippage_ratio, 0.003):
+            auto_pause_on_slippage = bool(getattr(self.settings, "auto_pause_on_slippage", False))
+            disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
             await self._log("ERROR", f"slippage_too_high slippage_ratio={slippage_ratio:.6f}")
             try:
                 close_side = "sell" if side == "BUY" else "buy"
@@ -1422,7 +1523,10 @@ class BotEngine:
                 await self.client.create_market_order(self.symbol, close_side, qty, client_order_id=close_intent)
             except ccxt.BaseError as exc:
                 await self.repository.record_error(self.state.value, "slippage_exit", str(exc))
-            self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=15)
+            if auto_pause_on_slippage and not disable_auto_pause:
+                self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=15)
+            else:
+                await self._log("WARNING", f"slippage_auto_pause_bypassed continuing_trading auto_pause_disabled=True")
             return
 
         stop_loss, take_profit = self._build_stops(
@@ -1622,7 +1726,7 @@ class BotEngine:
                     exit_reason = intelligence.reason
                     await self._record_exit_intelligence_event(position, intelligence)
             if exit_reason is None:
-                exit_reason = self.position_manager.check_exit(position, price)
+                exit_reason = await self.position_manager.check_exit(position, price)
             if not exit_reason:
                 continue
 
@@ -1812,7 +1916,7 @@ class BotEngine:
         )
         # Cleanup smart stop tracking
         self.smart_stop_engine.cleanup_position(str(position.trade_id))
-        self.position_manager.close(position.trade_id)
+        await self.position_manager.close(position.trade_id)
         self._recent_pnls.append(pnl)
         self.session_tracker.record(pnl)
         if len(self._recent_pnls) > 20:
@@ -2033,13 +2137,24 @@ class BotEngine:
         self, side: str, entry: float, atr: float, regime: str = "NORMAL_VOLATILITY"
     ) -> tuple[float, float]:
         atr = max(atr, entry * 0.002)
+        
+        # Get adapted stop/take from market adaptation
+        sl_mult, tp_mult = self.market_adaptation.get_stop_take_multiplier()
+        
+        # Override with regime-specific if more aggressive
         regime_upper = regime.upper()
         if "HIGH" in regime_upper:
-            sl_mult, tp_mult = 1.2, 2.4
+            sl_mult = max(sl_mult, 1.2)
+            tp_mult = max(tp_mult, 2.4)
         elif "LOW" in regime_upper:
-            sl_mult, tp_mult = 1.8, 3.0
-        else:
-            sl_mult, tp_mult = 1.5, 2.5
+            sl_mult = max(sl_mult, 1.8)
+            tp_mult = max(tp_mult, 3.0)
+        
+        # Apply scalping mode adjustments
+        if self.market_adaptation.scalping_mode:
+            # Tighter stops for scalping
+            sl_mult = min(sl_mult, 1.2)
+            tp_mult = min(tp_mult, 1.5)
 
         if side == "BUY":
             stop_loss = self.order_manager.normalize_price(entry - sl_mult * atr)
@@ -2047,6 +2162,12 @@ class BotEngine:
         else:
             stop_loss = self.order_manager.normalize_price(entry + sl_mult * atr)
             take_profit = self.order_manager.normalize_price(entry - tp_mult * atr)
+        
+        # Log the stop/take for debugging
+        self.snapshot["stop_loss_atr_mult"] = sl_mult
+        self.snapshot["take_profit_atr_mult"] = tp_mult
+        self.snapshot["scalping_mode"] = self.market_adaptation.scalping_mode
+        
         return stop_loss, take_profit
 
     def _update_loss_protection(self, pnl: float) -> bool:
@@ -2055,10 +2176,23 @@ class BotEngine:
         else:
             self.consecutive_losses = 0
 
+        auto_pause_on_losses = bool(getattr(self.settings, "auto_pause_on_consecutive_losses", False))
+        disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+        
         if self.consecutive_losses >= self._effective_loss_pause_after_consecutive():
-            self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self._effective_loss_pause_minutes())
-            self.consecutive_losses = 0
-            return True
+            if auto_pause_on_losses and not disable_auto_pause:
+                self.pause_trading_until = datetime.now(timezone.utc) + timedelta(minutes=self._effective_loss_pause_minutes())
+                self.consecutive_losses = 0
+                return True
+            else:
+                self.logger.warning(
+                    "consecutive_losses_reached count=%d threshold=%d auto_pause_disabled=True",
+                    self.consecutive_losses,
+                    self._effective_loss_pause_after_consecutive(),
+                )
+                self.snapshot["consecutive_loss_warning"] = self.consecutive_losses
+                self.consecutive_losses = 0
+                return False
         return False
 
     async def _persist_signal(
@@ -2895,9 +3029,16 @@ class BotEngine:
         except Exception:
             pass  # Fall back to profile default
         
+        # Get adapted confidence from MarketAdaptation
+        adapted = self.market_adaptation.get_adjusted_params()
+        adapted_confidence = adapted.get("confidence_min", profile_confidence)
+        
+        # Use the lower of adapted and profile for more opportunities
+        effective_confidence = min(adapted_confidence, profile_confidence)
+        
         if self.runtime_confidence_threshold is not None:
             return self.runtime_confidence_threshold
-        return max(profile_confidence, base_confidence)
+        return max(effective_confidence, base_confidence * 0.7)  # Allow 30% reduction in stable markets
 
     def _effective_max_spread_ratio(self) -> float:
         return min(float(getattr(self.settings, "max_spread_ratio", 0.004)), float(self._current_capital_profile().max_spread_ratio))
@@ -3074,10 +3215,79 @@ class BotEngine:
     def _roll_day(self) -> None:
         today = datetime.now(timezone.utc).date()
         if today != self.day_marker:
+            asyncio.create_task(self._save_daily_stats())
             self.day_marker = today
             self.trades_today = 0
             self.win_count = 0
             asyncio.create_task(self.repository.cleanup_old_logs(keep_days=7))
+
+    async def _save_daily_stats(self) -> None:
+        try:
+            daily_pnl = float(self.snapshot.get("daily_pnl", 0) or 0)
+            session_pnl = float(self.snapshot.get("session_pnl", 0) or 0)
+            await self.repository.save_daily_stats(
+                symbol=self.symbol,
+                daily_pnl=daily_pnl,
+                session_pnl=session_pnl,
+                trades_count=self.trades_today,
+                wins=self.win_count,
+                losses=max(0, self.trades_today - self.win_count),
+                starting_balance=float(self.starting_equity or 0),
+                ending_balance=float(self.snapshot.get("equity", 0) or 0),
+                peak_balance=float(self.equity_peak or 0),
+                max_drawdown=float(self.snapshot.get("max_drawdown", 0) or 0),
+            )
+            self.logger.info(f"Daily stats saved: pnl={daily_pnl:.2f} trades={self.trades_today}")
+        except Exception as e:
+            self.logger.error(f"Failed to save daily stats: {e}")
+
+    async def _save_bot_config(self) -> None:
+        try:
+            config = {
+                "symbol": self.symbol,
+                "symbols": self.symbols,
+                "investment_mode": self.runtime_investment_mode,
+                "risk_per_trade_fraction": self.runtime_risk_per_trade_fraction,
+                "max_trade_balance_fraction": self.runtime_max_trade_balance_fraction,
+                "capital_limit_usdt": self.runtime_capital_limit_usdt,
+                "capital_reserve_ratio": self.runtime_capital_reserve_ratio,
+                "min_cash_buffer_usdt": self.runtime_min_cash_buffer_usdt,
+                "dynamic_exit_enabled": self.runtime_dynamic_exit_enabled,
+                "confidence_boost_multiplier": self.runtime_confidence_boost_multiplier,
+                "filter_config": dict(self.runtime_filter_config),
+                "symbol_capital_limits": self.runtime_symbol_capital_limits,
+                "trades_today": self.trades_today,
+                "win_count": self.win_count,
+                "consecutive_losses": self.consecutive_losses,
+                "equity_peak": float(self.equity_peak or 0),
+                "starting_equity": float(self.starting_equity or 0),
+            }
+            await self.repository.save_config(config)
+            await self.repository.set_runtime_setting("last_symbol", self.symbol)
+        except Exception as e:
+            self.logger.error(f"Failed to save bot config: {e}")
+
+    async def _restore_bot_config(self) -> None:
+        try:
+            config = await self.repository.load_config()
+            if config:
+                last_symbol = config.get("symbol") or await self.repository.get_bot_state("last_symbol")
+                if last_symbol and isinstance(last_symbol, str):
+                    normalized = normalize_symbol(last_symbol)
+                    if normalized != self.symbol:
+                        self.logger.info(f"Restoring last traded symbol: {normalized}")
+                        self.symbol = normalized
+                        self.order_manager = OrderManager(self.client, self.symbol)
+                        self.market_stream = MarketStream(self.client, self.symbol, self.settings.history_limit)
+                
+                if config.get("investment_mode"):
+                    self.runtime_investment_mode = config["investment_mode"]
+                if config.get("equity_peak"):
+                    self.equity_peak = float(config["equity_peak"])
+                self.snapshot["restored_config"] = True
+                self.logger.info("Bot configuration restored from database")
+        except Exception as e:
+            self.logger.error(f"Failed to restore bot config: {e}")
 
     def _is_cooldown_complete(self) -> bool:
         if self.last_close_time is None:
@@ -3126,6 +3336,16 @@ class BotEngine:
             }
             for position in list(getattr(self.position_manager, "positions", []) or [])
         ]
+        self.snapshot["auto_pause_disabled"] = bool(getattr(self.settings, "disable_auto_pause", True))
+        self.snapshot["pause_states"] = {
+            "manual_pause": bool(self.manual_pause),
+            "emergency_stop": bool(self.emergency_stop_active),
+            "user_paused": bool(self.snapshot.get("user_paused", False)),
+            "drawdown_pause": bool(self.trading_paused_by_drawdown),
+            "loss_pause": bool(self.pause_trading_until and datetime.now(timezone.utc) < self.pause_trading_until),
+            "exchange_pause": bool(self.exchange_failure_paused_until and datetime.now(timezone.utc) < self.exchange_failure_paused_until),
+            "cooldown_active": not self._is_cooldown_complete(),
+        }
         if not self.state_manager:
             return
         try:
@@ -3285,14 +3505,25 @@ class BotEngine:
         self.observability.record_reconnection()
         if self.exchange_failure_count < self.exchange_failure_max:
             return
-        self.exchange_failure_paused_until = datetime.now(timezone.utc) + timedelta(seconds=self.exchange_failure_cooldown_seconds)
+        auto_pause_on_exchange = bool(getattr(self.settings, "auto_pause_on_exchange_failure", False))
+        disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
+        
+        if auto_pause_on_exchange and not disable_auto_pause:
+            self.exchange_failure_paused_until = datetime.now(timezone.utc) + timedelta(seconds=self.exchange_failure_cooldown_seconds)
+            self.snapshot["cooldown"] = "EXCHANGE_CIRCUIT_BREAKER"
+            self.observability.record_circuit_breaker_trip()
+            self.logger.critical(
+                "exchange_circuit_breaker_triggered pause_until=%s",
+                self.exchange_failure_paused_until.isoformat(timespec="seconds"),
+            )
+        else:
+            self.snapshot["exchange_failure_count"] = self.exchange_failure_count
+            self.snapshot["exchange_circuit_breaker_ignored"] = True
+            self.logger.warning(
+                "exchange_failures_detected count=%d auto_pause_disabled=True continuing_operation",
+                self.exchange_failure_count,
+            )
         self.exchange_failure_count = 0
-        self.snapshot["cooldown"] = "EXCHANGE_CIRCUIT_BREAKER"
-        self.observability.record_circuit_breaker_trip()
-        self.logger.critical(
-            "exchange_circuit_breaker_triggered pause_until=%s",
-            self.exchange_failure_paused_until.isoformat(timespec="seconds"),
-        )
 
     def _refresh_observability_snapshot(self) -> None:
         metrics = self.observability.snapshot()
@@ -3674,13 +3905,16 @@ class BotEngine:
         return calibrated
 
     def _effective_adx_threshold(self) -> float:
-        return self.runtime_filter_config.get("adx_threshold", 10.0)
+        adapted = self.market_adaptation.get_adjusted_params()
+        return adapted.get("adx_threshold", self.runtime_filter_config.get("adx_threshold", 10.0))
 
     def _effective_rsi_buy_threshold(self) -> float:
-        return self.runtime_filter_config.get("rsi_buy_threshold", 40.0)
+        adapted = self.market_adaptation.get_adjusted_params()
+        return adapted.get("rsi_buy_threshold", self.runtime_filter_config.get("rsi_buy_threshold", 58.0))
 
     def _effective_rsi_sell_threshold(self) -> float:
-        return self.runtime_filter_config.get("rsi_sell_threshold", 60.0)
+        adapted = self.market_adaptation.get_adjusted_params()
+        return adapted.get("rsi_sell_threshold", self.runtime_filter_config.get("rsi_sell_threshold", 42.0))
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:
