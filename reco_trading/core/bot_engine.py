@@ -1437,6 +1437,15 @@ class BotEngine:
             )
         )
 
+        # Initialize smart stop tracking for this position
+        self.smart_stop_engine.initialize_position(
+            position_id=str(trade.id),
+            entry_price=entry,
+            initial_stop=stop_loss,
+            atr=max(atr, entry * 0.002),
+            side=side,
+        )
+
         self.trades_today += 1
         self.snapshot["trades_today"] = self.trades_today
         self.snapshot["last_trade"] = f"{side} @ {entry:.2f}"
@@ -1530,8 +1539,50 @@ class BotEngine:
             self.snapshot["open_position_sl"] = position.stop_loss
             self.snapshot["open_position_tp"] = position.take_profit
 
+            # Smart Stop Engine - Dynamic stop loss management
+            smart_stop_decision = self.smart_stop_engine.evaluate(
+                position_id=str(position.trade_id),
+                current_price=price,
+                entry_price=position.entry_price,
+                atr=used_atr,
+                side=position.side,
+                current_stop=position.stop_loss,
+                equity=float(self.snapshot.get("equity", self.snapshot.get("balance", 1000.0))),
+                position_value=abs(position.quantity * price),
+                market_data=market_data,
+            )
+            if smart_stop_decision.should_update and smart_stop_decision.new_stop_price:
+                new_stop = smart_stop_decision.new_stop_price
+                # Only update if it improves the stop
+                if position.side == "BUY" and new_stop > position.stop_loss:
+                    position.stop_loss = new_stop
+                    self.snapshot["open_position_sl"] = new_stop
+                    await self._log("INFO", f"smart_stop_updated trade_id={position.trade_id} type={smart_stop_decision.stop_type} new_sl={new_stop:.6f} reason={smart_stop_decision.reason}")
+                elif position.side == "SELL" and new_stop < position.stop_loss:
+                    position.stop_loss = new_stop
+                    self.snapshot["open_position_sl"] = new_stop
+                    await self._log("INFO", f"smart_stop_updated trade_id={position.trade_id} type={smart_stop_decision.stop_type} new_sl={new_stop:.6f} reason={smart_stop_decision.reason}")
+                elif smart_stop_decision.stop_type == "emergency":
+                    position.stop_loss = new_stop
+                    self.snapshot["open_position_sl"] = new_stop
+                    await self._log("WARNING", f"smart_stop_EMERGENCY trade_id={position.trade_id} new_sl={new_stop:.6f} urgency={smart_stop_decision.urgency}")
+            
+            # Check for emergency exit from SmartStopEngine
+            should_emergency_exit, emergency_reason = self.smart_stop_engine.should_emergency_exit(
+                position_id=str(position.trade_id),
+                current_price=price,
+                entry_price=position.entry_price,
+                side=position.side,
+                market_data=market_data,
+            )
+            if should_emergency_exit:
+                self.snapshot["smart_stop_stats"]["emergency_exits"] = self.snapshot.get("smart_stop_stats", {}).get("emergency_exits", 0) + 1
+
             structure_exit_reason = self._detect_structure_exit(position, market_data, price, used_atr)
             exit_reason = self._resolve_structure_exit_signal(position, structure_exit_reason)
+            if exit_reason is None and should_emergency_exit:
+                exit_reason = emergency_reason
+                await self._log("WARNING", f"smart_stop_emergency_exit trade_id={position.trade_id} reason={emergency_reason}")
             if exit_reason is None and auto_stop_enabled and position.entry_timestamp_ms:
                 age_minutes = (time.time() * 1000 - float(position.entry_timestamp_ms)) / 60000.0
                 if age_minutes >= max_duration_minutes:
@@ -1740,6 +1791,8 @@ class BotEngine:
             exit_reason,
             exit_slippage_ratio=exit_slippage_ratio,
         )
+        # Cleanup smart stop tracking
+        self.smart_stop_engine.cleanup_position(str(position.trade_id))
         self.position_manager.close(position.trade_id)
         self._recent_pnls.append(pnl)
         self.session_tracker.record(pnl)
@@ -1763,6 +1816,10 @@ class BotEngine:
                 "exit_reason": exit_reason,
             })
             self.logger.info(f"Trade recorded for auto-improvement: PnL={pnl:.4f}, Duration={duration_minutes:.1f}min")
+        
+        # Record trade for IntelligentCapitalManager
+        self.intelligent_capital_manager.record_trade(pnl, pnl > 0)
+        self.intelligent_capital_manager.update_capital(_as_float(self.snapshot.get("equity"), 1000.0))
         
         # Record trade for SelfAnalyzer
         if self.self_analyzer.enabled:
@@ -2771,6 +2828,18 @@ class BotEngine:
 
     def _effective_risk_per_trade_fraction(self) -> float:
         profile_fraction = self._current_capital_profile().risk_per_trade_fraction
+        
+        # Get adaptive parameters from IntelligentCapitalManager
+        try:
+            equity = self._equity_reference_usdt()
+            self.intelligent_capital_manager.update_capital(equity)
+            adaptive_params = self.intelligent_capital_manager.get_effective_parameters()
+            intelligent_risk = adaptive_params.get("risk_per_trade", profile_fraction)
+            # Use the more conservative (lower) risk
+            profile_fraction = min(profile_fraction, intelligent_risk)
+        except Exception:
+            pass  # Fall back to profile default
+        
         if self.runtime_risk_per_trade_fraction is not None:
             return min(self.runtime_risk_per_trade_fraction, profile_fraction)
         return min(float(self.settings.risk_per_trade_fraction), profile_fraction)
@@ -2782,9 +2851,20 @@ class BotEngine:
         return min(float(self.settings.max_trade_balance_fraction), profile_fraction)
 
     def _effective_min_signal_confidence(self) -> float:
+        base_confidence = float(self.settings.confidence_threshold)
+        profile_confidence = float(self._current_capital_profile().min_confidence)
+        
+        # Get adaptive parameters from IntelligentCapitalManager
+        try:
+            adaptive_params = self.intelligent_capital_manager.get_effective_parameters()
+            intelligent_confidence = adaptive_params.get("min_confidence", profile_confidence)
+            profile_confidence = max(profile_confidence, intelligent_confidence)
+        except Exception:
+            pass  # Fall back to profile default
+        
         if self.runtime_confidence_threshold is not None:
             return self.runtime_confidence_threshold
-        return max(float(self._current_capital_profile().min_confidence), float(self.settings.confidence_threshold))
+        return max(profile_confidence, base_confidence)
 
     def _effective_max_spread_ratio(self) -> float:
         return min(float(getattr(self.settings, "max_spread_ratio", 0.004)), float(self._current_capital_profile().max_spread_ratio))

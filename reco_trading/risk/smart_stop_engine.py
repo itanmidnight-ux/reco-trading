@@ -176,17 +176,54 @@ class SmartStopEngine:
         position_value: float,
         market_data: dict[str, Any] | None,
     ) -> SmartStopDecision:
-        """Aplica la estrategia de stop más apropiada."""
+        """
+        Aplica la estrategia de stop más apropiada basada en:
+        - Profit level (R multiple)
+        - Volatility regime
+        - Time in trade
+        - Capital size
+        - Giveback from peak
+        """
 
         capital_ratio = min(position_value / max(equity, 1.0), 1.0)
         is_small_capital = equity < 50.0
+        is_medium_capital = 50.0 <= equity < 500.0
         
+        # More conservative for small capital
         if is_small_capital:
-            conservative_multiplier = 0.7
+            conservative_multiplier = 0.6
+        elif is_medium_capital:
+            conservative_multiplier = 0.85
         else:
             conservative_multiplier = 1.0
+        
+        # Adjust thresholds based on volatility regime
+        profit_lock_threshold = self.config.profit_lock_trigger_r
+        trailing_threshold = self.config.trailing_activation_profit_r
+        breakeven_threshold = self.config.break_even_trigger_profit_r
+        
+        # In high volatility, require more profit before locking/profit taking
+        if volatility_factor > 1.1:
+            profit_lock_threshold *= 1.15
+            trailing_threshold *= 1.1
+        # In low volatility, be more aggressive with locking profits
+        elif volatility_factor < 0.95:
+            profit_lock_threshold *= 0.9
+            trailing_threshold *= 0.85
+        
+        # High giveback requires immediate action
+        if giveback_r > 0.5:
+            return self._emergency_protection_stop(
+                side=side,
+                entry_price=entry_price,
+                current_price=current_price,
+                atr=atr,
+                giveback_r=giveback_r,
+                profit_r=profit_r,
+            )
 
-        if profit_r >= self.config.profit_lock_trigger_r:
+        # Profit lock (highest priority - we have good profits)
+        if profit_r >= profit_lock_threshold:
             return self._profit_lock_stop(
                 side=side,
                 entry_price=entry_price,
@@ -199,7 +236,8 @@ class SmartStopEngine:
                 conservative_multiplier=conservative_multiplier,
             )
 
-        if profit_r >= self.config.trailing_activation_profit_r:
+        # Trailing stop (good profit, follow the trend)
+        if profit_r >= trailing_threshold:
             return self._trailing_stop(
                 side=side,
                 entry_price=entry_price,
@@ -213,7 +251,8 @@ class SmartStopEngine:
                 conservative_multiplier=conservative_multiplier,
             )
 
-        if profit_r >= self.config.break_even_trigger_profit_r:
+        # Break-even stop (modest profit, protect capital)
+        if profit_r >= breakeven_threshold:
             return self._break_even_stop(
                 side=side,
                 entry_price=entry_price,
@@ -224,6 +263,7 @@ class SmartStopEngine:
                 conservative_multiplier=conservative_multiplier,
             )
 
+        # Time decay (position has been open too long without progress)
         if time_factor > 0.0:
             return self._time_decay_stop(
                 side=side,
@@ -235,6 +275,7 @@ class SmartStopEngine:
                 profit_r=profit_r,
             )
 
+        # Dynamic ATR stop (default)
         return self._dynamic_atr_stop(
             side=side,
             entry_price=entry_price,
@@ -243,6 +284,45 @@ class SmartStopEngine:
             atr=atr,
             volatility_factor=volatility_factor,
             profit_r=profit_r,
+        )
+
+    def _emergency_protection_stop(
+        self,
+        side: str,
+        entry_price: float,
+        current_price: float,
+        atr: float,
+        giveback_r: float,
+        profit_r: float,
+    ) -> SmartStopDecision:
+        """
+        Emergency stop when price has given back too much from peak.
+        Tightens stop aggressively to protect remaining profit.
+        """
+        # Lock in remaining profit minus a buffer
+        remaining_profit_ratio = max(0.1, profit_r - giveback_r * 0.5)
+        
+        if side == "BUY":
+            # Protect at least remaining_profit_ratio of the peak gain
+            gain_from_entry = current_price - entry_price
+            protected_gain = gain_from_entry * remaining_profit_ratio
+            new_stop = entry_price + protected_gain
+        else:
+            gain_from_entry = entry_price - current_price
+            protected_gain = gain_from_entry * remaining_profit_ratio
+            new_stop = entry_price - protected_gain
+        
+        return SmartStopDecision(
+            should_update=True,
+            new_stop_price=round(new_stop, 8),
+            stop_type=StopType.EMERGENCY.value,
+            reason=f"EMERGENCY: High giveback ({giveback_r:.1%}), protecting remaining profit",
+            urgency=1.0,
+            metadata={
+                "giveback_r": giveback_r,
+                "profit_r": profit_r,
+                "remaining_profit_ratio": remaining_profit_ratio,
+            }
         )
 
     def _profit_lock_stop(
@@ -333,9 +413,9 @@ class SmartStopEngine:
                     f"Trailing stop higher than current: new={new_stop:.6f} vs current={current_stop:.6f}",
                     0.0
                 )
-            
-            min_profit_stop = entry_price + (atr * 0.3)
-            new_stop = max(new_stop, min_profit_stop)
+            if profit_r > 0.1:
+                min_profit_stop = entry_price + max(atr * profit_r * 0.3, atr * 0.5)
+                new_stop = max(new_stop, min_profit_stop)
         else:
             new_stop = peak + trail_distance
             if new_stop >= current_stop:
@@ -344,9 +424,9 @@ class SmartStopEngine:
                     f"Trailing stop lower than current: new={new_stop:.6f} vs current={current_stop:.6f}",
                     0.0
                 )
-            
-            min_profit_stop = entry_price - (atr * 0.3)
-            new_stop = min(new_stop, min_profit_stop)
+            if profit_r > 0.1:
+                min_profit_stop = entry_price - max(atr * profit_r * 0.3, atr * 0.5)
+                new_stop = min(new_stop, min_profit_stop)
 
         urgency = min(0.7 + giveback_r * 0.3, 1.0) if giveback_r > 0 else 0.5
 
@@ -376,30 +456,41 @@ class SmartStopEngine:
     ) -> SmartStopDecision:
         """Mueve stop a break-even con pequeño buffer."""
 
-        buffer_r = self.config.break_even_buffer_profit_r * conservative_multiplier
+        buffer_pct = self.config.break_even_buffer_profit_r * conservative_multiplier * 0.01
+        buffer_pct = max(buffer_pct, 0.001)
         
         if side == "BUY":
-            new_stop = entry_price * (1 + buffer_r * 0.01)
+            new_stop = entry_price * (1 + buffer_pct)
             if current_stop >= entry_price:
                 return SmartStopDecision(
                     False, None, StopType.BREAK_EVEN.value,
                     "Already at or above break-even", 0.0
                 )
+            if new_stop <= current_stop:
+                return SmartStopDecision(
+                    False, None, StopType.BREAK_EVEN.value,
+                    f"Break-even not improving stop: new={new_stop:.6f} vs current={current_stop:.6f}", 0.0
+                )
         else:
-            new_stop = entry_price * (1 - buffer_r * 0.01)
+            new_stop = entry_price * (1 - buffer_pct)
             if current_stop <= entry_price:
                 return SmartStopDecision(
                     False, None, StopType.BREAK_EVEN.value,
                     "Already at or below break-even", 0.0
+                )
+            if new_stop >= current_stop:
+                return SmartStopDecision(
+                    False, None, StopType.BREAK_EVEN.value,
+                    f"Break-even not improving stop: new={new_stop:.6f} vs current={current_stop:.6f}", 0.0
                 )
 
         return SmartStopDecision(
             should_update=True,
             new_stop_price=round(new_stop, 8),
             stop_type=StopType.BREAK_EVEN.value,
-            reason=f"Break-even stop with {buffer_r:.1f}% buffer",
+            reason=f"Break-even stop with {buffer_pct*100:.2f}% buffer",
             urgency=0.6,
-            metadata={"buffer_pct": buffer_r}
+            metadata={"buffer_pct": buffer_pct * 100}
         )
 
     def _time_decay_stop(
@@ -483,22 +574,29 @@ class SmartStopEngine:
         atr: float,
         price: float,
     ) -> float:
-        """Calcula factor de ajuste por volatilidad."""
+        """
+        Calcula factor de ajuste por volatilidad.
+        
+        Higher volatility = wider stops (more room for price movement)
+        Lower volatility = tighter stops (less room needed)
+        """
         if not self.config.volatility_adjustment:
             return 1.0
 
         atr_ratio = atr / max(price, 1e-9)
 
+        # Low volatility (tight stops - market is calm)
         if atr_ratio < 0.003:
             return 0.85
         elif atr_ratio < 0.008:
             return 0.95
         elif atr_ratio < 0.015:
             return 1.0
+        # High volatility (wider stops - market is volatile)
         elif atr_ratio < 0.025:
-            return 1.1
+            return 1.15
         else:
-            return 1.25
+            return 1.30
 
     def _calculate_time_factor(self, position_id: str) -> float:
         """Calcula factor de decay temporal."""

@@ -332,12 +332,17 @@ def _get_repository_from_context() -> Repository | None:
         return None
 
 
-def _fetch_trades(limit: int = 200) -> tuple[list[Any], str]:
+def _fetch_trades(limit: int = 200, status_filter: str | None = None, symbol: str | None = None) -> tuple[list[Any], str]:
+    """Fetch trades from database with optional status and symbol filters."""
     repository = _get_repository_from_context()
     if repository is None or not hasattr(repository, "get_trades"):
         return [], "snapshot"
     try:
-        trades = _run_async(repository.get_trades(limit=limit))
+        trades = _run_async(repository.get_trades(
+            limit=limit,
+            status_filter=status_filter,
+            symbol=symbol
+        ))
         if not isinstance(trades, list):
             return [], "snapshot"
         return trades, "database"
@@ -978,27 +983,218 @@ def create_app() -> Flask:
     @_require_auth
     def api_trades():
         try:
-            trades, source = _fetch_trades(limit=200)
-            if source == "database":
+            status_filter = request.args.get("status", "").upper() or None
+            symbol = request.args.get("symbol", "").upper() or None
+            limit = min(int(request.args.get("limit", 200)), 500)
+            offset = int(request.args.get("offset", 0))
+            
+            # Use status_filter for OPEN/CLOSED trades
+            if status_filter and status_filter not in ("OPEN", "CLOSED"):
+                status_filter = None
+            
+            trades, source = _fetch_trades(limit=limit, status_filter=status_filter, symbol=symbol)
+            
+            if source == "database" and trades:
                 trade_rows = []
                 for t in trades:
-                    trade_rows.append(
-                        {
-                            "id": str(t.id),
-                            "symbol": t.symbol,
-                            "side": t.side,
-                            "entry_price": float(t.entry_price or 0.0),
-                            "current_price": float(t.exit_price or t.entry_price or 0.0),
-                            "quantity": float(t.quantity or 0.0),
-                            "pnl": float(t.pnl or 0.0),
-                            "status": str(t.status or "").lower(),
-                            "created_at": (t.timestamp.isoformat() if t.timestamp else datetime.now().isoformat()),
-                        }
-                    )
-                return jsonify({"trades": trade_rows})
-            return jsonify({"trades": []})
+                    pnl = float(t.pnl or 0.0)
+                    exit_price = float(t.exit_price or 0.0) if t.exit_price else float(t.entry_price or 0.0)
+                    entry_price = float(t.entry_price or 0.0)
+                    quantity = float(t.quantity or 0.0)
+                    
+                    # Calculate PnL percentage
+                    if entry_price > 0 and quantity > 0:
+                        pnl_pct = (pnl / (entry_price * quantity)) * 100
+                    else:
+                        pnl_pct = 0.0
+                    
+                    # Calculate duration
+                    if t.close_timestamp and t.timestamp:
+                        duration_seconds = (t.close_timestamp - t.timestamp).total_seconds()
+                        duration_minutes = int(duration_seconds / 60)
+                        if duration_minutes >= 60:
+                            duration_str = f"{duration_minutes // 60}h {duration_minutes % 60}m"
+                        else:
+                            duration_str = f"{duration_minutes}m"
+                    elif t.timestamp:
+                        from datetime import datetime, timezone
+                        duration_seconds = (datetime.now(timezone.utc) - t.timestamp).total_seconds()
+                        duration_minutes = int(duration_seconds / 60)
+                        if duration_minutes >= 60:
+                            duration_str = f"{duration_minutes // 60}h {duration_minutes % 60}m"
+                        else:
+                            duration_str = f"{duration_minutes}m"
+                    else:
+                        duration_str = "-"
+                    
+                    # Calculate risk/reward ratio
+                    if t.stop_loss and t.take_profit and entry_price > 0:
+                        risk = abs(entry_price - float(t.stop_loss))
+                        reward = abs(float(t.take_profit) - entry_price)
+                        rr_ratio = f"{(reward / risk):.2f}R" if risk > 0 else "-"
+                    else:
+                        rr_ratio = "-"
+                    
+                    trade_rows.append({
+                        "id": str(t.id),
+                        "symbol": t.symbol or "UNKNOWN",
+                        "side": t.side or "BUY",
+                        "entry_price": entry_price,
+                        "exit_price": exit_price,
+                        "current_price": exit_price,
+                        "quantity": quantity,
+                        "pnl": pnl,
+                        "pnl_pct": pnl_pct,
+                        "status": str(t.status or "CLOSED").lower(),
+                        "stop_loss": float(t.stop_loss or 0.0),
+                        "take_profit": float(t.take_profit or 0.0),
+                        "timestamp": (t.timestamp.isoformat() if t.timestamp else datetime.now().isoformat()),
+                        "created_at": (t.timestamp.isoformat() if t.timestamp else datetime.now().isoformat()),
+                        "close_timestamp": (t.close_timestamp.isoformat() if getattr(t, 'close_timestamp', None) and t.close_timestamp else None),
+                        "duration": duration_str,
+                        "rr_ratio": rr_ratio,
+                        "order_id": t.order_id,
+                    })
+                
+                # Sort by timestamp descending
+                trade_rows.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+                
+                return jsonify({
+                    "trades": trade_rows,
+                    "source": "database",
+                    "total": len(trade_rows),
+                    "limit": limit,
+                    "offset": offset
+                })
+            
+            return jsonify({"trades": [], "source": "snapshot", "total": 0})
         except Exception as e:
             logger.error("Error getting trades: %s", e)
+            import traceback
+            traceback.print_exc()
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/trades/stats", methods=["GET"])
+    @_require_auth
+    def api_trade_stats():
+        """Get trade statistics from database."""
+        try:
+            repository = _get_repository_from_context()
+            if repository is None or not hasattr(repository, "get_trade_summary"):
+                return jsonify({"success": False, "error": "Database not available"}), 503
+            
+            summary = _run_async(repository.get_trade_summary())
+            
+            return jsonify({
+                "success": True,
+                "stats": {
+                    "total_trades": summary.get("total", 0),
+                    "open_trades": summary.get("open", 0),
+                    "closed_trades": summary.get("closed", 0),
+                    "realized_pnl": float(summary.get("realized_pnl", 0)),
+                    "win_rate": float(summary.get("win_rate", 0)),
+                    "wins": summary.get("wins", 0),
+                    "losses": summary.get("losses", 0),
+                }
+            })
+        except Exception as e:
+            logger.error("Error getting trade stats: %s", e)
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    @app.route("/api/db/status", methods=["GET"])
+    @_require_auth
+    def api_db_status():
+        """Check database connection status."""
+        try:
+            repository = _get_repository_from_context()
+            if repository is None:
+                return jsonify({
+                    "success": True,
+                    "connected": False,
+                    "message": "No repository available"
+                })
+            
+            # Try to get a few trades to verify connection
+            trades = _run_async(repository.get_trades(limit=1))
+            return jsonify({
+                "success": True,
+                "connected": True,
+                "message": f"Database connected, {len(trades)} trades visible"
+            })
+        except Exception as e:
+            logger.error("Database status check error: %s", e)
+            return jsonify({
+                "success": True,
+                "connected": False,
+                "message": str(e)
+            }), 500
+
+    @app.route("/api/positions", methods=["GET"])
+    @_require_auth
+    def api_positions():
+        """Get current open positions from bot and database."""
+        try:
+            positions = []
+            
+            # Get positions from bot instance
+            bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
+            if bot and hasattr(bot, 'position_manager'):
+                pm = bot.position_manager
+                if pm and hasattr(pm, 'positions') and pm.positions:
+                    for pos in pm.positions:
+                        positions.append({
+                            "trade_id": pos.trade_id,
+                            "symbol": getattr(bot, 'symbol', 'BTC/USDT'),
+                            "side": pos.side,
+                            "quantity": float(pos.quantity),
+                            "entry_price": float(pos.entry_price),
+                            "stop_loss": float(pos.stop_loss),
+                            "take_profit": float(pos.take_profit),
+                            "atr": float(pos.atr) if pos.atr else 0,
+                            "unrealized_pnl": 0.0,  # Will be calculated from current price
+                            "status": "OPEN",
+                            "timestamp": pos.entry_timestamp_ms / 1000 if pos.entry_timestamp_ms else None,
+                        })
+            
+            # Also get open positions from database
+            repository = _get_repository_from_context()
+            if repository:
+                db_trades = _run_async(repository.get_trades(limit=50, status_filter="OPEN"))
+                for t in db_trades:
+                    # Check if already in positions from bot
+                    if not any(p.get("trade_id") == t.id for p in positions):
+                        positions.append({
+                            "trade_id": t.id,
+                            "symbol": t.symbol,
+                            "side": t.side,
+                            "quantity": float(t.quantity),
+                            "entry_price": float(t.entry_price),
+                            "stop_loss": float(t.stop_loss or 0),
+                            "take_profit": float(t.take_profit or 0),
+                            "atr": 0,
+                            "unrealized_pnl": float(t.pnl or 0),
+                            "status": "OPEN",
+                            "timestamp": t.timestamp.isoformat() if t.timestamp else None,
+                        })
+            
+            # Calculate unrealized PnL from snapshot price
+            snapshot = get_bot_snapshot()
+            current_price = float(snapshot.get("price", snapshot.get("current_price", 0)))
+            
+            for pos in positions:
+                if current_price > 0 and pos["quantity"] > 0:
+                    if pos["side"] == "BUY":
+                        pos["unrealized_pnl"] = (current_price - pos["entry_price"]) * pos["quantity"]
+                    else:
+                        pos["unrealized_pnl"] = (pos["entry_price"] - current_price) * pos["quantity"]
+            
+            return jsonify({
+                "success": True,
+                "positions": positions,
+                "count": len(positions)
+            })
+        except Exception as e:
+            logger.error("Error getting positions: %s", e)
             return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/trades/<trade_id>/stop", methods=["POST"])
@@ -1756,7 +1952,17 @@ def run_server(host: str = '0.0.0.0', port: int = 9000) -> None:
     if actual_port != port:
         logger.warning(f"Port {port} was in use, using port {actual_port} instead")
 
-    logger.info(f"Starting web dashboard on http://{host}:{actual_port}")
+    # Print clear startup message
+    import sys
+    print("", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print("  WEB DASHBOARD STARTED", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print(f"  Local:   http://127.0.0.1:{actual_port}", file=sys.stderr)
+    print(f"  Network: http://0.0.0.0:{actual_port}", file=sys.stderr)
+    print("=" * 60, file=sys.stderr)
+    print("", file=sys.stderr)
+    logger.info(f"Web dashboard started on http://{host}:{actual_port}")
 
     app.run(host=host, port=actual_port, debug=False, use_reloader=False, threaded=True)
 

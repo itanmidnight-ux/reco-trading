@@ -556,9 +556,11 @@ function updateRisk(data) {
 
 async function loadTrades(filter = 'all') {
     try {
-        let url = '/api/trades?limit=100';
+        let url = '/api/trades?limit=200';
         if (filter === 'open') url += '&status=OPEN';
         else if (filter === 'closed') url += '&status=CLOSED';
+        else if (filter === 'wins') url += '&pnl_positive=true';
+        else if (filter === 'losses') url += '&pnl_negative=true';
         
         const r = await fetch(url, { headers: getHeaders() });
         const d = await r.json();
@@ -572,22 +574,30 @@ async function loadTrades(filter = 'all') {
             return;
         }
         
-        tradesData.forEach(trade => {
+        tradesData.forEach((trade, index) => {
             const pnl = trade.pnl || 0;
+            const pnlPct = trade.entry_price > 0 ? ((pnl / (trade.entry_price * trade.quantity)) * 100).toFixed(2) : '0.00';
             const status = (trade.status || 'CLOSED').toLowerCase();
             const side = (trade.side || '').toLowerCase();
+            const duration = trade.close_timestamp && trade.timestamp 
+                ? formatDuration(new Date(trade.close_timestamp) - new Date(trade.timestamp))
+                : (trade.timestamp ? formatDuration(Date.now() - new Date(trade.timestamp).getTime()) : '-');
             
             const row = document.createElement('tr');
+            row.className = pnl >= 0 ? 'trade-row-win' : 'trade-row-loss';
             row.innerHTML = `
-                <td>${formatTime(trade.timestamp || trade.created_at)}</td>
+                <td>${formatDateTime(trade.timestamp || trade.created_at)}</td>
                 <td class="pair-cell">${trade.symbol || '-'}</td>
                 <td><span class="signal-badge sig-${side}">${trade.side || '-'}</span></td>
                 <td>${formatPrice(trade.entry_price)}</td>
-                <td>${formatPrice(trade.exit_price || trade.current_price)}</td>
+                <td>${formatPrice(trade.exit_price || trade.current_price || '-')}</td>
                 <td>${formatQuantity(trade.quantity)}</td>
-                <td class="${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}</td>
+                <td class="${pnl >= 0 ? 'positive' : 'negative'}">
+                    <span class="pnl-main">${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}</span>
+                    <span class="pnl-pct">(${pnl >= 0 ? '+' : ''}${pnlPct}%)</span>
+                </td>
                 <td><span class="signal-badge sig-${status}">${trade.status || '-'}</span></td>
-                <td><button class="btn btn-sm btn-secondary" onclick='showTradeDetails(${JSON.stringify(trade)})'>Details</button></td>
+                <td><button class="btn btn-sm btn-secondary" onclick='showTradeDetails(${index})'>Details</button></td>
             `;
             tbody.appendChild(row);
         });
@@ -596,55 +606,109 @@ async function loadTrades(filter = 'all') {
     }
 }
 
-function showTradeDetails(trade) {
+function formatDuration(ms) {
+    if (!ms || ms < 0) return '-';
+    const seconds = Math.floor(ms / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    
+    if (days > 0) return `${days}d ${hours % 24}h`;
+    if (hours > 0) return `${hours}h ${minutes % 60}m`;
+    if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
+    return `${seconds}s`;
+}
+
+function showTradeDetails(index) {
+    const trade = tradesData[index];
+    if (!trade) return;
+    
     const modal = document.getElementById('tradeModal');
     const body = document.getElementById('tradeModalBody');
     
     const pnl = trade.pnl || 0;
+    const pnlPct = trade.entry_price > 0 ? ((pnl / (trade.entry_price * (trade.quantity || 1))) * 100).toFixed(2) : '0.00';
+    const duration = trade.close_timestamp && trade.timestamp 
+        ? formatDuration(new Date(trade.close_timestamp) - new Date(trade.timestamp))
+        : (trade.timestamp ? formatDuration(Date.now() - new Date(trade.timestamp).getTime()) : '-');
     
     body.innerHTML = `
         <div class="trade-detail-grid">
-            <div class="detail-row">
-                <span class="detail-label">Symbol</span>
-                <span class="detail-value">${trade.symbol}</span>
+            <div class="detail-section">
+                <h4>Trade Info</h4>
+                <div class="detail-row">
+                    <span class="detail-label">Trade ID</span>
+                    <span class="detail-value">${trade.id || '-'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Symbol</span>
+                    <span class="detail-value">${trade.symbol}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Side</span>
+                    <span class="detail-value ${trade.side === 'BUY' ? 'positive' : 'negative'}">${trade.side}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Status</span>
+                    <span class="detail-value"><span class="signal-badge sig-${(trade.status || 'closed').toLowerCase()}">${trade.status || 'CLOSED'}</span></span>
+                </div>
             </div>
-            <div class="detail-row">
-                <span class="detail-label">Side</span>
-                <span class="detail-value">${trade.side}</span>
+            <div class="detail-section">
+                <h4>Prices</h4>
+                <div class="detail-row">
+                    <span class="detail-label">Entry Price</span>
+                    <span class="detail-value">${formatPrice(trade.entry_price)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Exit Price</span>
+                    <span class="detail-value">${formatPrice(trade.exit_price || trade.current_price || '-')}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Stop Loss</span>
+                    <span class="detail-value stop-loss">${trade.stop_loss ? formatPrice(trade.stop_loss) : '-'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Take Profit</span>
+                    <span class="detail-value take-profit">${trade.take_profit ? formatPrice(trade.take_profit) : '-'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Quantity</span>
+                    <span class="detail-value">${formatQuantity(trade.quantity)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Position Size</span>
+                    <span class="detail-value">${formatCurrency((trade.quantity || 0) * (trade.entry_price || 0))}</span>
+                </div>
             </div>
-            <div class="detail-row">
-                <span class="detail-label">Entry Price</span>
-                <span class="detail-value">${formatPrice(trade.entry_price)}</span>
+            <div class="detail-section">
+                <h4>Performance</h4>
+                <div class="detail-row pnl-row">
+                    <span class="detail-label">PnL</span>
+                    <span class="detail-value ${pnl >= 0 ? 'positive' : 'negative'}">
+                        <span class="pnl-amount">${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}</span>
+                        <span class="pnl-percentage">(${pnl >= 0 ? '+' : ''}${pnlPct}%)</span>
+                    </span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Risk/Reward</span>
+                    <span class="detail-value">${trade.stop_loss && trade.take_profit ? calculateRR(trade.entry_price, trade.stop_loss, trade.take_profit) : '-'}</span>
+                </div>
             </div>
-            <div class="detail-row">
-                <span class="detail-label">Exit Price</span>
-                <span class="detail-value">${formatPrice(trade.exit_price || '-')}</span>
+            <div class="detail-section">
+                <h4>Time</h4>
+                <div class="detail-row">
+                    <span class="detail-label">Opened</span>
+                    <span class="detail-value">${formatDateTime(trade.timestamp || trade.created_at)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Closed</span>
+                    <span class="detail-value">${trade.close_timestamp ? formatDateTime(trade.close_timestamp) : '-'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Duration</span>
+                    <span class="detail-value">${duration}</span>
+                </div>
             </div>
-            <div class="detail-row">
-                <span class="detail-label">Quantity</span>
-                <span class="detail-value">${formatQuantity(trade.quantity)}</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">PnL</span>
-                <span class="detail-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatCurrency(pnl)}</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">Stop Loss</span>
-                <span class="detail-value">${formatPrice(trade.stop_loss)}</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">Take Profit</span>
-                <span class="detail-value">${formatPrice(trade.take_profit)}</span>
-            </div>
-            <div class="detail-row">
-                <span class="detail-label">Opened</span>
-                <span class="detail-value">${formatDateTime(trade.timestamp || trade.created_at)}</span>
-            </div>
-            ${trade.close_timestamp ? `
-            <div class="detail-row">
-                <span class="detail-label">Closed</span>
-                <span class="detail-value">${formatDateTime(trade.close_timestamp)}</span>
-            </div>` : ''}
         </div>
         ${trade.status === 'OPEN' ? `
         <div class="modal-actions">
@@ -653,6 +717,14 @@ function showTradeDetails(trade) {
     `;
     
     modal.classList.add('active');
+}
+
+function calculateRR(entry, stop, target) {
+    if (!stop || !target || !entry) return '-';
+    const riskPct = Math.abs(entry - stop) / entry;
+    const rewardPct = Math.abs(target - entry) / entry;
+    if (riskPct === 0) return '-';
+    return (rewardPct / riskPct).toFixed(2) + 'R';
 }
 
 function closeModal(id) {
@@ -695,23 +767,58 @@ function initMainChart() {
         candleSeries = null;
     }
     
+    const updateChartSize = () => {
+        const parent = container.parentElement;
+        const rect = parent ? parent.getBoundingClientRect() : { width: window.innerWidth - 40, height: window.innerHeight - 300 };
+        chartHeight = Math.max(400, Math.min(800, window.innerHeight - 250));
+        return {
+            width: rect.width || (window.innerWidth - 40),
+            height: chartHeight
+        };
+    };
+    
+    const dimensions = updateChartSize();
+    
     mainChart = LightweightCharts.createChart(container, {
-        width: container.clientWidth,
-        height: 500,
+        width: dimensions.width,
+        height: dimensions.height,
         layout: {
-            background: { color: '#151d2b' },
-            textColor: '#a0aec0',
+            background: { color: '#0f1419' },
+            textColor: '#8b949e',
+            fontSize: 12,
+            fontFamily: "'Inter', sans-serif",
         },
         grid: {
-            vertLines: { color: '#2a3441' },
-            horzLines: { color: '#2a3441' },
+            vertLines: { color: '#1c2128', style: 1 },
+            horzLines: { color: '#1c2128', style: 1 },
         },
         crosshair: {
             mode: LightweightCharts.CrosshairMode.Normal,
+            vertLine: {
+                color: '#3b82f6',
+                width: 1,
+                style: 2,
+                labelBackgroundColor: '#3b82f6',
+            },
+            horzLine: {
+                color: '#3b82f6',
+                width: 1,
+                style: 2,
+                labelBackgroundColor: '#3b82f6',
+            },
+        },
+        rightPriceScale: {
+            borderColor: '#2d333b',
+            scaleMargins: { top: 0.1, bottom: 0.2 },
         },
         timeScale: {
             timeVisible: true,
             secondsVisible: false,
+            borderColor: '#2d333b',
+            tickMarkFormatter: (time) => {
+                const date = new Date(time * 1000);
+                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            },
         },
     });
     
@@ -722,13 +829,24 @@ function initMainChart() {
         borderDownColor: '#ef4444',
         wickUpColor: '#10b981',
         wickDownColor: '#ef4444',
+        borderVisible: true,
+        wickVisible: true,
     });
     
     loadChartData();
     
+    const resizeObserver = new ResizeObserver(() => {
+        if (mainChart && container) {
+            const dim = updateChartSize();
+            mainChart.applyOptions({ width: dim.width, height: dim.height });
+        }
+    });
+    resizeObserver.observe(container.parentElement || container);
+    
     window.addEventListener('resize', () => {
         if (mainChart && container) {
-            mainChart.applyOptions({ width: container.clientWidth });
+            const dim = updateChartSize();
+            mainChart.applyOptions({ width: dim.width, height: dim.height });
         }
     });
 }

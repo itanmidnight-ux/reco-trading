@@ -1100,10 +1100,93 @@ body {
     border: 1px solid var(--border-primary);
     border-radius: var(--radius-lg);
     overflow: hidden;
+    height: calc(100vh - 200px);
+    min-height: 400px;
+    max-height: 800px;
+    display: flex;
+    flex-direction: column;
 }
 
 .main-chart {
-    height: 500px;
+    flex: 1;
+    min-height: 400px;
+    height: 100%;
+}
+
+/* Trade Details Modal */
+.trade-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 20px;
+}
+
+.detail-section {
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-md);
+    padding: 16px;
+}
+
+.detail-section h4 {
+    margin: 0 0 12px 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border-primary);
+    padding-bottom: 8px;
+}
+
+.pnl-row .detail-value {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.pnl-amount {
+    margin-right: 8px;
+}
+
+.pnl-percentage {
+    font-size: 14px;
+    opacity: 0.8;
+}
+
+.pnl-row .positive .pnl-amount { color: var(--accent-green); }
+.pnl-row .negative .pnl-amount { color: var(--accent-red); }
+
+.stop-loss { color: var(--accent-red); }
+.take-profit { color: var(--accent-green); }
+
+/* Trades Table Enhancements */
+.trades-table tr.trade-row-win {
+    background: rgba(16, 185, 129, 0.05);
+}
+
+.trades-table tr.trade-row-loss {
+    background: rgba(239, 68, 68, 0.05);
+}
+
+.trades-table tr.trade-row-win:hover {
+    background: rgba(16, 185, 129, 0.1);
+}
+
+.trades-table tr.trade-row-loss:hover {
+    background: rgba(239, 68, 68, 0.1);
+}
+
+.pnl-main { font-weight: 600; }
+
+.pnl-pct {
+    font-size: 11px;
+    opacity: 0.7;
+    margin-left: 4px;
+}
+
+/* Modal Actions */
+.modal-actions {
+    margin-top: 20px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
 }
 
 /* Strategy Tab */

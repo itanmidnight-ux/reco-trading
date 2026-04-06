@@ -48,7 +48,7 @@ def _join_bot_thread_or_exit(bot_thread: threading.Thread, logger: logging.Logge
 
 
 def _start_web_dashboard(logger: logging.Logger) -> None:
-    web_host = str(os.getenv("WEB_DASHBOARD_HOST", "127.0.0.1")).strip() or "127.0.0.1"
+    web_host = str(os.getenv("WEB_DASHBOARD_HOST", "0.0.0.0")).strip() or "0.0.0.0"
     web_port_raw = str(os.getenv("WEB_DASHBOARD_PORT", "9000")).strip()
     try:
         web_port = int(web_port_raw)
