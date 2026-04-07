@@ -3,33 +3,50 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, ClassVar
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Base(DeclarativeBase):
     """Base model for ORM tables."""
+    
+    # Add __table_args__ for better PostgreSQL compatibility
+    __table_args__ = {'extend_existing': True}
 
 
 class Trade(Base):
     __tablename__ = "trades"
+    __table_args__ = (
+        Index('ix_trades_symbol_timestamp', 'symbol', 'timestamp'),
+        Index('ix_trades_status_timestamp', 'status', 'timestamp'),
+        Index('ix_trades_close_timestamp', 'close_timestamp'),
+        {'extend_existing': True},
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
-    side: Mapped[str] = mapped_column(String(8))
+    side: Mapped[str] = mapped_column(String(8))  # BUY or SELL
     quantity: Mapped[float] = mapped_column(Float)
     entry_price: Mapped[float] = mapped_column(Float)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    close_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    close_timestamp: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     stop_loss: Mapped[float] = mapped_column(Float)
     take_profit: Mapped[float] = mapped_column(Float)
     pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="OPEN")
+    status: Mapped[str] = mapped_column(String(20), default="OPEN")  # OPEN, CLOSED, CANCELLED
     order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     entry_slippage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
     exit_slippage_ratio: Mapped[float | None] = mapped_column(Float, nullable=True)
-
+    pnl_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    entry_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    
     orders: Mapped[list["Order"]] = relationship("Order", back_populates="trade", lazy="immediate")
     custom_data: Mapped[list["CustomData"]] = relationship("CustomData", back_populates="trade", lazy="immediate")
 
@@ -37,9 +54,13 @@ class Trade(Base):
 class DailyStats(Base):
     """Daily trading statistics for persistence across restarts."""
     __tablename__ = "daily_stats"
+    __table_args__ = (
+        Index('ix_daily_stats_date_symbol', 'date', 'symbol'),
+        {'extend_existing': True},
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    date: Mapped[datetime] = mapped_column(DateTime, index=True, unique=True)
+    date: Mapped[datetime] = mapped_column(DateTime, index=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
     daily_pnl: Mapped[float] = mapped_column(Float, default=0.0)
     session_pnl: Mapped[float] = mapped_column(Float, default=0.0)
@@ -47,21 +68,41 @@ class DailyStats(Base):
     wins: Mapped[int] = mapped_column(Integer, default=0)
     losses: Mapped[int] = mapped_column(Integer, default=0)
     win_rate: Mapped[float] = mapped_column(Float, default=0.0)
-    starting_balance: Mapped[float] = mapped_column(Float, nullable=True)
-    ending_balance: Mapped[float] = mapped_column(Float, nullable=True)
-    peak_balance: Mapped[float] = mapped_column(Float, nullable=True)
+    starting_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ending_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    peak_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_drawdown: Mapped[float] = mapped_column(Float, default=0.0)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now)
+
+
+class BotLog(Base):
+    """Bot logs for dashboard and persistence."""
+    __tablename__ = "bot_logs"
+    __table_args__ = (
+        Index('ix_bot_logs_level_timestamp', 'level', 'timestamp'),
+        Index('ix_bot_logs_state_timestamp', 'state', 'timestamp'),
+        {'extend_existing': True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
+    level: Mapped[str] = mapped_column(String(10), index=True)  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+    state: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    message: Mapped[str] = mapped_column(Text)
+    details: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON additional details
+    symbol: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
+    trade_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
 
 
 class BotState(Base):
     """Bot state persistence for recovery after restart."""
     __tablename__ = "bot_state"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     value: Mapped[str] = mapped_column(Text)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
 
 class RuntimeSetting(Base):
@@ -70,14 +111,14 @@ class RuntimeSetting(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     value: Mapped[str] = mapped_column(Text)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
 
 
 class Signal(Base):
     __tablename__ = "signals"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
     trend: Mapped[str] = mapped_column(String(10))
     momentum: Mapped[str] = mapped_column(String(10))
@@ -97,7 +138,7 @@ class MarketData(Base):
     __tablename__ = "market_data"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
     candle_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     symbol: Mapped[str] = mapped_column(String(20), index=True)
     timeframe: Mapped[str] = mapped_column(String(8))
@@ -112,7 +153,7 @@ class StateChange(Base):
     __tablename__ = "state_changes"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
     from_state: Mapped[str] = mapped_column(String(40))
     to_state: Mapped[str] = mapped_column(String(40), index=True)
     context: Mapped[str] = mapped_column(Text, default="")
@@ -122,20 +163,13 @@ class ErrorLog(Base):
     __tablename__ = "error_logs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utc_now, index=True)
     state: Mapped[str] = mapped_column(String(40), index=True)
     category: Mapped[str] = mapped_column(String(32), index=True)
     message: Mapped[str] = mapped_column(Text)
 
 
-class BotLog(Base):
-    __tablename__ = "bot_logs"
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
-    level: Mapped[str] = mapped_column(String(10), index=True)
-    state: Mapped[str] = mapped_column(String(40), index=True)
-    message: Mapped[str] = mapped_column(Text)
 
 
 class Order(Base):

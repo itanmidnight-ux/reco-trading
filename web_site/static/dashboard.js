@@ -79,6 +79,7 @@ function switchTab(tabId) {
     if (tabId === 'risk') loadRiskData();
     if (tabId === 'strategy') loadStrategyData();
     if (tabId === 'overview') initHeroChart();
+    if (tabId === 'logs') initLogsTab();
 }
 
 function initControls() {
@@ -1151,4 +1152,124 @@ function showToast(message, type = 'success') {
         toast.style.opacity = '0';
         setTimeout(() => toast.remove(), 300);
     }, 3000);
+}
+
+// Logs Tab Functions
+async function loadLogs() {
+    try {
+        const levelFilter = document.getElementById('logLevelFilter')?.value || '';
+        const stateFilter = document.getElementById('logStateFilter')?.value || '';
+        const searchInput = document.getElementById('logSearchInput')?.value || '';
+        
+        let url = '/api/logs?limit=200&source=database';
+        if (levelFilter) url += '&level=' + encodeURIComponent(levelFilter);
+        if (stateFilter) url += '&state=' + encodeURIComponent(stateFilter);
+        
+        const r = await fetch(url, { headers: getHeaders() });
+        const d = await r.json();
+        const logs = d.logs || [];
+        
+        // Update stats
+        const errorCount = logs.filter(l => l.level === 'ERROR').length;
+        const warnCount = logs.filter(l => l.level === 'WARNING').length;
+        document.getElementById('logTotal').textContent = logs.length;
+        document.getElementById('logErrors').textContent = errorCount;
+        document.getElementById('logWarnings').textContent = warnCount;
+        
+        const tbody = document.getElementById('logsBody');
+        tbody.innerHTML = '';
+        
+        if (logs.length === 0) {
+            tbody.innerHTML = '<tr class="loading-row"><td colspan="4">No logs found</td></tr>';
+            return;
+        }
+        
+        // Filter by search if provided
+        let filteredLogs = logs;
+        if (searchInput) {
+            const search = searchInput.toLowerCase();
+            filteredLogs = logs.filter(l => 
+                (l.message || '').toLowerCase().includes(search) ||
+                (l.state || '').toLowerCase().includes(search)
+            );
+        }
+        
+        filteredLogs.forEach(log => {
+            const row = document.createElement('tr');
+            const level = (log.level || 'INFO').toUpperCase();
+            const levelClass = level === 'ERROR' ? 'log-error' : level === 'WARNING' ? 'log-warn' : level === 'DEBUG' ? 'log-debug' : 'log-info';
+            
+            row.innerHTML = `
+                <td class="log-time-col">${formatDateTime(log.timestamp)}</td>
+                <td class="log-level-col"><span class="log-badge ${levelClass}">${level}</span></td>
+                <td class="log-state-col">${log.state || '-'}</td>
+                <td class="log-msg-col">${escapeHtml(log.message || '')}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    } catch (e) {
+        console.error('Load logs error:', e);
+        const tbody = document.getElementById('logsBody');
+        if (tbody) {
+            tbody.innerHTML = '<tr class="loading-row"><td colspan="4">Error loading logs</td></tr>';
+        }
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+async function refreshLogs() {
+    showToast('Refreshing logs...', 'success');
+    await loadLogs();
+}
+
+async function clearLogs() {
+    if (!confirm('Are you sure you want to clear all logs? This action cannot be undone.')) {
+        return;
+    }
+    
+    try {
+        const r = await fetch('/api/logs/clear', {
+            method: 'POST',
+            headers: getHeaders()
+        });
+        const d = await r.json();
+        if (d.success) {
+            showToast('Logs cleared successfully', 'success');
+            await loadLogs();
+        } else {
+            showToast('Failed to clear logs: ' + (d.error || 'Unknown error'), 'error');
+        }
+    } catch (e) {
+        console.error('Clear logs error:', e);
+        showToast('Error clearing logs', 'error');
+    }
+}
+
+// Initialize logs tab when switched
+function initLogsTab() {
+    const levelFilter = document.getElementById('logLevelFilter');
+    const stateFilter = document.getElementById('logStateFilter');
+    const searchInput = document.getElementById('logSearchInput');
+    
+    if (levelFilter) {
+        levelFilter.removeEventListener('change', loadLogs);
+        levelFilter.addEventListener('change', loadLogs);
+    }
+    if (stateFilter) {
+        stateFilter.removeEventListener('change', loadLogs);
+        stateFilter.addEventListener('change', loadLogs);
+    }
+    if (searchInput) {
+        searchInput.removeEventListener('keyup', loadLogs);
+        searchInput.addEventListener('keyup', (e) => {
+            if (e.key === 'Enter') loadLogs();
+        });
+    }
+    
+    loadLogs();
 }

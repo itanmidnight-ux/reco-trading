@@ -7,6 +7,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 import numpy as np
 
+from reco_trading.config.symbols import normalize_symbol
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,14 +74,17 @@ class MultiPairManager:
             ],
         }
         
-        # Active pairs for scanning (all tiers by default)
-        self.default_pairs = base_pairs or [
-            "BTC/USDT", "ETH/USDT", "SOL/USDT",
-            "DOGE/USDT", "XRP/USDT", "AVAX/USDT",
-        ]
+        # Normalize all incoming symbols to standard format
+        if base_pairs:
+            self.default_pairs = [normalize_symbol(s) for s in base_pairs]
+        else:
+            self.default_pairs = [
+                "BTC/USDT", "ETH/USDT", "SOL/USDT",
+                "DOGE/USDT", "XRP/USDT", "AVAX/USDT",
+            ]
         
-        # Currently active pair
-        self.active_pair: str = base_pairs[0] if base_pairs else "BTC/USDT"
+        # Currently active pair (normalized)
+        self.active_pair: str = normalize_symbol(base_pairs[0]) if base_pairs else "BTC/USDT"
         
         self.pairs_metrics: dict[str, PairMetrics] = {}
         self.pair_history: dict[str, list[dict]] = {}

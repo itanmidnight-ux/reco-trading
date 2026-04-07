@@ -1,5 +1,6 @@
 from __future__ import annotations
-
+ 
+import asyncio
 from types import SimpleNamespace
 
 from reco_trading.core.bot_engine import BotEngine, _sanitize_runtime_settings_payload
@@ -70,38 +71,45 @@ def test_investment_optimizer_handles_extreme_capital_ranges() -> None:
 
 
 def test_position_manager_dynamic_exit_closes_on_peak_retrace() -> None:
-    manager = PositionManager()
-    position = Position(
-        trade_id=1,
-        side="BUY",
-        quantity=0.1,
-        entry_price=100.0,
-        stop_loss=98.0,
-        take_profit=120.0,
-        atr=1.0,
-        dynamic_exit_enabled=True,
-        peak_retrace_atr=0.8,
-    )
-    manager.open(position)
-    assert manager.check_exit(position, 103.0) is None
-    assert manager.check_exit(position, 105.0) is None
-    assert manager.check_exit(position, 104.1) in {"PEAK_RETRACE_EXIT", "TRAILING_STOP_HIT"}
+    async def run_test():
+        manager = PositionManager()
+        position = Position(
+            trade_id=1,
+            side="BUY",
+            quantity=0.1,
+            entry_price=100.0,
+            stop_loss=98.0,
+            take_profit=120.0,
+            atr=1.0,
+            dynamic_exit_enabled=True,
+            peak_retrace_atr=0.8,
+        )
+        await manager.open(position)
+        assert await manager.check_exit(position, 103.0) is None
+        assert await manager.check_exit(position, 105.0) is None
+        result = await manager.check_exit(position, 104.1)
+        assert result in {"PEAK_RETRACE_EXIT", "TRAILING_STOP_HIT"}
+    
+    asyncio.run(run_test())
 
 
 def test_position_manager_sets_entry_timestamp_when_missing() -> None:
-    manager = PositionManager()
-    position = Position(
-        trade_id=2,
-        side="BUY",
-        quantity=0.1,
-        entry_price=100.0,
-        stop_loss=98.0,
-        take_profit=120.0,
-        atr=1.0,
-    )
-    manager.open(position)
-    assert position.entry_timestamp_ms is not None
-    assert position.entry_timestamp_ms > 0
+    async def run_test():
+        manager = PositionManager()
+        position = Position(
+            trade_id=2,
+            side="BUY",
+            quantity=0.1,
+            entry_price=100.0,
+            stop_loss=98.0,
+            take_profit=120.0,
+            atr=1.0,
+        )
+        await manager.open(position)
+        assert position.entry_timestamp_ms is not None
+        assert position.entry_timestamp_ms > 0
+    
+    asyncio.run(run_test())
 
 
 def test_per_trade_investment_controls_adjust_to_confidence_and_volatility() -> None:

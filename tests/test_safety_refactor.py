@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from reco_trading.data.candle_builder import ohlcv_to_frame
 from reco_trading.risk.position_manager import Position, PositionManager
 from reco_trading.risk.risk_manager import RiskManager
@@ -39,10 +41,13 @@ def test_risk_position_sizing_uses_stop_distance() -> None:
 
 
 def test_max_concurrent_trades_enforced() -> None:
-    pm = PositionManager()
-    pm.open(Position(1, "BUY", 0.1, 100, 95, 110, 2))
-    assert pm.can_open(1) is False
-    assert pm.can_open(2) is True
+    async def run_test():
+        pm = PositionManager()
+        await pm.open(Position(1, "BUY", 0.1, 100, 95, 110, 2))
+        assert await pm.can_open(1) is False
+        assert await pm.can_open(2) is True
+    
+    asyncio.run(run_test())
 
 
 def test_candle_validation_filters_invalid_rows() -> None:

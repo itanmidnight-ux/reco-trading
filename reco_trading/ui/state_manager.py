@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 import threading
 from typing import Any
 
@@ -111,7 +111,7 @@ class StateManager(QObject):
         self.state_changed.emit(state_copy)
 
     def add_log(self, level: str, message: str) -> None:
-        entry = {"time": datetime.utcnow().strftime("%H:%M:%S"), "level": level.upper(), "message": message}
+        entry = {"time": datetime.now(timezone.utc).strftime("%H:%M:%S"), "level": level.upper(), "message": message}
         if not self._is_visible_log_entry(entry):
             return
         state_copy: dict[str, Any] | None = None

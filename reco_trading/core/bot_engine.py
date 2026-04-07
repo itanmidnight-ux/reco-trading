@@ -29,6 +29,7 @@ from reco_trading.risk.adaptive_sizer import AdaptiveSizer
 from reco_trading.risk.capital_profile import CapitalProfile, CapitalProfileManager
 from reco_trading.risk.investment_optimizer import InvestmentOptimizer
 from reco_trading.strategy.market_adaptation import MarketAdaptation
+from reco_trading.strategy.adaptive_frame import AdaptiveFrameEngine
 from reco_trading.risk.risk_manager import RiskManager
 from reco_trading.risk.portfolio_risk import PortfolioRiskController
 from reco_trading.risk.smart_stop_engine import SmartStopEngine, SmartStopConfig, StopType
@@ -78,6 +79,7 @@ from reco_trading.core.trading_modes import TradingModeManager, WebSocketManager
 from reco_trading.core.integrations import initialize_all_modules, get_system_status, create_default_config
 from reco_trading.core.autonomous_brain import AutonomousTradingBrain, create_autonomous_brain
 from reco_trading.core.emergency_systems import EmergencySystem, DataValidator
+from reco_trading.execution import SmartExecutor, ExecutionConfig, OrderRequest, OrderType, LatencyOptimizer
 
 if TYPE_CHECKING:
     from reco_trading.ui.state_manager import StateManager
@@ -177,6 +179,7 @@ class BotEngine:
         self.market_intelligence = MarketIntelligence(settings)
         self.exit_intelligence = ExitIntelligence()
         self.market_adaptation = MarketAdaptation()
+        self.adaptive_frame = AdaptiveFrameEngine()
         self.confluence = TimeframeConfluence()
 
         self.state_manager = state_manager
@@ -288,6 +291,21 @@ class BotEngine:
         self.data_validator = DataValidator()
         self.logger.info("Emergency System and Data Validator initialized")
         
+        self.executor = SmartExecutor(ExecutionConfig(
+            max_slippage_percent=float(getattr(settings, "execution_max_slippage_percent", 0.3)),
+            max_spread_percent=float(getattr(settings, "execution_max_spread_percent", 0.2)),
+            order_timeout_seconds=float(getattr(settings, "execution_order_timeout_seconds", 5.0)),
+            fill_timeout_seconds=float(getattr(settings, "execution_fill_timeout_seconds", 10.0)),
+            split_threshold_usdt=float(getattr(settings, "execution_split_threshold_usdt", 500.0)),
+            max_split_parts=int(getattr(settings, "execution_max_split_parts", 5)),
+            retry_attempts=int(getattr(settings, "execution_retry_attempts", 3)),
+            retry_delay_seconds=float(getattr(settings, "execution_retry_delay_seconds", 1.0)),
+            verify_fills=bool(getattr(settings, "execution_verify_fills", True)),
+            min_fill_percent=float(getattr(settings, "execution_min_fill_percent", 95.0)),
+        ))
+        self.latency_optimizer = LatencyOptimizer()
+        self.logger.info("SmartExecutor initialized for advanced order execution")
+        
         self._cached_frame5: Any | None = None
         self._cached_frame15: Any | None = None
         self._last_primary_indicator_ts: datetime | None = None
@@ -344,6 +362,10 @@ class BotEngine:
             "stale_market_data_ratio": 0.0,
             "exchange_reconnections": 0,
             "circuit_breaker_trips": 0,
+            "execution_latency_ms": 0.0,
+            "execution_slippage_pct": 0.0,
+            "execution_split_orders": 0,
+            "execution_failed_orders": 0,
             "candles_5m": [],
             "started_at": time.time(),
             "market_regime": None,
@@ -1483,34 +1505,81 @@ class BotEngine:
         await self._set_state(BotState.PLACING_ORDER)
         self.logger.info(f"PLACING_ORDER: {side} {qty} {self.symbol} at {price}")
         print(f">>>> PLACING ORDER: {side} {qty} {self.symbol}")
+        
+        order: dict[str, Any] | None = None
+        exec_result = None
+        
         try:
             intent_id = f"reco-open-{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
-            order = await self.client.create_market_order(self.symbol, side.lower(), qty, client_order_id=intent_id)
-            self.logger.info(f"ORDER_PLACED: {order}")
-            print(f">>>> ORDER SUCCESS: {order}")
             
-            order_id = order.get("id")
-            order_status = order.get("status", "")
-            filled_qty = _as_float(order.get("filled"), 0.0)
+            bid = _as_float(market_data.get("bid"), price)
+            ask = _as_float(market_data.get("ask"), price)
+            
+            order_request = OrderRequest(
+                symbol=self.symbol,
+                side=side.upper(),
+                quantity=qty,
+                order_type=OrderType.MARKET,
+                client_order_id=intent_id,
+            )
+            
+            exec_result = await self.executor.execute(
+                client=self.client,
+                request=order_request,
+                bid=bid if bid > 0 else None,
+                ask=ask if ask > 0 else None,
+                current_price=price,
+            )
+            
+            self.logger.info(f"ORDER_EXECUTED: {exec_result}")
+            
+            if exec_result.status.value in ("failed", "rejected"):
+                await self._log("ERROR", f"order_execution_failed reason={exec_result.error_message}")
+                await self.repository.record_error(self.state.value, "order", exec_result.error_message or "execution_failed")
+                return
+            
+            order = {
+                "id": exec_result.order_id,
+                "status": "closed" if exec_result.status.value == "filled" else exec_result.status.value,
+                "filled": exec_result.filled_quantity,
+                "average": exec_result.average_price,
+            }
+            
+            if exec_result.split_parts > 1:
+                await self._log("INFO", f"order_split_into_parts split_parts={exec_result.split_parts} total_filled={exec_result.filled_quantity}")
+            
+            print(f">>>> ORDER SUCCESS: {order}")
+            self.logger.info(f"ORDER_PLACED: {order}")
+            
+            order_id = exec_result.order_id
+            filled_qty = exec_result.filled_quantity
             
             if not order_id:
                 await self._log("ERROR", "order_verification_failed no_order_id")
                 return
-            if order_status not in ("closed", "filled", "canceled"):
-                await self._log("WARNING", f"order_status_unusual status={order_status}")
-            if filled_qty > 0 and abs(filled_qty - qty) / max(qty,1e-9) > 0.01:
+            
+            if filled_qty > 0 and abs(filled_qty - qty) / max(qty, 1e-9) > 0.01:
                 await self._log("WARNING", f"order_partial_fill requested={qty} filled={filled_qty}")
-                # Use actual filled quantity for position tracking
                 qty = filled_qty
                 self.snapshot["partial_fill"] = True
                 self.snapshot["filled_qty"] = filled_qty
                 self.snapshot["requested_qty"] = qty
+                
+            self.latency_optimizer.record_latency(exec_result.execution_time_ms)
+            self.snapshot["execution_slippage_pct"] = exec_result.slippage_percent
+            
         except Exception as exc:
+            import traceback
             print(f">>>> ORDER FAILED: {exc}")
+            self.logger.error(f"ORDER_EXCEPTION: {exc}\n{traceback.format_exc()}")
             await self._log("ERROR", f"order_rejected error={exc}")
             await self.repository.record_error(self.state.value, "order", str(exc))
             return
-
+        
+        if order is None:
+            await self._log("ERROR", "order_not_created_internal_error")
+            return
+        
         entry = _as_float(order.get("average"), _as_float(order.get("price"), price))
         slippage_ratio = abs(entry - price) / max(price, 1e-9)
         if slippage_ratio > _as_float(self.settings.max_slippage_ratio, 0.003):
@@ -1518,9 +1587,20 @@ class BotEngine:
             disable_auto_pause = bool(getattr(self.settings, "disable_auto_pause", True))
             await self._log("ERROR", f"slippage_too_high slippage_ratio={slippage_ratio:.6f}")
             try:
-                close_side = "sell" if side == "BUY" else "buy"
+                close_side = "SELL" if side == "BUY" else "BUY"
                 close_intent = f"reco-close-{int(time.time()*1000)}-{uuid.uuid4().hex[:8]}"
-                await self.client.create_market_order(self.symbol, close_side, qty, client_order_id=close_intent)
+                close_request = OrderRequest(
+                    symbol=self.symbol,
+                    side=close_side,
+                    quantity=qty,
+                    order_type=OrderType.MARKET,
+                    client_order_id=close_intent,
+                )
+                await self.executor.execute(
+                    client=self.client,
+                    request=close_request,
+                    current_price=entry,
+                )
             except ccxt.BaseError as exc:
                 await self.repository.record_error(self.state.value, "slippage_exit", str(exc))
             if auto_pause_on_slippage and not disable_auto_pause:
@@ -1579,7 +1659,7 @@ class BotEngine:
             self.state_manager.add_trade(
                 {
                     "trade_id": trade.id,
-                    "time": datetime.utcnow().isoformat(timespec="seconds"),
+                    "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "pair": self.symbol,
                     "side": side,
                     "entry": entry,
@@ -1587,7 +1667,7 @@ class BotEngine:
                     "stop_loss": stop_loss,
                     "take_profit": take_profit,
                     "status": "OPEN",
-                    "entry_time": datetime.utcnow().isoformat(timespec="seconds"),
+                    "entry_time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "exit_time": "-",
                     "fees": order.get("fee", {}).get("cost", 0),
                     "confidence": analysis.get("confidence"),
@@ -1877,18 +1957,40 @@ class BotEngine:
                 await self._log("ERROR", f"MANUAL_TRADE_CLOSE_FAILED trade_id={position.trade_id} action=retry_next_loop")
 
     async def _close_position(self, position: Position, exit_reason: str, reference_price: float) -> bool:
-        close_side = "sell" if position.side == "BUY" else "buy"
-        order = None
+        close_side = "SELL" if position.side == "BUY" else "BUY"
+        exec_result = None
+        bid = _as_float(self.snapshot.get("bid"), reference_price)
+        ask = _as_float(self.snapshot.get("ask"), reference_price)
+        
         for attempt in range(1, 4):
             try:
                 intent_id = f"reco-close-{position.trade_id}-{attempt}-{uuid.uuid4().hex[:6]}"
-                order = await self.client.create_market_order(
-                    self.symbol,
-                    close_side,
-                    position.quantity,
+                close_request = OrderRequest(
+                    symbol=self.symbol,
+                    side=close_side,
+                    quantity=position.quantity,
+                    order_type=OrderType.MARKET,
                     client_order_id=intent_id,
                 )
-                break
+                exec_result = await self.executor.execute(
+                    client=self.client,
+                    request=close_request,
+                    bid=bid if bid > 0 else None,
+                    ask=ask if ask > 0 else None,
+                    current_price=reference_price,
+                )
+                
+                if exec_result.status.value in ("filled", "partially_filled"):
+                    break
+                    
+                if exec_result.status.value in ("failed", "rejected"):
+                    await self._log(
+                        "WARNING",
+                        f"close_order_attempt_failed trade_id={position.trade_id} reason={exit_reason} attempt={attempt}/3 error={exec_result.error_message}",
+                    )
+                    if attempt < 3:
+                        await asyncio.sleep(1)
+                    
             except ccxt.BaseError as exc:
                 await self._log(
                     "WARNING",
@@ -1897,16 +1999,16 @@ class BotEngine:
                 if attempt < 3:
                     await asyncio.sleep(1)
 
-        if order is None:
+        if exec_result is None or exec_result.status.value in ("failed", "rejected"):
             await self.repository.record_error(self.state.value, "close_order", f"trade_id={position.trade_id} reason={exit_reason}")
             return False
 
-        exit_price = _as_float(order.get("average"), _as_float(order.get("price"), reference_price))
+        exit_price = exec_result.average_price if exec_result.average_price > 0 else reference_price
         pnl = (exit_price - position.entry_price) * position.quantity
         if position.side == "SELL":
             pnl *= -1
 
-        exit_slippage_ratio = abs(exit_price - reference_price) / max(reference_price, 1e-9)
+        exit_slippage_ratio = exec_result.slippage_percent /100.0 if exec_result.slippage_percent else 0.0
         await self.repository.close_trade(
             position.trade_id,
             exit_price,
@@ -1989,7 +2091,7 @@ class BotEngine:
             self.state_manager.add_trade(
                 {
                     "trade_id": position.trade_id,
-                    "time": datetime.utcnow().isoformat(timespec="seconds"),
+                    "time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "pair": self.symbol,
                     "side": position.side,
                     "entry": position.entry_price,
@@ -1998,8 +2100,8 @@ class BotEngine:
                     "pnl": pnl,
                     "status": exit_reason,
                     "entry_time": "-",
-                    "exit_time": datetime.utcnow().isoformat(timespec="seconds"),
-                    "fees": order.get("fee", {}).get("cost", 0),
+                    "exit_time": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                    "fees": exec_result.fees if exec_result else 0,
                     "confidence": None,
                     "signal_details": exit_reason,
                     "exit_slippage_ratio": exit_slippage_ratio,
@@ -2529,19 +2631,19 @@ class BotEngine:
         """Switch to a new trading pair with proper cleanup and rule sync."""
         try:
             old_symbol = self.symbol
-            self.symbol = new_symbol
+            self.symbol = normalize_symbol(new_symbol)
             self.order_manager = OrderManager(self.client, self.symbol)
             await self.order_manager.sync_rules()
             self.market_stream = MarketStream(self.client, self.symbol, self.settings.history_limit)
             self._cached_frame5 = None
             self._cached_frame15 = None
-            self.multi_pair_manager.record_switch(old_symbol, new_symbol)
+            self.multi_pair_manager.record_switch(old_symbol, self.symbol)
             self.logger.warning(f"Auto-switched to best pair: {old_symbol} -> {self.symbol}")
             self.snapshot["pair_switch"] = self.symbol
         except Exception as exc:
             self.logger.error(f"Failed to switch pair to {new_symbol}: {exc}")
             self.snapshot["pair_switch_error"] = str(exc)
-            self.symbol = old_symbol
+            self.symbol = normalize_symbol(old_symbol)
 
     def _start_ml_auto_training(self) -> None:
         """Start background auto-training of ML models with historical data."""
@@ -3202,7 +3304,7 @@ class BotEngine:
         logs = list(self.snapshot.get("logs", []) or [])
         logs.append(
             {
-                "time": datetime.utcnow().strftime("%H:%M:%S"),
+                "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
                 "level": str(level).upper(),
                 "message": str(message),
             }
@@ -3286,8 +3388,54 @@ class BotEngine:
                     self.equity_peak = float(config["equity_peak"])
                 self.snapshot["restored_config"] = True
                 self.logger.info("Bot configuration restored from database")
+            
+            await self._restore_trade_stats_from_db()
         except Exception as e:
             self.logger.error(f"Failed to restore bot config: {e}")
+
+    async def _restore_trade_stats_from_db(self) -> None:
+        try:
+            now = datetime.now(timezone.utc)
+            today_start_naive = now.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+            today_end_naive = today_start_naive + timedelta(days=1)
+            
+            async with self.repository.session_factory() as session:
+                from sqlalchemy import select, func
+                from sqlalchemy import DateTime as SqlDateTime
+                from reco_trading.database.models import Trade
+                
+                closed_today_q = select(func.count(Trade.id)).where(
+                    Trade.status != "OPEN",
+                    func.coalesce(
+                        func.timezone('UTC', Trade.close_timestamp).cast(SqlDateTime),
+                        func.timezone('UTC', Trade.timestamp).cast(SqlDateTime)
+                    ) >= today_start_naive,
+                    func.coalesce(
+                        func.timezone('UTC', Trade.close_timestamp).cast(SqlDateTime),
+                        func.timezone('UTC', Trade.timestamp).cast(SqlDateTime)
+                    ) < today_end_naive,
+                )
+                closed_result = await session.execute(closed_today_q)
+                self.trades_today = closed_result.scalar_one() or 0
+                
+                wins_today_q = select(func.count(Trade.id)).where(
+                    Trade.status != "OPEN",
+                    Trade.pnl > 0,
+                    func.coalesce(
+                        func.timezone('UTC', Trade.close_timestamp).cast(SqlDateTime),
+                        func.timezone('UTC', Trade.timestamp).cast(SqlDateTime)
+                    ) >= today_start_naive,
+                    func.coalesce(
+                        func.timezone('UTC', Trade.close_timestamp).cast(SqlDateTime),
+                        func.timezone('UTC', Trade.timestamp).cast(SqlDateTime)
+                    ) < today_end_naive,
+                )
+                wins_result = await session.execute(wins_today_q)
+                self.win_count = wins_result.scalar_one() or 0
+                
+                self.logger.info(f"Restored trade stats from DB: trades_today={self.trades_today}, win_count={self.win_count}")
+        except Exception as e:
+            self.logger.error(f"Failed to restore trade stats from DB: {e}")
 
     def _is_cooldown_complete(self) -> bool:
         if self.last_close_time is None:
@@ -3398,7 +3546,7 @@ class BotEngine:
                     "exchange_status": self.snapshot.get("exchange_status", "UNKNOWN"),
                     "redis_status": self.snapshot.get("redis_status", "UNKNOWN"),
                     "memory_usage_mb": round(_get_memory_mb(), 1),
-                    "last_server_sync": datetime.utcnow().isoformat(timespec="seconds"),
+                    "last_server_sync": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 },
                 market_analysis=self.snapshot.get("market_analysis", {}),
                 risk_metrics={
@@ -3905,16 +4053,22 @@ class BotEngine:
         return calibrated
 
     def _effective_adx_threshold(self) -> float:
-        adapted = self.market_adaptation.get_adjusted_params()
-        return adapted.get("adx_threshold", self.runtime_filter_config.get("adx_threshold", 10.0))
+        if hasattr(self, 'market_adaptation') and self.market_adaptation:
+            adapted = self.market_adaptation.get_adjusted_params()
+            return adapted.get("adx_threshold", self.runtime_filter_config.get("adx_threshold", 10.0))
+        return self.runtime_filter_config.get("adx_threshold", 10.0)
 
     def _effective_rsi_buy_threshold(self) -> float:
-        adapted = self.market_adaptation.get_adjusted_params()
-        return adapted.get("rsi_buy_threshold", self.runtime_filter_config.get("rsi_buy_threshold", 58.0))
+        if hasattr(self, 'market_adaptation') and self.market_adaptation:
+            adapted = self.market_adaptation.get_adjusted_params()
+            return adapted.get("rsi_buy_threshold", self.runtime_filter_config.get("rsi_buy_threshold", 58.0))
+        return self.runtime_filter_config.get("rsi_buy_threshold", 58.0)
 
     def _effective_rsi_sell_threshold(self) -> float:
-        adapted = self.market_adaptation.get_adjusted_params()
-        return adapted.get("rsi_sell_threshold", self.runtime_filter_config.get("rsi_sell_threshold", 42.0))
+        if hasattr(self, 'market_adaptation') and self.market_adaptation:
+            adapted = self.market_adaptation.get_adjusted_params()
+            return adapted.get("rsi_sell_threshold", self.runtime_filter_config.get("rsi_sell_threshold", 42.0))
+        return self.runtime_filter_config.get("rsi_sell_threshold", 42.0)
 
 
 def _as_float(value: Any, default: float = 0.0) -> float:

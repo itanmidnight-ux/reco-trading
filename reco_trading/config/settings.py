@@ -123,6 +123,20 @@ class Settings(BaseSettings):
     auto_pause_on_high_swing: bool = False
 
     # =========================
+    # EXECUTION ENGINE
+    # =========================
+    execution_max_slippage_percent: float = 0.3  # Maximum allowed slippage (%)
+    execution_max_spread_percent: float = 0.2  # Maximum spread to enter (%)
+    execution_order_timeout_seconds: float = 5.0  # Timeout for order submission
+    execution_fill_timeout_seconds: float = 10.0  # Timeout for fill verification
+    execution_split_threshold_usdt: float = 500.0  # Split orders above this size
+    execution_max_split_parts: int = 5  # Maximum number of order splits
+    execution_retry_attempts: int = 3  # Number of retry attempts
+    execution_retry_delay_seconds: float = 1.0  # Delay between retries
+    execution_verify_fills: bool = True  # Verify order fills
+    execution_min_fill_percent: float = 95.0  # Minimum fill percentage
+
+    # =========================
     # DATABASE (PostgreSQL, MySQL, or SQLite)
     # =========================
     postgres_dsn: Optional[str] = None
@@ -154,19 +168,19 @@ class Settings(BaseSettings):
         import json
         v = self.trading_symbols_raw
         if not v:
-            return ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT"]
+            return ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "XRPUSDT"]
         v = v.strip()
-        # Handle JSON array format
+        symbols = []
         if v.startswith("["):
             try:
                 parsed = json.loads(v)
                 if isinstance(parsed, list):
-                    return [str(s).strip() for s in parsed if s]
+                    symbols = [str(s).strip().replace("/", "").upper() for s in parsed if s]
             except (json.JSONDecodeError, TypeError):
                 pass
-        # Handle comma-separated
-        symbols = [s.strip() for s in v.split(",") if s.strip()]
-        return symbols if symbols else ["BTC/USDT", "ETH/USDT", "SOL/USDT", "DOGE/USDT", "XRP/USDT"]
+        else:
+            symbols = [s.strip().replace("/", "").upper() for s in v.split(",") if s.strip()]
+        return symbols if symbols else ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT", "XRPUSDT"]
     
     max_global_exposure_fraction: float = 0.7
     max_symbol_correlation: float = 0.85

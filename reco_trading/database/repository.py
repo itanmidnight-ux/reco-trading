@@ -7,13 +7,17 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import Any, Awaitable, Callable, TypeVar
 
-from sqlalchemy import func, inspect, select, text
+from sqlalchemy import DateTime, func, inspect, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from reco_trading.database.models import Base, BotLog, CustomData, DailyStats, BotState, ErrorLog, MarketData, Order, PairLock, RuntimeSetting, Signal, StateChange, Trade
 
 F = TypeVar("F", bound=Callable[..., Awaitable[Any]])
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 def safe_db_call(default: Any = None) -> Callable[[F], F]:
@@ -23,7 +27,8 @@ def safe_db_call(default: Any = None) -> Callable[[F], F]:
             try:
                 return await func(self, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001
-                self.logger.error("db_error in %s: %s", func.__name__, exc)
+                import traceback
+                self.logger.error("db_error in %s: %s\n%s", func.__name__, exc, traceback.format_exc())
                 return default
 
         return wrapper  # type: ignore[return-value]
@@ -36,8 +41,31 @@ class Repository:
 
     def __init__(self, dsn: str) -> None:
         self.logger = logging.getLogger(__name__)
-        self.engine = create_async_engine(dsn, echo=False, future=True)
-        self.session_factory = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
+        self.dsn = dsn
+        # Configure engine for thread-safety and connection pooling
+        self.engine = create_async_engine(
+            dsn,
+            echo=False,
+            future=True,
+            pool_pre_ping=True,  # Verify connections before use
+            pool_size=5,
+            max_overflow=10,
+            pool_recycle=3600,  # Recycle connections after 1 hour
+            pool_timeout=30,  # Wait up to 30s for connection
+        )
+        self.session_factory = async_sessionmaker(
+            self.engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+            autoflush=False,  # Don't autoflush to avoid issues
+        )
+
+    async def close(self) -> None:
+        """Dispose of the engine and close all connections."""
+        try:
+            await self.engine.dispose()
+        except Exception as e:
+            self.logger.warning("Error disposing engine: %s", e)
 
     async def setup(self) -> None:
         async with self.engine.begin() as conn:
@@ -53,9 +81,20 @@ class Repository:
                         await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_slippage_ratio DOUBLE PRECISION"))
                     if "exit_slippage_ratio" not in columns:
                         await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_slippage_ratio DOUBLE PRECISION"))
+                    if "pnl_percent" not in columns:
+                        await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS pnl_percent DOUBLE PRECISION"))
+                    if "duration_seconds" not in columns:
+                        await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS duration_seconds INTEGER"))
+                    if "entry_reason" not in columns:
+                        await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_reason VARCHAR(100)"))
+                    if "exit_reason" not in columns:
+                        await conn.execute(text("ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason VARCHAR(100)"))
                     await self._migrate_signals_columns(conn)
                     await self._migrate_market_data_columns(conn)
                     await self._migrate_orders_columns(conn)
+                    await self._migrate_bot_logs_columns(conn)
+                    await self._migrate_bot_state_columns(conn)
+                    await self._migrate_daily_stats_columns(conn)
                 except Exception as e:
                     self.logger.warning(f"Column migration skipped: {e}")
 
@@ -125,17 +164,62 @@ class Repository:
                 await conn.execute(text(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
                 self.logger.info("Database migration applied: added orders.%s", col_name)
 
+    async def _migrate_bot_logs_columns(self, conn: Any) -> None:
+        """Migrate bot_logs table columns."""
+        existing_columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("bot_logs")})
+        bot_logs_migrations = {
+            "details": "TEXT",
+            "symbol": "VARCHAR(20)",
+            "trade_id": "INTEGER",
+        }
+        for col_name, col_type in bot_logs_migrations.items():
+            if col_name not in existing_columns:
+                try:
+                    await conn.execute(text(f"ALTER TABLE bot_logs ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+                    self.logger.info("Database migration applied: added bot_logs.%s", col_name)
+                except Exception as e:
+                    self.logger.warning("Could not migrate bot_logs.%s: %s", col_name, e)
+
+    async def _migrate_bot_state_columns(self, conn: Any) -> None:
+        """Migrate bot_state table columns if needed."""
+        try:
+            existing_columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("bot_state")})
+        except Exception:
+            return  # Table might not exist yet
+        # bot_state is simple key-value, usually no migrations needed
+        pass
+
+    async def _migrate_daily_stats_columns(self, conn: Any) -> None:
+        """Migrate daily_stats table columns if needed."""
+        try:
+            existing_columns = await conn.run_sync(lambda sync_conn: {col["name"] for col in inspect(sync_conn).get_columns("daily_stats")})
+        except Exception:
+            return  # Table might not exist yet
+        daily_stats_migrations = {
+            "starting_balance": "DOUBLE PRECISION",
+            "ending_balance": "DOUBLE PRECISION",
+            "peak_balance": "DOUBLE PRECISION",
+            "max_drawdown": "DOUBLE PRECISION",
+        }
+        for col_name, col_type in daily_stats_migrations.items():
+            if col_name not in existing_columns:
+                try:
+                    await conn.execute(text(f"ALTER TABLE daily_stats ADD COLUMN IF NOT EXISTS {col_name} {col_type}"))
+                    self.logger.info("Database migration applied: added daily_stats.%s", col_name)
+                except Exception as e:
+                    self.logger.warning("Could not migrate daily_stats.%s: %s", col_name, e)
+
     @safe_db_call()
     async def record_log(self, level: str, state: str, message: str) -> None:
-        await self._persist(BotLog(level=level, state=state, message=message, timestamp=datetime.utcnow()))
+        await self._persist(BotLog(level=level, state=state, message=message, timestamp=_utc_now()))
 
     @safe_db_call()
     async def record_error(self, state: str, category: str, message: str) -> None:
-        await self._persist(ErrorLog(state=state, category=category, message=message, timestamp=datetime.utcnow()))
+        await self._persist(ErrorLog(state=state, category=category, message=message, timestamp=_utc_now()))
 
     @safe_db_call()
     async def record_state_change(self, from_state: str, to_state: str, context: str = "") -> None:
-        await self._persist(StateChange(from_state=from_state, to_state=to_state, context=context, timestamp=datetime.utcnow()))
+        await self._persist(StateChange(from_state=from_state, to_state=to_state, context=context, timestamp=_utc_now()))
 
     @safe_db_call()
     async def record_signal(
@@ -199,9 +283,10 @@ class Repository:
                 existing.low = float(candle["low"])
                 existing.close = float(candle["close"])
                 existing.volume = float(candle["volume"])
-                existing.timestamp = datetime.utcnow()
+                existing.timestamp = _utc_now()
             await session.commit()
 
+    @safe_db_call(default=None)
     async def create_trade(
         self,
         symbol: str,
@@ -212,7 +297,7 @@ class Repository:
         take_profit: float,
         order_id: str | None,
         entry_slippage_ratio: float | None = None,
-    ) -> Trade:
+    ) -> Trade | None:
         trade = Trade(
             symbol=symbol,
             side=side,
@@ -226,6 +311,7 @@ class Repository:
         await self._persist(trade)
         return trade
 
+    @safe_db_call(default=None)
     async def close_trade(self, trade_id: int, exit_price: float, pnl: float, status: str, exit_slippage_ratio: float | None = None) -> None:
         async with self.session_factory() as session:
             trade = await session.get(Trade, trade_id)
@@ -234,8 +320,13 @@ class Repository:
             trade.exit_price = exit_price
             trade.pnl = pnl
             trade.status = status
-            trade.close_timestamp = datetime.utcnow()
+            trade.close_timestamp = _utc_now()
             trade.exit_slippage_ratio = exit_slippage_ratio
+            if trade.timestamp and trade.close_timestamp:
+                trade.duration_seconds = int((trade.close_timestamp - trade.timestamp).total_seconds())
+            if trade.entry_price and trade.quantity and trade.quantity > 0:
+                investment = trade.entry_price * trade.quantity
+                trade.pnl_percent = (pnl / investment * 100) if investment != 0 else 0.0
             await session.commit()
 
     @safe_db_call(default={})
@@ -257,24 +348,30 @@ class Repository:
             result = await session.execute(select(RuntimeSetting).where(RuntimeSetting.key == key))
             setting = result.scalar_one_or_none()
             if setting is None:
-                setting = RuntimeSetting(key=key, value=encoded, updated_at=datetime.utcnow())
+                setting = RuntimeSetting(key=key, value=encoded, updated_at=_utc_now())
                 session.add(setting)
             else:
                 setting.value = encoded
-                setting.updated_at = datetime.utcnow()
+                setting.updated_at = _utc_now()
             await session.commit()
 
     @safe_db_call(default=0.0)
     async def get_session_pnl(self) -> float:
         now = datetime.now(timezone.utc)
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
+        day_start_naive = now.replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
+        day_end_naive = day_start_naive + timedelta(days=1)
         async with self.session_factory() as session:
             q = (
                 select(func.coalesce(func.sum(Trade.pnl), 0.0))
                 .where(Trade.status != "OPEN")
-                .where(func.coalesce(Trade.close_timestamp, Trade.timestamp) >= day_start)
-                .where(func.coalesce(Trade.close_timestamp, Trade.timestamp) < day_end)
+                .where(func.coalesce(
+                    func.timezone('UTC', Trade.close_timestamp).cast(DateTime),
+                    func.timezone('UTC', Trade.timestamp).cast(DateTime)
+                ) >= day_start_naive)
+                .where(func.coalesce(
+                    func.timezone('UTC', Trade.close_timestamp).cast(DateTime),
+                    func.timezone('UTC', Trade.timestamp).cast(DateTime)
+                ) < day_end_naive)
             )
             result = await session.execute(q)
             return float(result.scalar_one())
@@ -357,15 +454,74 @@ class Repository:
             result = await session.execute(q)
             return list(result.scalars().all())
 
+    @safe_db_call(default=[])
+    async def get_logs(
+        self,
+        limit: int = 200,
+        offset: int = 0,
+        level: str | None = None,
+        state: str | None = None,
+        symbol: str | None = None,
+        since: datetime | None = None,
+    ) -> list[BotLog]:
+        async with self.session_factory() as session:
+            q = select(BotLog)
+            if level:
+                q = q.where(BotLog.level == level.upper())
+            if state:
+                q = q.where(BotLog.state == state)
+            if symbol:
+                q = q.where(BotLog.symbol == symbol)
+            if since:
+                q = q.where(BotLog.timestamp >= since)
+            q = q.order_by(BotLog.timestamp.desc()).limit(max(1, int(limit))).offset(max(0, int(offset)))
+            result = await session.execute(q)
+            return list(result.scalars().all())
+
+    @safe_db_call(default={"total": 0, "by_level": {}, "by_state": {}})
+    async def get_log_stats(self, since: datetime | None = None) -> dict[str, Any]:
+        async with self.session_factory() as session:
+            base_query = select(BotLog)
+            if since:
+                base_query = base_query.where(BotLog.timestamp >= since)
+            
+            total_q = select(func.count(BotLog.id))
+            if since:
+                total_q = total_q.where(BotLog.timestamp >= since)
+            total_result = await session.execute(total_q)
+            total = total_result.scalar_one() or 0
+            
+            level_q = select(BotLog.level, func.count(BotLog.id)).group_by(BotLog.level)
+            if since:
+                level_q = level_q.where(BotLog.timestamp >= since)
+            level_result = await session.execute(level_q)
+            by_level = {row[0]: row[1] for row in level_result.all()}
+            
+            state_q = select(BotLog.state, func.count(BotLog.id)).group_by(BotLog.state)
+            if since:
+                state_q = state_q.where(BotLog.timestamp >= since)
+            state_result = await session.execute(state_q)
+            by_state = {row[0] or "UNKNOWN": row[1] for row in state_result.all()}
+            
+            return {"total": total, "by_level": by_level, "by_state": by_state}
+
     @safe_db_call()
     async def cleanup_old_logs(self, keep_days: int = 7) -> None:
         """Elimina registros antiguos para controlar el tamaño de la DB."""
-        cutoff = datetime.utcnow() - timedelta(days=max(int(keep_days), 1))
+        cutoff = _utc_now() - timedelta(days=max(int(keep_days), 1))
         async with self.session_factory() as session:
             await session.execute(text("DELETE FROM bot_logs WHERE timestamp < :cutoff"), {"cutoff": cutoff})
             await session.execute(text("DELETE FROM market_data WHERE timestamp < :cutoff"), {"cutoff": cutoff})
             await session.execute(text("DELETE FROM state_changes WHERE timestamp < :cutoff"), {"cutoff": cutoff})
             await session.commit()
+
+    @safe_db_call(default=0)
+    async def clear_logs(self) -> int:
+        """Clear all logs from the database."""
+        async with self.session_factory() as session:
+            result = await session.execute(text("DELETE FROM bot_logs"))
+            await session.commit()
+            return result.rowcount or 0
 
     async def close(self) -> None:
         await self.engine.dispose()
@@ -590,7 +746,7 @@ class Repository:
                 if peak_balance is not None:
                     stats.peak_balance = peak_balance
                 stats.max_drawdown = max_drawdown
-                stats.updated_at = datetime.utcnow()
+                stats.updated_at = _utc_now()
             else:
                 stats = DailyStats(
                     date=today_naive,
@@ -615,7 +771,7 @@ class Repository:
         from reco_trading.database.models import DailyStats
         
         # Use naive datetime for database query
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = _utc_now() - timedelta(days=days)
         async with self.session_factory() as session:
             query = select(DailyStats).where(DailyStats.date >= cutoff)
             if symbol:
@@ -661,9 +817,9 @@ class Repository:
             state = result.scalar_one_or_none()
             if state:
                 state.value = encoded
-                state.updated_at = datetime.utcnow()
+                state.updated_at = _utc_now()
             else:
-                state = BotState(key=key, value=encoded, updated_at=datetime.utcnow())
+                state = BotState(key=key, value=encoded, updated_at=_utc_now())
                 session.add(state)
             await session.commit()
 

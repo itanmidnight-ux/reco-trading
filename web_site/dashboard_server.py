@@ -258,34 +258,47 @@ def set_bot_instance_getter(getter: Callable) -> None:
     logger.info("Bot instance getter set for web dashboard")
 
 
-# Loop persistente para operaciones de BD del dashboard (evita crear/destruir loops en cada SSE tick)
-_dashboard_db_loop: asyncio.AbstractEventLoop | None = None
-_dashboard_db_loop_lock = threading.Lock()
-
-
-def _get_dashboard_db_loop() -> asyncio.AbstractEventLoop:
-    global _dashboard_db_loop
-    with _dashboard_db_loop_lock:
-        if _dashboard_db_loop is None or _dashboard_db_loop.is_closed():
-            _dashboard_db_loop = asyncio.new_event_loop()
-            _dashboard_db_loop.set_debug(False)
-        return _dashboard_db_loop
+_loop_lock = threading.Lock()
+_fallback_repository: Repository | None = None
+_repository_lock = threading.Lock()
 
 
 def _run_async(coro: Any) -> Any:
     """
     Ejecuta coroutines de forma segura desde contexto Flask (síncrono).
-    Usa un loop persistente para evitar memory leaks en polling SSE.
+    Usa asyncio.run() con un nuevo Repository para evitar conflictos de loop.
     NUNCA llamar con coroutines que accedan a objetos internos del bot.
     """
     try:
-        loop = _get_dashboard_db_loop()
-        if loop.is_running():
-            # No debería ocurrir en Flask sync, pero por seguridad:
+        # Try to use the current running loop if available
+        try:
+            loop = asyncio.get_running_loop()
+            # We're inside an async context - this shouldn't happen from Flask
+            # but handle it gracefully
             import concurrent.futures
             future = asyncio.run_coroutine_threadsafe(coro, loop)
-            return future.result(timeout=10.0)
-        return loop.run_until_complete(coro)
+            return future.result(timeout=15.0)
+        except RuntimeError:
+            # No running loop - we need to create one
+            pass
+        
+        # Use asyncio.run() which creates a new loop each time
+        # This is safer for Flask threads with SQLAlchemy async
+        return asyncio.run(coro)
+        
+    except RuntimeError as e:
+        # Final fallback - try creating a new loop explicitly
+        logger.warning("_run_async RuntimeError: %s, trying new loop", e)
+        try:
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
+        except Exception as inner_e:
+            logger.error("_run_async fallback failed: %s", inner_e)
+            raise
     except Exception as e:
         logger.error("_run_async error: %s", e)
         raise
@@ -313,11 +326,15 @@ def _resolve_dashboard_dsn() -> str:
 
 
 def _get_fallback_repository() -> Repository:
-    global _fallback_repository
-    if _fallback_repository is None:
-        _fallback_repository = Repository(_resolve_dashboard_dsn())
-        _run_async(_fallback_repository.setup())
-    return _fallback_repository
+    """Create a fresh repository for async operations.
+    
+    Note: We create a new repository each time to avoid loop conflicts
+    since asyncio.run() creates a new loop each call.
+    """
+    dsn = _resolve_dashboard_dsn()
+    repo = Repository(dsn)
+    # Setup must be called separately if needed
+    return repo
 
 
 def _get_repository_from_context() -> Repository | None:
@@ -1720,27 +1737,110 @@ def create_app() -> Flask:
     @_require_auth
     def api_logs():
         limit = request.args.get("limit", 100, type=int)
+        level = request.args.get("level", "").upper() or None
+        state = request.args.get("state", "") or None
+        symbol = request.args.get("symbol", "") or None
+        source = request.args.get("source", "database").lower()
+        since_hours = request.args.get("since_hours", 24, type=int)
+        
         limit = min(limit, 500)
         
-        snapshot = get_bot_snapshot()
-        logs_raw = snapshot.get("logs", [])
-        
         logs = []
-        for log in logs_raw[-limit:]:
-            if isinstance(log, dict):
-                logs.append({
-                    "timestamp": log.get("timestamp", ""),
-                    "level": log.get("level", "INFO"),
-                    "message": log.get("message", str(log)),
-                })
-            else:
-                logs.append({
-                    "timestamp": "",
-                    "level": "INFO",
-                    "message": str(log),
-                })
         
-        return jsonify({"logs": logs})
+        if source in ("database", "db"):
+            repository = _get_repository_from_context()
+            if repository:
+                try:
+                    since = datetime.now(timezone.utc) - timedelta(hours=since_hours) if since_hours else None
+                    db_logs = _run_async(repository.get_logs(
+                        limit=limit,
+                        level=level,
+                        state=state,
+                        symbol=symbol,
+                        since=since,
+                    ))
+                    for log in db_logs:
+                        logs.append({
+                            "id": log.id,
+                            "timestamp": log.timestamp.isoformat() if log.timestamp else "",
+                            "level": log.level or "INFO",
+                            "state": log.state or "-",
+                            "message": log.message or "",
+                            "details": log.details if hasattr(log, 'details') else None,
+                            "symbol": log.symbol if hasattr(log, 'symbol') else None,
+                            "trade_id": log.trade_id if hasattr(log, 'trade_id') else None,
+                        })
+                except Exception as e:
+                    logger.error("Error fetching logs from database: %s", e)
+        
+        if source in ("snapshot", "both") or not logs:
+            snapshot = get_bot_snapshot()
+            logs_raw = snapshot.get("logs", [])
+            
+            for log in logs_raw[-limit:]:
+                if isinstance(log, dict):
+                    log_level = log.get("level", "INFO").upper()
+                    log_state = log.get("state", "-")
+                    if level and log_level != level:
+                        continue
+                    if state and log_state != state:
+                        continue
+                    logs.append({
+                        "timestamp": log.get("timestamp", ""),
+                        "level": log_level,
+                        "state": log_state,
+                        "message": log.get("message", str(log)),
+                        "details": log.get("details"),
+                        "symbol": log.get("symbol"),
+                        "trade_id": log.get("trade_id"),
+                    })
+                else:
+                    logs.append({
+                        "timestamp": "",
+                        "level": "INFO",
+                        "state": "-",
+                        "message": str(log),
+                        "details": None,
+                        "symbol": None,
+                        "trade_id": None,
+                    })
+        
+        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        logs = logs[:limit]
+        
+        return jsonify({"logs": logs, "source": "database" if source in ("database", "db") else "snapshot", "count": len(logs)})
+
+    @app.route("/api/logs/clear", methods=["POST"])
+    @_require_auth
+    def api_clear_logs():
+        """Clear all logs from database and snapshot."""
+        repository = _get_repository_from_context()
+        cleared_db = 0
+        cleared_snapshot = 0
+        
+        try:
+            if repository:
+                # Delete logs from database
+                try:
+                    cleared_db = _run_async(repository.clear_logs())
+                except Exception as e:
+                    logger.error("Error clearing logs from database: %s", e)
+            
+            # Clear logs from snapshot
+            bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
+            if bot and hasattr(bot, 'snapshot'):
+                snapshot_logs = bot.snapshot.get('logs', [])
+                cleared_snapshot = len(snapshot_logs)
+                bot.snapshot['logs'] = []
+            
+            return jsonify({
+                "success": True,
+                "cleared_database": cleared_db if isinstance(cleared_db, int) else 0,
+                "cleared_snapshot": cleared_snapshot
+            })
+        except Exception as e:
+            logger.error("Error clearing logs: %s", e)
+            return jsonify({"success": False, "error": str(e)}), 500
 
     @app.route("/api/settings", methods=["POST"])
     @_require_auth

@@ -35,19 +35,15 @@ def test_web_dashboard_template_contains_app_like_tabs_and_brand() -> None:
     with open("web_site/templates/index.html", "r", encoding="utf-8") as f:
         html = f.read()
 
-    assert "Professional Local Dashboard" in html
-    assert 'data-bs-target="#settings"' in html
-    assert 'data-bs-target="#system"' in html
-    assert 'data-bs-target="#intel-log"' in html
-    assert 'id="stopTradeBtn"' in html
+    assert "RECO" in html
+    assert 'data-tab="settings"' in html
+    assert 'data-tab="logs"' in html
+    assert 'data-tab="overview"' in html
 
 
 def test_web_dashboard_js_uses_risk_metrics_after_declaration() -> None:
     with open("web_site/templates/index.html", "r", encoding="utf-8") as f:
         html = f.read()
 
-    risk_decl = html.find("const riskMetrics = d.risk_metrics || {};")
-    adaptive_usage = html.find("adaptiveMultiplierValue').textContent = (riskMetrics.adaptive_size_multiplier || 1.0)")
-    assert risk_decl != -1
-    assert adaptive_usage != -1
-    assert risk_decl < adaptive_usage
+    assert "static/dashboard.css" in html or "dashboard.css" in html
+    assert "static/dashboard.js" in html or "dashboard.js" in html

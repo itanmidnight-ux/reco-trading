@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pandas as pd
 
@@ -62,6 +63,7 @@ def _frame() -> pd.DataFrame:
 
 def _engine(*, btc_balance: float) -> BotEngine:
     engine = BotEngine.__new__(BotEngine)
+    engine.logger = logging.getLogger(__name__)
     engine.signal_engine = _SignalEngine()
     engine.confidence_model = ConfidenceModel()
     engine.confluence = _Confluence()
