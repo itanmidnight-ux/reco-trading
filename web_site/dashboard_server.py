@@ -368,6 +368,33 @@ def _fetch_trades(limit: int = 200, status_filter: str | None = None, symbol: st
         return [], "snapshot"
 
 
+def _load_dashboard_runtime_settings() -> dict[str, Any]:
+    repository = _get_repository_from_context()
+    if repository is None or not hasattr(repository, "get_runtime_settings"):
+        return {}
+    try:
+        settings = _run_async(repository.get_runtime_settings())
+        if not isinstance(settings, dict):
+            return {}
+        dashboard_settings = settings.get("web_dashboard_settings", {})
+        return dashboard_settings if isinstance(dashboard_settings, dict) else {}
+    except Exception as exc:
+        logger.error("Error loading dashboard runtime settings: %s", exc)
+        return {}
+
+
+def _persist_dashboard_runtime_settings(new_values: dict[str, Any]) -> None:
+    repository = _get_repository_from_context()
+    if repository is None or not hasattr(repository, "set_runtime_setting"):
+        return
+    current = _load_dashboard_runtime_settings()
+    current.update(new_values)
+    try:
+        _run_async(repository.set_runtime_setting("web_dashboard_settings", current))
+    except Exception as exc:
+        logger.error("Error persisting dashboard runtime settings: %s", exc)
+
+
 def get_bot_snapshot() -> dict[str, Any]:
     """Get current snapshot from bot - enhanced with all fields."""
     global _global_bot_instance
@@ -382,6 +409,10 @@ def get_bot_snapshot() -> dict[str, Any]:
         snapshot = _get_default_snapshot()
         trades, source = _fetch_trades(limit=100)
         if source == "database" and trades:
+            summary = {}
+            repository = _get_repository_from_context()
+            if repository is not None and hasattr(repository, "get_trade_summary"):
+                summary = _run_async(repository.get_trade_summary()) or {}
             snapshot["trade_history"] = [
                 {
                     "trade_id": t.id,
@@ -396,6 +427,12 @@ def get_bot_snapshot() -> dict[str, Any]:
                 }
                 for t in trades
             ]
+            snapshot["total_trades"] = int(summary.get("total", len(trades)) or len(trades))
+            snapshot["wins"] = int(summary.get("wins", 0) or 0)
+            snapshot["losses"] = int(summary.get("losses", 0) or 0)
+            snapshot["win_rate"] = float(summary.get("win_rate", 0.0) or 0.0) / 100.0
+            snapshot["session_pnl"] = float(summary.get("realized_pnl", 0.0) or 0.0)
+            snapshot["daily_pnl"] = snapshot["session_pnl"]
             snapshot["database_status"] = "CONNECTED"
         return snapshot
     
@@ -1035,6 +1072,8 @@ def create_app() -> Flask:
         try:
             status_filter = request.args.get("status", "").upper() or None
             symbol = request.args.get("symbol", "").upper() or None
+            pnl_positive = request.args.get("pnl_positive", "").strip().lower() in {"1", "true", "yes", "on"}
+            pnl_negative = request.args.get("pnl_negative", "").strip().lower() in {"1", "true", "yes", "on"}
             limit = min(int(request.args.get("limit", 200)), 500)
             offset = int(request.args.get("offset", 0))
             
@@ -1048,6 +1087,10 @@ def create_app() -> Flask:
                 trade_rows = []
                 for t in trades:
                     pnl = float(t.pnl or 0.0)
+                    if pnl_positive and pnl <= 0:
+                        continue
+                    if pnl_negative and pnl >= 0:
+                        continue
                     exit_price = float(t.exit_price or 0.0) if t.exit_price else float(t.entry_price or 0.0)
                     entry_price = float(t.entry_price or 0.0)
                     quantity = float(t.quantity or 0.0)
@@ -1471,14 +1514,22 @@ def create_app() -> Flask:
     @_require_auth
     def api_settings():
         bot = _bot_instance_getter() if _bot_instance_getter else _global_bot_instance
-        if not bot:
-            return jsonify({"success": False, "error": "Bot not available"}), 503
+        persisted = _load_dashboard_runtime_settings()
+        symbol = persisted.get("symbol", "BTC/USDT")
+        max_position_size = float(persisted.get("max_position_size", 0.0) or 0.0)
+        risk_per_trade = float(persisted.get("risk_per_trade", 0.0) or 0.0)
+        enable_short = bool(persisted.get("enable_short", False))
+        if bot:
+            symbol = str(getattr(bot, "symbol", symbol))
+            max_position_size = float(getattr(getattr(bot, "settings", None), "max_trade_balance_fraction", max_position_size) or max_position_size)
+            risk_per_trade = float(getattr(getattr(bot, "settings", None), "risk_per_trade_fraction", risk_per_trade) or risk_per_trade)
+            enable_short = not bool(getattr(getattr(bot, "settings", None), "spot_only_mode", not enable_short))
         return jsonify(
             {
-                "symbol": str(getattr(bot, "symbol", "BTC/USDT")),
-                "max_position_size": float(getattr(getattr(bot, "settings", None), "max_trade_balance_fraction", 0.0) or 0.0),
-                "risk_per_trade": float(getattr(getattr(bot, "settings", None), "risk_per_trade_fraction", 0.0) or 0.0),
-                "enable_short": not bool(getattr(getattr(bot, "settings", None), "spot_only_mode", True)),
+                "symbol": symbol,
+                "max_position_size": max_position_size,
+                "risk_per_trade": risk_per_trade,
+                "enable_short": enable_short,
             }
         )
 
@@ -1495,6 +1546,7 @@ def create_app() -> Flask:
         try:
             bot.symbol = new_symbol
             setattr(bot, "_pending_pair_switch", new_symbol)
+            _persist_dashboard_runtime_settings({"symbol": new_symbol})
             return jsonify({"success": True, "message": f"Pair updated to {new_symbol}"})
         except Exception as e:
             return jsonify({"success": False, "error": str(e)}), 500
@@ -1879,9 +1931,20 @@ def create_app() -> Flask:
                 if "trading_mode" in data:
                     bot.snapshot["trading_mode"] = data["trading_mode"]
                 if "primary_timeframe" in data and hasattr(settings, "primary_timeframe"):
-                    setattr(settings, "timeframe", data["primary_timeframe"])
+                    setattr(settings, "primary_timeframe", data["primary_timeframe"])
                 if "loop_sleep_seconds" in data and hasattr(settings, "loop_sleep_seconds"):
                     setattr(settings, "loop_sleep_seconds", int(data["loop_sleep_seconds"]))
+
+            _persist_dashboard_runtime_settings({
+                "risk_per_trade": float(data["risk_per_trade"]) if "risk_per_trade" in data else getattr(settings, "risk_per_trade_fraction", 0.0) if settings else 0.0,
+                "max_daily_loss": float(data["max_daily_loss"]) if "max_daily_loss" in data else getattr(settings, "daily_loss_limit_fraction", 0.03) if settings else 0.03,
+                "max_drawdown": float(data["max_drawdown"]) if "max_drawdown" in data else getattr(settings, "max_drawdown_fraction", 0.10) if settings else 0.10,
+                "max_trades_day": int(data["max_trades_day"]) if "max_trades_day" in data else getattr(settings, "max_trades_per_day", 120) if settings else 120,
+                "min_confidence": float(data["min_confidence"]) if "min_confidence" in data else getattr(settings, "min_signal_confidence", 0.60) if settings else 0.60,
+                "adx_threshold": float(data["adx_threshold"]) if "adx_threshold" in data else getattr(settings, "adx_min_threshold", 20.0) if settings else 20.0,
+                "primary_timeframe": data.get("primary_timeframe", getattr(settings, "primary_timeframe", "5m") if settings else "5m"),
+                "loop_sleep_seconds": int(data["loop_sleep_seconds"]) if "loop_sleep_seconds" in data else getattr(settings, "loop_sleep_seconds", 1) if settings else 1,
+            })
             
             return jsonify({"success": True})
         except Exception as e:
